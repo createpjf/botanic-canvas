@@ -1,10 +1,15 @@
 import assert from 'node:assert/strict'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import test from 'node:test'
 import {
   applyBotanicAgentCanvasNodeDeletion,
   applyBotanicAgentCanvasTextUpdate,
   createCanvasAgentEditExecutors,
 } from './canvasAgentEditing.mjs'
+import { generationJobProjectionComplete, reconcileGenerationResults } from './generationResultReconciliation.mjs'
+import { createProductStore } from './productStore.mjs'
 
 function projectDocument() {
   return {
@@ -110,4 +115,100 @@ test('活跃任务绑定的节点不可删除，历史与任务恢复语义不�
   const removed = applyBotanicAgentCanvasNodeDeletion(document, { nodeIds: ['generate-1'] })
   assert.equal(removed.document.edges.length, 0)
   assert.equal(removed.document.generationJobs.length, 1)
+})
+
+test('删除 Agent 生成节点后，迟到 Worker 保留任务但不复活画布投影', () => {
+  const document = {
+    id: 'project-agent-tombstone',
+    updatedAt: 10,
+    nodes: [
+      { id: 'generate-done', type: 'generate', position: { x: 0, y: 0 }, data: { jobId: 'job-done', status: 'succeeded' } },
+      { id: 'result-done', type: 'result', position: { x: 400, y: 0 }, data: { outputOf: 'generate-done', jobId: 'job-done', candidateId: 'output-done', image: '/api/media/done', status: 'ready', taskStatus: 'succeeded' } },
+    ],
+    edges: [{ id: 'edge-done', source: 'generate-done', target: 'result-done', data: { system: true, role: 'output' } }],
+    generationJobs: [{
+      id: 'job-done', status: 'succeeded', kind: 'generation', createdAt: 1, updatedAt: 2,
+      batchCount: 1, outputCount: 1, outputs: [{ id: 'output-done', image: '/api/media/done' }],
+      generateNodeId: 'generate-done', resultNodeId: 'result-done', agentRun: { runId: 'run-1', branchId: 'branch-1' },
+    }],
+  }
+
+  const deleted = applyBotanicAgentCanvasNodeDeletion(document, { nodeIds: ['generate-done'] }, 20).document
+  const lateJob = { ...document.generationJobs[0], updatedAt: 30 }
+  const reconciled = reconcileGenerationResults(deleted, [lateJob], { ensureAgentPlaceholders: true })
+
+  assert.equal(deleted.generationJobs[0].projectionDismissedAt, 20)
+  assert.equal(reconciled.document.nodes.some((node) => node.id === 'generate-done'), false)
+  assert.equal(reconciled.document.nodes.length, deleted.nodes.length)
+  assert.equal(generationJobProjectionComplete(reconciled.document, lateJob), true)
+  assert.equal(deleted.generationJobs[0].outputs.length, 1)
+})
+
+test('Agent 删除节点经 durable graph commit 落库且不删除任务历史', async (t) => {
+  const directory = mkdtempSync(join(tmpdir(), 'botanic-agent-canvas-edit-'))
+  t.after(() => rmSync(directory, { recursive: true, force: true }))
+  const productStore = createProductStore({
+    dataPath: join(directory, 'product.json'),
+    bootstrapAccessToken: 'owner-token',
+  })
+  const owner = productStore.authenticate('owner-token')
+  assert.ok(owner)
+  const base = projectDocument()
+  const document = {
+    ...base,
+    id: 'project-durable-edit',
+    schemaVersion: 25,
+    nodes: [
+      ...base.nodes,
+      { id: 'result-durable', type: 'result', position: { x: 800, y: 0 }, data: { jobId: 'job-durable', candidateId: 'output-durable', image: '/api/media/durable', status: 'ready', taskStatus: 'succeeded' } },
+    ],
+    generationJobs: [
+      ...base.generationJobs,
+      { id: 'job-durable', status: 'succeeded', updatedAt: 2, outputs: [{ id: 'output-durable', image: '/api/media/durable' }], resultNodeId: 'result-durable' },
+    ],
+  }
+  productStore.writeProject(owner.id, document)
+  const commitOrder = []
+  const updateProjectDocument = productStore.updateProjectDocument.bind(productStore)
+  productStore.updateProjectDocument = (...args) => {
+    commitOrder.push('metadata')
+    return updateProjectDocument(...args)
+  }
+  const appendCanvasGraphUpdate = productStore.appendCanvasGraphUpdate.bind(productStore)
+  let failGraphCommit = true
+  productStore.appendCanvasGraphUpdate = (...args) => {
+    commitOrder.push('graph')
+    if (failGraphCommit) throw new Error('模拟图谱提交失败。')
+    return appendCanvasGraphUpdate(...args)
+  }
+  const executors = createCanvasAgentEditExecutors({
+    productStore,
+    publishProjectUpdated: async () => {},
+    models: [],
+    userId: owner.id,
+    projectId: document.id,
+    mutationId: 'agent-action-receipt-delete-1',
+  })
+
+  await assert.rejects(
+    executors.deleteCanvasNodes({ nodeIds: ['result-durable'] }),
+    /模拟图谱提交失败/,
+  )
+
+  const afterGraphFailure = productStore.readProject(owner.id, document.id)
+  assert.equal(afterGraphFailure.document.nodes.some((node) => node.id === 'result-durable'), true)
+  assert.deepEqual(afterGraphFailure.document.generationJobs.find((job) => job.id === 'job-durable').dismissedOutputIds, ['output-durable'])
+  assert.deepEqual(commitOrder.slice(0, 2), ['metadata', 'graph'])
+
+  failGraphCommit = false
+  await executors.deleteCanvasNodes({ nodeIds: ['result-durable'] })
+
+  const saved = productStore.readProject(owner.id, document.id)
+  assert.equal(saved.document.nodes.some((node) => node.id === 'result-durable'), false)
+  assert.equal(saved.document.generationJobs.length, 2)
+  assert.deepEqual(saved.document.generationJobs.find((job) => job.id === 'job-durable').dismissedOutputIds, ['output-durable'])
+  assert.deepEqual(commitOrder.slice(0, 4), ['metadata', 'graph', 'metadata', 'graph'])
+  const collaboration = productStore.loadCanvasCollaboration(owner.id, document.id)
+  assert.ok(collaboration.updates.length > 0)
+  assert.equal(saved.graphRevision, collaboration.graphRevision)
 })

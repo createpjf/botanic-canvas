@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { Readable } from 'node:stream'
 import test from 'node:test'
+import * as Y from 'yjs'
 import { createBotanicHttpServer } from './httpServer.mjs'
 import { agentActionReconciliationIdentity } from './agentActionReconciliation.mjs'
 
@@ -188,6 +189,56 @@ test('项目集合资源对不支持的方法返回 405 和允许的方法目录
   assert.equal(response.statusCode, 405)
   assert.equal(JSON.parse(response.body).error.code, 'METHOD_NOT_ALLOWED')
   assert.equal(headers.Allow, 'GET, POST')
+})
+
+test('WebSocket 不可用时 HTTP Canvas Sync 仍返回 durable ACK', async (context) => {
+  const dependencies = testDependencies()
+  let appended
+  dependencies.runtime.mediaService.close = async () => {}
+  dependencies.runtime.productStore = {
+    async authenticate() { return { id: 'user-1' } },
+    async projectAccess() { return { exists: true, role: 'owner' } },
+    async readProject() {
+      return { revision: 1, graphRevision: 1, document: { id: 'project-1', name: 'Demo', nodes: [], edges: [] } }
+    },
+    async canEditProject() { return true },
+    async readCanvasSyncProtocolEpoch() { return 2 },
+    async loadCanvasCollaboration() {
+      return { graph: { nodes: [], edges: [] }, graphRevision: 1, updates: [] }
+    },
+    async appendCanvasGraphUpdate(_userId, _projectId, payload) {
+      appended = structuredClone(payload)
+      return { graphRevision: 2, mutationRevision: 2, updatedAt: 200, updateCount: 1, duplicate: false }
+    },
+  }
+  const application = createBotanicHttpServer(dependencies)
+  application.server.listen = (_port, _host, onListening) => {
+    onListening()
+    return application.server
+  }
+  context.after(() => application.close())
+  await application.start()
+
+  const document = new Y.Doc()
+  document.getMap('nodes').set('node-http', {
+    order: 0,
+    value: { id: 'node-http', type: 'text', position: { x: 40, y: 20 }, data: { label: 'HTTP', content: 'HTTP' } },
+  })
+  const update = Buffer.from(Y.encodeStateAsUpdate(document)).toString('base64')
+  const { response } = testResponse()
+  await application.handleRequest(testRequest({
+    method: 'POST',
+    url: '/api/projects/project-1/canvas-sync',
+    body: { type: 'canvas.crdt.update', projectId: 'project-1', mutationId: 'mutation-http', syncProtocolEpoch: 2, update },
+  }), response)
+
+  assert.equal(response.statusCode, 200)
+  assert.deepEqual(JSON.parse(response.body), {
+    type: 'canvas.crdt.committed', projectId: 'project-1', mutationId: 'mutation-http',
+    graphRevision: 2, mutationRevision: 2, updatedAt: 200,
+  })
+  assert.equal(appended.mutationId, 'mutation-http')
+  assert.equal(appended.syncProtocolEpoch, 2)
 })
 
 test('项目路由返回业务错误后不会继续写第二次响应', async () => {

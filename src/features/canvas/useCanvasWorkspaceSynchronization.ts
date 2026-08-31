@@ -9,11 +9,11 @@ import {
   type CollaborationActivity,
   type CollaborationDocumentChange,
 } from '../../domain/collaborationActivity'
-import { shouldRefreshFromRealtimeEvent, type ProjectRealtimeConnectionState } from '../../domain/realtimeSync'
+import { shouldRefreshFromRealtimeEvent, type CanvasSyncStatus, type ProjectRealtimeConnectionState } from '../../domain/realtimeSync'
 import { pendingCanvasSyncOutcome } from '../../domain/remoteDocumentSync'
 import { executePersistentBotanicAgentRun, listPersistentBotanicAgentRuns, listPersistentBotanicAgentSessions, readPersistentBotanicAgentState } from '../../lib/agentApi'
 import { listProjectCollaborationActivities, updateProjectCollaborationActivityReceipt } from '../../lib/collaborationApi'
-import { appliedRemoteRevision, flushPendingCanvasDocumentWrites, previewRemoteCanvasDocument, refreshCanvasDocumentFromRemote, syncPendingCanvasDrafts, type CanvasConflictRevision } from '../../lib/db'
+import { appliedRemoteRevision, flushPendingCanvasDocumentWrites, lastKnownCanvasSyncProtocolEpoch, previewRemoteCanvasDocument, refreshCanvasDocumentFromRemote, syncPendingCanvasDrafts, type CanvasConflictRevision } from '../../lib/db'
 import { recordSentryBreadcrumb } from '../../lib/sentry'
 import { connectCanvasCollaboration, type CanvasCollaboration } from '../../lib/projectCollaboration'
 import { serverPersistenceEnabled } from '../../lib/productSession'
@@ -91,6 +91,7 @@ export type CollaborationAwareness = {
   unreadActivityCount: number
   conflictChanges: CollaborationDocumentChange[]
   conflictRevision?: CanvasConflictRevision
+  syncProtocolEpoch?: number
   historyStatus: 'idle' | 'loading' | 'loading-more' | 'saving' | 'error'
   historyHasMore: boolean
   historyNextBefore?: string
@@ -119,8 +120,6 @@ export function useCanvasWorkspaceSynchronization({
   const { locale } = useProductI18n()
   const copy = canvasSynchronizationCopy[locale]
   const documentId = useCanvasStore((state) => state.document.id)
-  const nodes = useCanvasStore((state) => state.document.nodes)
-  const edges = useCanvasStore((state) => state.document.edges)
   const agentRuns = useCanvasStore((state) => state.document.agentRuns)
   const persistenceStatus = useCanvasStore((state) => state.persistenceStatus)
   const hydrated = useCanvasStore((state) => state.hydrated)
@@ -142,12 +141,12 @@ export function useCanvasWorkspaceSynchronization({
   const pendingRemoteGraphChangeRef = useRef<CollaborationDocumentChange | undefined>(undefined)
   const collaboratorNamesRef = useRef(new Map<string, string>())
 
-  const refreshDocumentFromRemoteOnce = useCallback(() => {
+  const refreshDocumentFromRemoteOnce = useCallback((options: { preserveCanvasGraph?: boolean } = {}) => {
     const projectId = useCanvasStore.getState().document.id
     const inFlight = remoteDocumentRefreshRef.current
     if (inFlight?.projectId === projectId) return inFlight.promise
     let promise: Promise<boolean>
-    promise = refreshDocumentFromRemote().finally(() => {
+    promise = refreshDocumentFromRemote(options).finally(() => {
       if (remoteDocumentRefreshRef.current?.promise === promise) remoteDocumentRefreshRef.current = null
     })
     remoteDocumentRefreshRef.current = { projectId, promise }
@@ -483,7 +482,7 @@ export function useCanvasWorkspaceSynchronization({
   useEffect(() => {
     if (!hydrated || !workspaceActive || !serverPersistenceEnabled) return
     const current = useCanvasStore.getState().document
-    const updateRealtimeStatus = (state: ProjectRealtimeConnectionState) => {
+    const updateRealtimeStatus = (state: ProjectRealtimeConnectionState | CanvasSyncStatus) => {
       if (useCanvasStore.getState().document.id !== current.id) return
       const realtimeStatus: CollaborationStatus = state === 'closed' ? 'disabled' : state
       useCanvasStore.setState({ collaborationStatus: realtimeStatus })
@@ -570,9 +569,19 @@ export function useCanvasWorkspaceSynchronization({
           .catch(() => undefined)
       },
       onConnectionStateChanged: updateRealtimeStatus,
+      onSyncStatusChanged: updateRealtimeStatus,
+      onSyncProtocolEpochChanged: (epoch) => {
+        setCollaborationAwareness((current) => ({ ...current, syncProtocolEpoch: epoch }))
+      },
     })
     collaborationRef.current = collaboration
+    const unsubscribeGraph = useCanvasStore.subscribe((state, previous) => {
+      if (state.document.id !== current.id
+        || (state.document.nodes === previous.document.nodes && state.document.edges === previous.document.edges)) return
+      collaboration.replaceLocalGraph({ nodes: state.document.nodes, edges: state.document.edges })
+    })
     return () => {
+      unsubscribeGraph()
       if (collaborationRef.current === collaboration) collaborationRef.current = null
       collaboration.close()
       if (useCanvasStore.getState().document.id === current.id) useCanvasStore.setState({ collaborationStatus: 'disabled' })
@@ -581,7 +590,12 @@ export function useCanvasWorkspaceSynchronization({
 
   useEffect(() => {
     collaboratorNamesRef.current.clear()
-    setCollaborationAwareness((current) => ({ ...emptyCollaborationAwareness, realtimeStatus: current.realtimeStatus }))
+    const syncProtocolEpoch = lastKnownCanvasSyncProtocolEpoch(documentId)
+    setCollaborationAwareness((current) => ({
+      ...emptyCollaborationAwareness,
+      realtimeStatus: current.realtimeStatus,
+      ...(syncProtocolEpoch === undefined ? {} : { syncProtocolEpoch }),
+    }))
   }, [documentId])
 
   useEffect(() => {
@@ -590,7 +604,7 @@ export function useCanvasWorkspaceSynchronization({
   }, [documentId, hydrated, loadCollaborationActivities, workspaceActive])
 
   useEffect(() => {
-    if (persistenceStatus !== 'conflict' || !serverPersistenceEnabled) {
+    if (persistenceStatus !== 'conflict' || !serverPersistenceEnabled || (collaborationAwareness.syncProtocolEpoch ?? 1) >= 2) {
       setCollaborationAwareness((current) => current.conflictChanges.length || current.conflictRevision
         ? { ...current, conflictChanges: [], conflictRevision: undefined }
         : current)
@@ -607,7 +621,7 @@ export function useCanvasWorkspaceSynchronization({
         }))
       })
       .catch(() => undefined)
-  }, [documentId, locale, persistenceStatus])
+  }, [collaborationAwareness.syncProtocolEpoch, documentId, locale, persistenceStatus])
 
   useEffect(() => {
     if (!hydrated || !workspaceActive || !serverPersistenceEnabled) return
@@ -637,10 +651,6 @@ export function useCanvasWorkspaceSynchronization({
       window.clearInterval(timer)
     }
   }, [agentRuns, documentId, hydrated, recoverPersistentAgentRuns, workspaceActive])
-
-  useEffect(() => {
-    collaborationRef.current?.replaceLocalGraph({ nodes, edges })
-  }, [edges, nodes])
 
   return {
     canvasHydrationFailed,

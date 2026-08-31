@@ -31,7 +31,7 @@ import type {
   TextNodeData,
 } from '../domain/canvas'
 import { writeGlobalAssetLibrary } from '../lib/db'
-import { availableAssets, findAvailableAsset, normalizeSystemOutputEdges } from './canvasDocumentAssets'
+import { availableAssets, findAvailableAsset, hydrateAssetNodeImages, normalizeSystemOutputEdges } from './canvasDocumentAssets'
 import { cleanDisplayName, migrationId, nextTaskFlowStartX, normalizeAssetReferenceNodes } from './canvasDocumentMigration'
 import type { CanvasStore } from './canvasStore.types'
 
@@ -158,12 +158,13 @@ export function createCanvasAssetGraphActions({
         { nodes: current.nodes, edges: current.edges },
         { nodes, edges },
       )
-      const synchronizedNodeIds = new Set(synchronized.nodes.map((node) => node.id))
+      const hydratedNodes = hydrateAssetNodeImages(synchronized.nodes, current, get().globalAssets)
+      const synchronizedNodeIds = new Set(hydratedNodes.map((node) => node.id))
       const normalizedEdges = normalizeSystemOutputEdges(
-        synchronized.nodes,
+        hydratedNodes,
         synchronized.edges.filter((edge) => synchronizedNodeIds.has(edge.source) && synchronizedNodeIds.has(edge.target)),
       )
-      const normalizedNodes = normalizeGenerateNodeInputs(synchronized.nodes, normalizedEdges)
+      const normalizedNodes = normalizeGenerateNodeInputs(hydratedNodes, normalizedEdges)
       const selected = normalizedNodes.filter((node) => node.selected)
       set({
         document: { ...current, nodes: normalizedNodes, edges: normalizedEdges },

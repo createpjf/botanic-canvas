@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { CanvasDocument, GenerationJob, ResultNodeData } from '../domain/canvas.ts'
 import type { GenerationRequest } from './canvasStore.types.ts'
-import { applyGenerationJobToDocument, createTaskFlow, materializeGenerationOutputs, recordGenerationJob } from './canvasGenerationProjection.ts'
+import { applyGenerationJobToDocument, createTaskFlow, generationJobsAfterNodeRemoval, materializeGenerationOutputs, recordGenerationJob } from './canvasGenerationProjection.ts'
 
 function baseDocument(): CanvasDocument {
   return {
@@ -42,6 +42,33 @@ test('生成投影先创建独立占位节点，再用稳定输出身份原位�
   assert.equal(results.length, 2)
   assert.deepEqual(results.map((node) => (node.data as { candidateId?: string }).candidateId).sort(), ['output-a', 'output-b'])
   assert.equal(materialized.generationJobs[0].id, 'job-a')
+})
+
+test('删除进行中的生成节点会留下 projection tombstone，迟到结果不能复活节点', () => {
+  const planned = createTaskFlow(baseDocument(), { ...request(), batchCount: 1 })
+  const generationRequest = { ...request(), batchCount: 1, taskNodeIds: planned.taskNodeIds, jobId: 'job-late' }
+  const running = {
+    id: 'job-late', projectId: 'project-generation', kind: 'generation', status: 'running', prompt: '海边自然光', batchCount: 1,
+    settings: generationRequest.settings, recipe: generationRequest.recipe!, createdAt: 1, updatedAt: 2,
+  } as GenerationJob
+  const recorded = recordGenerationJob(planned.document, running, planned.taskNodeIds)
+  const removedNode = recorded.nodes.find((node) => node.id === planned.taskNodeIds.generateNodeId)!
+  const deleted: CanvasDocument = {
+    ...recorded,
+    nodes: recorded.nodes.filter((node) => node.id !== removedNode.id),
+    edges: recorded.edges.filter((edge) => edge.source !== removedNode.id && edge.target !== removedNode.id),
+    generationJobs: generationJobsAfterNodeRemoval(recorded, removedNode, 20),
+  }
+  const completed = {
+    ...running, status: 'succeeded', updatedAt: 30,
+    outputs: [{ id: 'output-late', image: '/late.webp', mediaKind: 'image' }],
+  } as GenerationJob
+
+  const reconciled = applyGenerationJobToDocument(deleted, completed, generationRequest)
+
+  assert.equal(reconciled.generationJobs[0].projectionDismissedAt, 20)
+  assert.equal(reconciled.nodes.some((node) => node.id === removedNode.id), false)
+  assert.equal(reconciled.nodes.some((node) => (node.data as ResultNodeData).image === '/late.webp'), false)
 })
 
 test('落图后结果名用短标题，不用 Prompt 原文', () => {

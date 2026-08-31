@@ -672,6 +672,8 @@ test('Worker 先持久化 N 输出再回写画布后，Artifact Index 补齐每�
   })
   t.after(() => { globalThis.fetch = originalFetch })
   let mediaIndex = 0
+  const canvasUpdates = []
+  const projectUpdates = []
   const processJob = createGenerationProcessor({
     productStore,
     mediaService: {
@@ -690,10 +692,17 @@ test('Worker 先持久化 N 输出再回写画布后，Artifact Index 补齐每�
       maximumBatchCount: 8,
       maximumReferenceBytes: 1024,
     },
+    publishCanvasUpdate: async (event) => canvasUpdates.push(event),
+    publishProjectUpdated: async (event) => projectUpdates.push(event),
   })
 
   await processJob(jobId)
 
+  const collaboration = productStore.loadCanvasCollaboration(owner.id, projectId)
+  assert.ok(collaboration.updates.length > 0)
+  assert.ok(canvasUpdates.length > 0)
+  assert.equal(projectUpdates.length, canvasUpdates.length)
+  assert.equal(projectUpdates.every((event) => !('graph' in event)), true)
   const artifacts = productStore.listAgentArtifacts(owner.id, projectId, { limit: 10 })
   const sourcesByOutput = Object.fromEntries(artifacts.map((artifact) => [
     artifact.metadata.outputId,

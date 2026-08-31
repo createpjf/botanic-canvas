@@ -28,10 +28,27 @@ function closed(socket) {
 }
 
 function nextMessageWithin(socket, timeoutMs = 300) {
-  return Promise.race([
-    nextMessage(socket),
-    new Promise((_, reject) => setTimeout(() => reject(new Error('等待实时消息超时')), timeoutMs)),
-  ])
+  return new Promise((resolve, reject) => {
+    const cleanup = () => {
+      clearTimeout(timer)
+      socket.off('message', onMessage)
+      socket.off('error', onError)
+    }
+    const onMessage = (data) => {
+      cleanup()
+      resolve(JSON.parse(data.toString()))
+    }
+    const onError = (error) => {
+      cleanup()
+      reject(error)
+    }
+    const timer = setTimeout(() => {
+      cleanup()
+      reject(new Error('等待实时消息超时'))
+    }, timeoutMs)
+    socket.on('message', onMessage)
+    socket.on('error', onError)
+  })
 }
 
 function nextMessages(socket, count) {
@@ -270,8 +287,173 @@ test('只有 HTTP 物化图谱的项目在连接时也会下发 Yjs 初始状态
   assert.equal(document.getMap('nodes').get('node-http').value.position.x, 40)
 })
 
-test('编辑者的 CRDT 增量只转发给同项目的其他连接', async (context) => {
+test('V2 客户端只接收缺失增量，失去编辑权时收到永久 NACK', async (context) => {
   const server = createServer((_request, response) => response.end())
+  const serverDocument = new Y.Doc()
+  const nodes = serverDocument.getMap('nodes')
+  nodes.set('node-known', {
+    order: 0,
+    value: { id: 'node-known', type: 'text', position: { x: 20, y: 20 }, data: { kind: 'text', label: 'known', content: 'known' } },
+  })
+  const clientDocument = new Y.Doc()
+  Y.applyUpdate(clientDocument, Y.encodeStateAsUpdate(serverDocument))
+  nodes.set('node-missing', {
+    order: 1,
+    value: { id: 'node-missing', type: 'text', position: { x: 80, y: 20 }, data: { kind: 'text', label: 'missing', content: 'missing' } },
+  })
+  const fullUpdate = Y.encodeStateAsUpdate(serverDocument)
+  const graph = {
+    nodes: [...nodes.values()].map((record) => record.value),
+    edges: [],
+  }
+  let persisted = {
+    graph,
+    graphRevision: 7,
+    snapshot: Buffer.from(fullUpdate).toString('base64'),
+    updates: [],
+  }
+  const hub = createProjectRealtimeHub({
+    server,
+    ticketSecret: 'test-secret',
+    productStore: {
+      async readProject() { return { document: graph, revision: 1 } },
+      async canEditProject() { return false },
+      async loadCanvasCollaboration() {
+        return structuredClone(persisted)
+      },
+    },
+  })
+  await listen(server)
+  const ticket = issueRealtimeTicket({ userId: 'viewer-1', projectId: 'project-1', origin: testOrigin, secret: 'test-secret' })
+  const socket = new WebSocket(
+    `ws://127.0.0.1:${server.address().port}/api/realtime?projectId=project-1&protocol=2&ticket=${encodeURIComponent(ticket)}`,
+    { origin: testOrigin },
+  )
+  const messages = []
+  socket.on('message', (data) => messages.push(JSON.parse(data.toString())))
+  context.after(async () => {
+    socket.close()
+    await hub.close()
+    await new Promise((resolve) => server.close(resolve))
+  })
+
+  while (!messages.length) await new Promise((resolve) => setImmediate(resolve))
+  await new Promise((resolve) => setTimeout(resolve, 40))
+  assert.deepEqual(messages, [{ type: 'realtime.ready', projectId: 'project-1', protocol: 2 }], 'V2 握手前不应推送整份图谱')
+  const latestDocument = new Y.Doc()
+  Y.applyUpdate(latestDocument, fullUpdate)
+  latestDocument.getMap('nodes').set('node-durable', {
+    order: 2,
+    value: { id: 'node-durable', type: 'text', position: { x: 140, y: 20 }, data: { kind: 'text', label: 'durable', content: 'durable' } },
+  })
+  persisted = {
+    graph: {
+      nodes: [...latestDocument.getMap('nodes').values()].map((record) => record.value),
+      edges: [],
+    },
+    graphRevision: 8,
+    snapshot: Buffer.from(Y.encodeStateAsUpdate(latestDocument)).toString('base64'),
+    updates: [],
+  }
+  const response = nextMessageWithin(socket)
+  socket.send(JSON.stringify({
+    type: 'canvas.sync.hello.v2',
+    protocol: 2,
+    projectId: 'project-1',
+    schemaVersion: 2,
+    clientInstanceId: 'client-1',
+    stateVectorBase64: Buffer.from(Y.encodeStateVector(clientDocument)).toString('base64'),
+  }))
+  const ready = await response
+
+  assert.equal(ready.type, 'canvas.sync.ready.v2')
+  assert.equal(ready.protocol, 2)
+  assert.equal(ready.schemaVersion, 2)
+  assert.equal(ready.graphRevision, 8)
+  const delta = Buffer.from(ready.updateBase64, 'base64')
+  assert.ok(delta.byteLength < Buffer.from(persisted.snapshot, 'base64').byteLength)
+  Y.applyUpdate(clientDocument, delta)
+  assert.deepEqual([...clientDocument.getMap('nodes').keys()].sort(), ['node-durable', 'node-known', 'node-missing'])
+
+  const rejected = nextMessageWithin(socket)
+  socket.send(JSON.stringify({
+    type: 'canvas.crdt.update',
+    projectId: 'project-1',
+    mutationId: 'mutation-viewer',
+    update: validCrdtUpdate('node-denied'),
+  }))
+  assert.deepEqual(await rejected, {
+    type: 'canvas.graph.nack.v2',
+    protocol: 2,
+    projectId: 'project-1',
+    mutationId: 'mutation-viewer',
+    code: 'PERMISSION_REVOKED',
+    retryable: false,
+  })
+})
+
+test('V2 项目 epoch 前进后拒绝旧会话，重新握手后提交同一 Outbox', async (context) => {
+  const server = createServer((_request, response) => response.end())
+  let syncProtocolEpoch = 2
+  let graphRevision = 1
+  const productStore = {
+    async readProject() { return { document: { nodes: [], edges: [] }, revision: 1 } },
+    async canEditProject() { return true },
+    async readCanvasSyncProtocolEpoch() { return syncProtocolEpoch },
+    async appendCanvasGraphUpdate() {
+      graphRevision += 1
+      return { graphRevision, mutationRevision: graphRevision, updatedAt: 200, updateCount: 1, duplicate: false }
+    },
+  }
+  const hub = createProjectRealtimeHub({ server, ticketSecret: 'test-secret', productStore })
+  await listen(server)
+  const ticket = issueRealtimeTicket({ userId: 'editor-1', projectId: 'project-1', origin: testOrigin, secret: 'test-secret' })
+  const socket = new WebSocket(
+    `ws://127.0.0.1:${server.address().port}/api/realtime?projectId=project-1&protocol=2&ticket=${encodeURIComponent(ticket)}`,
+    { origin: testOrigin },
+  )
+  context.after(async () => {
+    socket.close()
+    await hub.close()
+    await new Promise((resolve) => server.close(resolve))
+  })
+  assert.deepEqual(await nextMessage(socket), { type: 'realtime.ready', projectId: 'project-1', protocol: 2 })
+  const hello = () => socket.send(JSON.stringify({
+    type: 'canvas.sync.hello.v2', protocol: 2, projectId: 'project-1', schemaVersion: 2,
+    clientInstanceId: 'client-epoch', stateVectorBase64: Buffer.from(Y.encodeStateVector(new Y.Doc())).toString('base64'),
+  }))
+  let response = nextMessageWithin(socket)
+  hello()
+  assert.equal((await response).syncProtocolEpoch, 2)
+
+  syncProtocolEpoch = 3
+  response = nextMessageWithin(socket)
+  socket.send(JSON.stringify({
+    type: 'canvas.crdt.update', projectId: 'project-1', mutationId: 'mutation-epoch',
+    syncProtocolEpoch: 2, update: validCrdtUpdate('node-epoch'),
+  }))
+  assert.deepEqual(await response, {
+    type: 'canvas.graph.nack.v2', protocol: 2, projectId: 'project-1', mutationId: 'mutation-epoch',
+    code: 'EPOCH_STALE', retryable: true, syncProtocolEpoch: 3,
+  })
+
+  response = nextMessageWithin(socket)
+  hello()
+  assert.equal((await response).syncProtocolEpoch, 3)
+  response = nextMessageWithin(socket)
+  socket.send(JSON.stringify({
+    type: 'canvas.crdt.update', projectId: 'project-1', mutationId: 'mutation-epoch',
+    syncProtocolEpoch: 3, update: validCrdtUpdate('node-epoch'),
+  }))
+  assert.equal((await response).type, 'canvas.crdt.committed')
+})
+
+test('编辑者的 CRDT 增量提交后 ACK，同一 mutation 重放只下发无活动修复状态', async (context) => {
+  const server = createServer((_request, response) => response.end())
+  let graphRevision = 1
+  let activityCount = 0
+  const mutations = new Map()
+  let persistedGraph = { nodes: [], edges: [] }
   const productStore = {
     async readProject(_userId, projectId) {
       return projectId === 'project-1' ? { document: {}, revision: 1 } : undefined
@@ -279,15 +461,52 @@ test('编辑者的 CRDT 增量只转发给同项目的其他连接', async (cont
     async canEditProject(userId, projectId) {
       return projectId === 'project-1' && userId !== 'viewer'
     },
+    async loadCanvasCollaboration() {
+      return { graph: structuredClone(persistedGraph), graphRevision, updates: [] }
+    },
+    async appendCanvasGraphUpdate(_userId, _projectId, payload) {
+      const committed = mutations.get(payload.mutationId)
+      if (committed) {
+        if (committed.idempotencyUpdate !== (payload.idempotencyUpdate ?? payload.update)) {
+          const error = new Error('画布协作提交身份已绑定到其他更新。')
+          error.code = 'CANVAS_MUTATION_CONFLICT'
+          throw error
+        }
+        return { ...committed.saved, graphRevision, duplicate: true, update: committed.update }
+      }
+      graphRevision += 1
+      const saved = {
+        graphRevision,
+        mutationRevision: graphRevision,
+        updatedAt: 200,
+        updateCount: 1,
+      }
+      mutations.set(payload.mutationId, {
+        saved,
+        update: payload.update,
+        idempotencyUpdate: payload.idempotencyUpdate ?? payload.update,
+      })
+      persistedGraph = structuredClone(payload.graph)
+      return { ...saved, duplicate: false }
+    },
     async putCollaborationActivity(userId, _projectId, input) {
+      activityCount += 1
       return { ...input, actorId: userId, actorName: '协作者', occurredAt: 200, count: 1 }
     },
   }
-  const hub = createProjectRealtimeHub({ server, ticketSecret: 'test-secret', productStore })
+  const hub = createProjectRealtimeHub({
+    server,
+    ticketSecret: 'test-secret',
+    productStore,
+    crossInstancePublisher: {
+      async publishCanvasUpdate() { throw new Error('redis unavailable') },
+      async publishPresence() {},
+    },
+  })
   await listen(server)
   const address = server.address()
   const connect = (userId) => new WebSocket(
-    `ws://127.0.0.1:${address.port}/api/realtime?projectId=project-1&ticket=${encodeURIComponent(issueRealtimeTicket({ userId, projectId: 'project-1', origin: testOrigin, secret: 'test-secret' }))}`,
+    `ws://127.0.0.1:${address.port}/api/realtime?projectId=project-1&protocol=2&ticket=${encodeURIComponent(issueRealtimeTicket({ userId, projectId: 'project-1', origin: testOrigin, secret: 'test-secret' }))}`,
     { origin: testOrigin },
   )
   const sender = connect('editor-1')
@@ -300,20 +519,76 @@ test('编辑者的 CRDT 增量只转发给同项目的其他连接', async (cont
   })
   await Promise.all([nextMessage(sender), nextMessage(receiver)])
 
+  const committed = nextMessage(sender)
   const received = nextMessage(receiver)
   const update = validCrdtUpdate()
-  sender.send(JSON.stringify({ type: 'canvas.crdt.update', projectId: 'project-1', update }))
+  const mutationId = 'mutation-1'
+  sender.send(JSON.stringify({ type: 'canvas.crdt.update', projectId: 'project-1', mutationId, update }))
+
+  assert.deepEqual(await committed, {
+    type: 'canvas.crdt.committed',
+    projectId: 'project-1',
+    mutationId,
+    graphRevision: 2,
+    mutationRevision: 2,
+    updatedAt: 200,
+  })
 
   assert.deepEqual(await received, {
     type: 'canvas.crdt.update',
     projectId: 'project-1',
     update,
+    mutationId,
     actorId: 'editor-1',
     activity: {
-      id: 'canvas-editor-1-1', actorId: 'editor-1', actorName: '协作者', kind: 'canvas',
+      id: 'canvas-editor-1-2', actorId: 'editor-1', actorName: '协作者', kind: 'canvas',
       summary: '新增了「node-a」', target: { kind: 'node', nodeId: 'node-a' }, occurredAt: 200, count: 1, unread: true,
     },
   })
+  const receiverDocument = new Y.Doc()
+  Y.applyUpdate(receiverDocument, Buffer.from(update, 'base64'))
+
+  const replayed = nextMessage(sender)
+  const repaired = nextMessageWithin(receiver)
+  sender.send(JSON.stringify({ type: 'canvas.crdt.update', projectId: 'project-1', mutationId, update }))
+  assert.deepEqual(await replayed, {
+    type: 'canvas.crdt.committed',
+    projectId: 'project-1',
+    mutationId,
+    graphRevision: 2,
+    mutationRevision: 2,
+    updatedAt: 200,
+  })
+  const repairedEvent = await repaired
+  assert.equal(repairedEvent.type, 'canvas.crdt.update')
+  assert.equal(repairedEvent.mutationId, mutationId)
+  assert.equal(repairedEvent.actorId, undefined)
+  assert.equal(repairedEvent.activity, undefined)
+  Y.applyUpdate(receiverDocument, Buffer.from(repairedEvent.update, 'base64'))
+  assert.deepEqual([...receiverDocument.getMap('nodes').keys()], ['node-a'])
+  assert.equal(activityCount, 1)
+
+  const duplicateWithNewYjsContent = nextMessage(sender)
+  sender.send(JSON.stringify({ type: 'canvas.crdt.update', projectId: 'project-1', mutationId, update: validCrdtUpdate('node-b') }))
+  assert.deepEqual(await duplicateWithNewYjsContent, {
+    type: 'canvas.graph.nack.v2',
+    protocol: 2,
+    projectId: 'project-1',
+    mutationId,
+    code: 'INVALID_UPDATE',
+    retryable: false,
+  })
+  await assert.rejects(nextMessageWithin(receiver, 40), /等待实时消息超时/)
+  assert.equal(activityCount, 1)
+
+  const nextCommitted = nextMessage(sender)
+  const nextReceived = nextMessage(receiver)
+  sender.send(JSON.stringify({
+    type: 'canvas.crdt.update', projectId: 'project-1', mutationId: 'mutation-2', update: validCrdtUpdate('node-c'),
+  }))
+  assert.equal((await nextCommitted).type, 'canvas.crdt.committed')
+  assert.equal((await nextReceived).mutationId, 'mutation-2')
+  assert.deepEqual(persistedGraph.nodes.map((node) => node.id).sort(), ['node-a', 'node-c'])
 })
 
 test('API 重启后向新连接补发已持久化的 Yjs 状态', async () => {
@@ -403,6 +678,36 @@ test('没有在线房间时，HTTP 权威保存仍重写旧 Yjs 历史', async (
   const recovered = new Y.Doc()
   Y.applyUpdate(recovered, Buffer.from(persisted.snapshot, 'base64'))
   assert.equal(recovered.getMap('nodes').get('node-a').value.position.x, 400)
+})
+
+test('Epoch 2 拒绝 project.updated 的整图兼容回写', async (context) => {
+  const server = createServer((_request, response) => response.end())
+  let loadCount = 0
+  const hub = createProjectRealtimeHub({
+    server,
+    ticketSecret: 'test-secret',
+    productStore: {
+      async readCanvasSyncProtocolEpoch() { return 2 },
+      async loadCanvasCollaboration() {
+        loadCount += 1
+        return { graph: { nodes: [], edges: [] }, graphRevision: 1, updates: [] }
+      },
+    },
+  })
+  context.after(async () => {
+    await hub.close()
+    await new Promise((resolve) => server.close(resolve))
+  })
+  await listen(server)
+
+  await assert.rejects(
+    hub.publishProjectUpdated({
+      projectId: 'project-1', revision: 2, graphRevision: 3, updatedAt: 300,
+      graph: { nodes: [], edges: [] }, actorId: 'user-1',
+    }),
+    (error) => error?.code === 'CANVAS_SYNC_EPOCH_STALE' && error.syncProtocolEpoch === 2,
+  )
+  assert.equal(loadCount, 0)
 })
 
 test('带图谱的项目更新缺少 actorId 时不进入画布存储', async (context) => {
@@ -551,14 +856,35 @@ test('两个 API 实例通过跨实例总线同步 CRDT，重复事件不回环�
   await Promise.all([nextMessage(sender), nextMessage(receiver)])
 
   const received = nextMessage(receiver)
-  sender.send(JSON.stringify({ type: 'canvas.crdt.update', projectId: 'project-1', update: validCrdtUpdate('node-cross-instance') }))
+  sender.send(JSON.stringify({
+    type: 'canvas.crdt.update', projectId: 'project-1',
+    mutationId: 'mutation-cross-instance', update: validCrdtUpdate('node-cross-instance'),
+  }))
   const event = await received
 
   assert.equal(event.type, 'canvas.crdt.update')
   assert.equal(event.actorId, 'editor-1')
+  assert.equal(event.mutationId, 'mutation-cross-instance')
   assert.equal(appendCount, 1)
   assert.equal(published.length, 1)
   await assert.rejects(nextMessageWithin(receiver, 40), /等待实时消息超时/)
+
+  const repaired = nextMessageWithin(receiver)
+  await firstHub.publishCanvasGraphCommitted({
+    projectId: 'project-1',
+    update: event.update,
+    mutationId: 'mutation-cross-instance',
+    actorId: 'editor-1',
+    graphRevision: 2,
+    updatedAt: 200,
+    duplicate: true,
+  })
+  const repairedEvent = await repaired
+  assert.equal(repairedEvent.type, 'canvas.crdt.update')
+  assert.equal(repairedEvent.mutationId, 'mutation-cross-instance')
+  assert.equal(repairedEvent.actorId, undefined)
+  assert.equal(repairedEvent.activity, undefined)
+  assert.equal(published.length, 2)
 })
 
 test('跨实例 Presence 合并成员并在远端快照过期后移除', async (context) => {

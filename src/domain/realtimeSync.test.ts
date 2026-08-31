@@ -1,8 +1,11 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { parseProjectRealtimeEvent, projectRealtimeConnectionOpened, shouldRefreshFromRealtimeEvent } from './realtimeSync.ts'
+import { deriveCanvasSyncStatus, parseProjectRealtimeEvent, projectRealtimeConnectionOpened, shouldRefreshFromRealtimeEvent } from './realtimeSync.ts'
 
 test('首次连接不触发恢复，断线重连后触发恢复', () => {
+  assert.deepEqual(parseProjectRealtimeEvent({ type: 'realtime.ready', projectId: 'project-1', protocol: 2 }, 'project-1'), {
+    type: 'realtime.ready', projectId: 'project-1', protocol: 2,
+  })
   const first = projectRealtimeConnectionOpened(false)
   assert.deepEqual(first, {
     openedBefore: true,
@@ -74,10 +77,12 @@ test('只接受当前项目且格式有效的 CRDT 增量', () => {
     type: 'canvas.crdt.update',
     projectId: 'project-1',
     update: 'AQID',
+    syncProtocolEpoch: 2,
   }, 'project-1'), {
     type: 'canvas.crdt.update',
     projectId: 'project-1',
     update: 'AQID',
+    syncProtocolEpoch: 2,
   })
   assert.equal(parseProjectRealtimeEvent({
     type: 'canvas.crdt.update',
@@ -89,6 +94,46 @@ test('只接受当前项目且格式有效的 CRDT 增量', () => {
     projectId: 'project-1',
     update: 'not base64!',
   }, 'project-1'), undefined)
+  const ready = {
+    type: 'canvas.sync.ready.v2', protocol: 2, projectId: 'project-1', schemaVersion: 2,
+    syncProtocolEpoch: 2, graphRevision: 7, updateBase64: 'AQID',
+  }
+  assert.deepEqual(parseProjectRealtimeEvent(ready, 'project-1'), ready)
+  assert.equal(parseProjectRealtimeEvent({ ...ready, schemaVersion: 1 }, 'project-1'), undefined)
+  assert.equal(parseProjectRealtimeEvent({ ...ready, syncProtocolEpoch: 0 }, 'project-1'), undefined)
+  const nack = {
+    type: 'canvas.graph.nack.v2', protocol: 2, projectId: 'project-1', mutationId: 'mutation-1',
+    code: 'PERMISSION_REVOKED', retryable: false,
+  }
+  assert.deepEqual(parseProjectRealtimeEvent(nack, 'project-1'), nack)
+  assert.equal(parseProjectRealtimeEvent({ ...nack, code: 'UNKNOWN' }, 'project-1'), undefined)
+  assert.equal(parseProjectRealtimeEvent({ ...nack, retryable: 'false' }, 'project-1'), undefined)
+  const staleNack = { ...nack, code: 'EPOCH_STALE', retryable: true, syncProtocolEpoch: 3 }
+  assert.deepEqual(parseProjectRealtimeEvent(staleNack, 'project-1'), staleNack)
+  assert.equal(parseProjectRealtimeEvent({ ...staleNack, syncProtocolEpoch: undefined }, 'project-1'), undefined)
+})
+
+test('连接、握手与 Outbox 共同决定用户可见同步状态', () => {
+  assert.equal(deriveCanvasSyncStatus({ connectionState: 'connected', handshakeReady: true, pendingCount: 0 }), 'synced')
+  assert.equal(deriveCanvasSyncStatus({ connectionState: 'connected', handshakeReady: true, pendingCount: 2 }), 'saving')
+  assert.equal(deriveCanvasSyncStatus({ connectionState: 'reconnecting', handshakeReady: false, pendingCount: 2 }), 'offline_pending')
+  assert.equal(deriveCanvasSyncStatus({ connectionState: 'connected', handshakeReady: false, pendingCount: 0 }), 'syncing')
+  assert.equal(deriveCanvasSyncStatus({ connectionState: 'connected', handshakeReady: true, pendingCount: 0, blocked: true }), 'blocked')
+})
+
+test('只接受可用于清理 Outbox 的 durable canvas ACK', () => {
+  const event = {
+    type: 'canvas.crdt.committed',
+    projectId: 'project-1',
+    mutationId: 'mutation-1',
+    graphRevision: 12,
+    mutationRevision: 9,
+    updatedAt: 200,
+  }
+
+  assert.deepEqual(parseProjectRealtimeEvent(event, 'project-1'), event)
+  assert.equal(parseProjectRealtimeEvent({ ...event, projectId: 'project-2' }, 'project-1'), undefined)
+  assert.equal(parseProjectRealtimeEvent({ ...event, mutationId: '' }, 'project-1'), undefined)
 })
 
 test('CRDT 增量携带可持久化的协作动态', () => {

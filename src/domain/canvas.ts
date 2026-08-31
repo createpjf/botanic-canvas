@@ -422,6 +422,8 @@ export type GenerationJob = {
   variants?: GenerationVariant[]
   /** 用户从画布移除的候选，服务端任务记录保留，但不应在下次恢复时复活。 */
   dismissedOutputIds?: string[]
+  /** 用户移除了尚未完成的生成工作流；迟到结果只保留 Artifact，不再回填画布。 */
+  projectionDismissedAt?: number
   /** 浏览器或 Worker 回写画布失败时保留的可恢复标记。 */
   idempotencyKey?: string
   projectWritebackPending?: boolean

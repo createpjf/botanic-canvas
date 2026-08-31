@@ -337,6 +337,7 @@ export default function AgentWorkspace({
     unreadActivityCount: number
     conflictChanges: CollaborationDocumentChange[]
     conflictRevision?: { localRevision?: number; remoteRevision: number }
+    syncProtocolEpoch?: number
     historyStatus: 'idle' | 'loading' | 'loading-more' | 'saving' | 'error'
     historyHasMore: boolean
     historyErrorAction?: 'load' | 'load-more' | 'read' | 'clear'
@@ -439,7 +440,7 @@ export default function AgentWorkspace({
     syncError: { title: 'Canvas sync is temporarily unavailable', detail: 'Your current edits remain saved locally and can sync later.', actionLabel: 'Retry sync' },
     dropImages: 'Drop to add image assets', uploadLimits: uploadLimitsLabel('en'), imageLimit: (count: number) => `You can add up to ${count} images at once. Extra images were skipped.`, imageReadFailed: 'Unable to read the images. Drop or select them again.',
     planningUnavailable: 'Unable to create the plan. Try again shortly.', localPreviewChat: 'The local preview is not connected to Agent services. You can still use the canvas and structured prompts; connect the workspace service for chat, research, and execution.', localPreviewPrompt: (prompt: string) => `Local preview prepared this structured Prompt:\n\n${prompt}\n\nConnect the workspace service to continue with research or execution.`, confirmActionsFirst: 'Approve or skip the pending action cards before starting generation.', taskNotStarted: 'The task did not start. Check the references and generation service, then retry.', taskStartFailed: 'Unable to start the task. Try again.', canvasWritten: ' Added to the canvas.', actionFailed: 'Unable to complete the action. Try again.', retryWithModel: (model: string, prompt: string) => `Regenerate with ${model}: ${prompt}`, retrySettings: (prompt: string) => `Adjust the output settings and regenerate: ${prompt}`, pendingQuestion: 'A confirmation card above still needs an answer. Select or enter a response in the card. No task was created.', noPendingPlan: 'There is no generation plan awaiting approval. Describe the image or batch values you want, and Agent will prepare a plan for review.',
-    history: 'Conversation history', historyUnread: (count: number) => `Conversation history, ${count} ${count === 1 ? 'conversation has' : 'conversations have'} updates`, conversationName: 'Conversation name', saveName: 'Save conversation name', save: 'Save', cancelName: 'Cancel editing conversation name', cancel: 'Cancel', newConversation: 'New chat', editName: 'Rename', collaborators: (count: number) => `${count} other ${count === 1 ? 'collaborator' : 'collaborators'} online`, processing: 'Processing', realtimeConnecting: 'Connecting collaboration…', realtimeReconnecting: 'Reconnecting…', realtimeReconnectDetail: 'Canvas editing is paused until the connection is restored.',
+    history: 'Conversation history', historyUnread: (count: number) => `Conversation history, ${count} ${count === 1 ? 'conversation has' : 'conversations have'} updates`, conversationName: 'Conversation name', saveName: 'Save conversation name', save: 'Save', cancelName: 'Cancel editing conversation name', cancel: 'Cancel', newConversation: 'New chat', editName: 'Rename', collaborators: (count: number) => `${count} other ${count === 1 ? 'collaborator' : 'collaborators'} online`, processing: 'Processing', realtimeConnecting: 'Connecting collaboration…', realtimeReconnecting: 'Reconnecting…', realtimeReconnectDetail: 'Canvas editing is paused until the connection is restored.', realtimeSynced: 'Saved', realtimeSyncedDetail: 'Canvas changes are synced to the cloud.', realtimeSaving: 'Saving…', realtimeSavingDetail: 'Local changes are safe and being submitted.', realtimeOfflinePending: 'Offline · pending', realtimeOfflinePendingDetail: 'Local changes are preserved and will sync when online.', realtimeSyncing: 'Syncing…', realtimeSyncingDetail: 'Pulling and replaying changes. Editing is briefly paused.', realtimeBlocked: 'Sync blocked', realtimeBlockedDetail: 'Local changes are preserved. Restore project access or reopen the project.',
     searchConversations: 'Search conversations', searchPlaceholder: 'Search conversations, messages, or tasks', historyFilters: 'Filter collaboration history', all: 'All', unread: 'Unread', newResults: 'New results', attention: 'Needs attention', resultUpdates: (count: number) => `${count} new ${count === 1 ? 'result' : 'results'}`, updates: (count: number) => `${count} ${count === 1 ? 'update' : 'updates'}`, attentionCount: (count: number) => `${count} need${count === 1 ? 's' : ''} attention`, activeCount: (count: number) => `${count} active`, taskCount: (count: number) => `${count} ${count === 1 ? 'task' : 'tasks'}`, noConversations: 'No conversations match these filters.', noMessagesYet: 'No messages yet',
     localChangesKept: 'Local changes are preserved. Review the update.', locateChange: 'Locate this change.', latestSynced: 'Latest content synced.', closeCollaborationUpdate: 'Close collaboration update', gotIt: 'Got it', readingRestored: 'Returned to your previous reading position', jumpLatest: 'Jump to latest',
     tasksAria: 'Agent tasks and results', tasksEyebrow: 'Tasks', tasksTitle: 'Agent tasks', tasksDescription: 'Tasks started by Agent only. Failed tasks can be retried without replacing completed results.', taskFilters: 'Filter by task status', active: 'Active', completed: 'Completed', filterCount: (label: string, count: number) => `${label} · ${count} ${count === 1 ? 'item' : 'items'}`, sourceConversation: 'Source conversation', cancelling: 'Cancelling…', branchStatus: 'Branch status', branchIncomplete: 'This branch did not complete.', noFilteredTasks: 'No tasks match this filter.', noTasks: 'No Agent tasks yet.',
@@ -455,7 +456,7 @@ export default function AgentWorkspace({
     syncError: { title: '画布同步暂时失败', detail: '当前编辑仍在本地，稍后可以继续同步。', actionLabel: '重试同步' },
     dropImages: '松开即可添加图片素材', uploadLimits: uploadLimitsLabel('zh-CN'), imageLimit: (count: number) => `最多同时添加 ${count} 张图片，超出部分已跳过。`, imageReadFailed: '图片读取失败，请重新拖入或选择图片。',
     planningUnavailable: '暂时无法生成计划。', localPreviewChat: '本地预览模式未连接 Agent 服务；仍可使用画布和结构化 Prompt，连接云端后再使用对话、检索与执行。', localPreviewPrompt: (prompt: string) => `本地预览已整理出结构化 Prompt：\n\n${prompt}\n\n连接工作区服务后可继续检索或执行。`, confirmActionsFirst: '请先确认或跳过行动卡，再执行生成计划。', taskNotStarted: '任务没有启动，请检查参考素材与生成服务后重试。', taskStartFailed: '任务未能启动，请稍后重试。', canvasWritten: ' 已写入画布。', actionFailed: '行动执行失败，请重试。', retryWithModel: (model: string, prompt: string) => `换用${model}重新生成：${prompt}`, retrySettings: (prompt: string) => `调整输出设置后重新生成：${prompt}`, pendingQuestion: '上面还有一张待回答的确认卡，请直接在卡片里选择或填写；本次没有创建任务。', noPendingPlan: '当前没有待确认的生成计划。请直接描述要生成的画面或批量取值，Agent 会先给出待确认计划。',
-    history: '对话历史', historyUnread: (count: number) => `对话历史，${count} 个会话有更新`, conversationName: '对话名称', saveName: '保存对话名称', save: '保存', cancelName: '取消编辑对话名称', cancel: '取消', newConversation: '新对话', editName: '重命名', collaborators: (count: number) => `另有 ${count} 位协作者在线`, processing: '处理中', realtimeConnecting: '正在连接协作服务…', realtimeReconnecting: '正在重新连接…', realtimeReconnectDetail: '画布编辑暂时暂停，连接恢复后继续。',
+    history: '对话历史', historyUnread: (count: number) => `对话历史，${count} 个会话有更新`, conversationName: '对话名称', saveName: '保存对话名称', save: '保存', cancelName: '取消编辑对话名称', cancel: '取消', newConversation: '新对话', editName: '重命名', collaborators: (count: number) => `另有 ${count} 位协作者在线`, processing: '处理中', realtimeConnecting: '正在连接协作服务…', realtimeReconnecting: '正在重新连接…', realtimeReconnectDetail: '画布编辑暂时暂停，连接恢复后继续。', realtimeSynced: '已保存', realtimeSyncedDetail: '画布修改已同步到云端。', realtimeSaving: '保存中…', realtimeSavingDetail: '本地修改已安全保存，正在提交。', realtimeOfflinePending: '离线 · 待同步', realtimeOfflinePendingDetail: '本地修改已保留，联网后自动同步。', realtimeSyncing: '正在同步…', realtimeSyncingDetail: '正在拉取并重放增量，画布暂时只读。', realtimeBlocked: '同步受阻', realtimeBlockedDetail: '本地修改仍保留，请恢复项目权限或重新打开项目。',
     searchConversations: '搜索对话', searchPlaceholder: '搜索对话、消息或任务', historyFilters: '筛选协作历史', all: '全部', unread: '未读', newResults: '新结果', attention: '需处理', resultUpdates: (count: number) => `${count} 个新结果`, updates: (count: number) => `${count} 条更新`, attentionCount: (count: number) => `${count} 项需处理`, activeCount: (count: number) => `${count} 进行中`, taskCount: (count: number) => `${count} 个任务`, noConversations: '当前筛选下没有对话。', noMessagesYet: '还没有消息',
     localChangesKept: '本地改动仍保留，点击查看变更。', locateChange: '点击定位变更。', latestSynced: '最新内容已同步。', closeCollaborationUpdate: '关闭协作更新提示', gotIt: '知道了', readingRestored: '已回到上次阅读位置', jumpLatest: '跳到最新',
     tasksAria: 'Agent 任务与结果', tasksEyebrow: '任务', tasksTitle: 'Agent 任务', tasksDescription: '仅 Agent 发起的任务。失败可重试，不覆盖已完成结果。', taskFilters: '按任务状态筛选', active: '进行中', completed: '已完成', filterCount: (label: string, count: number) => `${label} · ${count} 项`, sourceConversation: '来源对话', cancelling: '取消中…', branchStatus: '分支状态', branchIncomplete: '该分支未完成', noFilteredTasks: '当前筛选下没有任务。', noTasks: '还没有 Agent 任务。',
@@ -3346,14 +3347,25 @@ export default function AgentWorkspace({
   }
 
   const persistenceIssue = persistenceStatus === 'offline' || persistenceStatus === 'conflict' || persistenceStatus === 'error'
+  const showLegacyCanvasConflict = (collaborationAwareness.syncProtocolEpoch ?? 1) < 2
   const realtimeStatus = collaborationAwareness.realtimeStatus
-  const realtimeStatusLabel = realtimeStatus === 'reconnecting'
-    ? flowCopy.realtimeReconnecting
+  const realtimeStatusPresentation = realtimeStatus === 'reconnecting'
+    ? { label: flowCopy.realtimeReconnecting, detail: flowCopy.realtimeReconnectDetail }
     : realtimeStatus === 'connecting'
-      ? flowCopy.realtimeConnecting
-      : ''
+      ? { label: flowCopy.realtimeConnecting, detail: flowCopy.realtimeConnecting }
+      : realtimeStatus === 'synced'
+        ? { label: flowCopy.realtimeSynced, detail: flowCopy.realtimeSyncedDetail }
+        : realtimeStatus === 'saving'
+          ? { label: flowCopy.realtimeSaving, detail: flowCopy.realtimeSavingDetail }
+          : realtimeStatus === 'offline_pending'
+            ? { label: flowCopy.realtimeOfflinePending, detail: flowCopy.realtimeOfflinePendingDetail }
+            : realtimeStatus === 'syncing'
+              ? { label: flowCopy.realtimeSyncing, detail: flowCopy.realtimeSyncingDetail }
+              : realtimeStatus === 'blocked'
+                ? { label: flowCopy.realtimeBlocked, detail: flowCopy.realtimeBlockedDetail }
+                : undefined
   const latestCollaborationActivity = collaborationAwareness.activities[0]
-  const persistenceCopy = persistenceStatus === 'conflict'
+  const persistenceCopy = persistenceStatus === 'conflict' && showLegacyCanvasConflict
     ? { ...flowCopy.conflict, action: 'refresh' as const }
     : persistenceStatus === 'offline'
       ? { ...flowCopy.offline, action: 'retry' as const }
@@ -3372,7 +3384,7 @@ export default function AgentWorkspace({
     resolvePersistenceIssue()
   }
   const inspectPersistenceIssue = () => {
-    if (persistenceStatus === 'conflict') {
+    if (persistenceStatus === 'conflict' && showLegacyCanvasConflict) {
       openUtilityPanel('collaboration')
       return
     }
@@ -3428,11 +3440,11 @@ export default function AgentWorkspace({
           </button>}
         </div>
         <div className="agent-workspace__header-actions">
-          {realtimeStatusLabel ? <span
+          {realtimeStatusPresentation ? <span
             className={`agent-workspace__realtime-status is-${realtimeStatus}`}
             role="status"
-            title={realtimeStatus === 'reconnecting' ? flowCopy.realtimeReconnectDetail : realtimeStatusLabel}
-          ><i aria-hidden="true" />{realtimeStatusLabel}</span> : null}
+            title={realtimeStatusPresentation.detail}
+          ><i aria-hidden="true" />{realtimeStatusPresentation.label}</span> : null}
           {collaborationAwareness.onlineCollaboratorCount ? <span
             className="agent-workspace__collaborators"
             title={flowCopy.collaborators(collaborationAwareness.onlineCollaboratorCount)}
@@ -3500,7 +3512,7 @@ export default function AgentWorkspace({
       {latestCollaborationActivity?.unread || (!utilityPanelOpen && (readingRestoreNotice || reviewProjection.failed)) ? <div className="agent-workspace__chrome">
       {latestCollaborationActivity?.unread ? <div className="agent-workspace__collaboration-notice" role="status">
         <button type="button" className="agent-workspace__collaboration-summary" onClick={() => locateCollaborationActivity(latestCollaborationActivity)}>
-          <i aria-hidden="true" /><span><strong>{latestCollaborationActivity.actorName} · {latestCollaborationActivity.summary}</strong><small>{persistenceStatus === 'conflict' ? flowCopy.localChangesKept : latestCollaborationActivity.target && latestCollaborationActivity.target.kind !== 'project' ? flowCopy.locateChange : flowCopy.latestSynced}</small></span>
+          <i aria-hidden="true" /><span><strong>{latestCollaborationActivity.actorName} · {latestCollaborationActivity.summary}</strong><small>{persistenceStatus === 'conflict' && showLegacyCanvasConflict ? flowCopy.localChangesKept : latestCollaborationActivity.target && latestCollaborationActivity.target.kind !== 'project' ? flowCopy.locateChange : flowCopy.latestSynced}</small></span>
         </button>
         <button type="button" aria-label={flowCopy.closeCollaborationUpdate} title={flowCopy.gotIt} onClick={() => void onDismissRemoteChange().catch(() => undefined)}><CloseIcon /></button>
       </div> : null}
@@ -3536,6 +3548,7 @@ export default function AgentWorkspace({
           activities={collaborationAwareness.activities}
           conflictChanges={collaborationAwareness.conflictChanges}
           conflictRevision={collaborationAwareness.conflictRevision}
+          showConflict={showLegacyCanvasConflict}
           persistenceStatus={persistenceStatus}
           onLocate={locateCollaborationActivity}
           onMarkRead={onDismissRemoteChange}

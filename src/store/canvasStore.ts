@@ -40,6 +40,7 @@ import {
 import {
   cloneEdges,
   cloneNodes,
+  hydrateAssetNodeImages,
   scrubAssetFromDocument,
   withoutReference,
 } from './canvasDocumentAssets'
@@ -48,6 +49,7 @@ import {
   normalizeCanvasDocumentBase,
 } from './canvasDocumentMigration'
 import {
+  generationJobsAfterNodeRemoval,
   materializeGenerationOutputs,
   updateTaskNodes,
 } from './canvasGenerationProjection'
@@ -58,6 +60,8 @@ const persistenceOperations = createLatestOperation()
 /** 当前会话中正在删除或已删除的全局品牌素材，阻止异步任务用旧快照回写引用。 */
 const revokedGlobalAssetIds = new Set<string>()
 const canvasReconnectMessage = '实时连接中断，画布暂时只读；连接恢复后再继续编辑。'
+const canvasSyncingMessage = '正在同步画布，完成后再继续编辑。'
+const canvasSyncBlockedMessage = '画布同步受阻，本地修改仍保留；请恢复项目权限或重新打开项目后重试。'
 
 function scrubRevokedRecipe(recipe: GenerationRecipe | undefined) {
   if (!recipe) return undefined
@@ -102,7 +106,8 @@ function clearUndoTimer() {
 }
 
 function normalizeDocument(stored: CanvasDocument | undefined): CanvasDocument {
-  const document = normalizeCanvasDocumentBase(stored, seedDocument)
+  const normalized = normalizeCanvasDocumentBase(stored, seedDocument)
+  const document = { ...normalized, nodes: hydrateAssetNodeImages(normalized.nodes, normalized, []) }
   // V18 起，同一次任务的每张输出都是画布上的独立结果节点；旧任务在首次打开时补齐。
   return document.generationJobs.reduce((nextDocument, job) => {
     if (job.status === 'succeeded' && job.outputs?.length) {
@@ -226,8 +231,10 @@ export const useCanvasStore = create<CanvasStore>((set, get) => {
     return operation
   }
   const editingBlocked = () => {
-    if (get().collaborationStatus !== 'reconnecting') return false
-    if (get().assistantMessage !== canvasReconnectMessage) set({ assistantMessage: canvasReconnectMessage })
+    const status = get().collaborationStatus
+    if (!['reconnecting', 'syncing', 'blocked'].includes(status)) return false
+    const message = status === 'blocked' ? canvasSyncBlockedMessage : status === 'syncing' ? canvasSyncingMessage : canvasReconnectMessage
+    if (get().assistantMessage !== message) set({ assistantMessage: message })
     return true
   }
   const commitCanvasEdit = (
@@ -314,14 +321,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => {
     const nodes = document.nodes.filter((node) => node.id !== nodeId)
     const edges = document.edges.filter((edge) => edge.source !== nodeId && edge.target !== nodeId)
     const removedResult = removed.type === 'result' ? removed.data as ResultNodeData : undefined
-    const generationJobs = removedResult?.jobId && removedResult.candidateId
-      ? document.generationJobs.map((job) => {
-          if (job.id !== removedResult.jobId) return job
-          const dismissedOutputIds = [...new Set([...(job.dismissedOutputIds ?? []), removedResult.candidateId!])]
-          const outputs = job.outputs?.filter((output) => output.id !== removedResult.candidateId)
-          return { ...job, outputs, outputCount: outputs?.length ?? job.outputCount, dismissedOutputIds }
-        })
-      : document.generationJobs
+    const generationJobs = generationJobsAfterNodeRemoval(document, removed)
     const nodeName = canvasNodeDisplayName(removed)
     const undoId = `undo-remove-node-${Date.now()}`
     clearUndoTimer()

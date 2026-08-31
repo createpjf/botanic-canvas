@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { agentActionManualRetryConsumptionDecision, agentActionReceiptClaimDecision, agentActionReceiptResolutionDecision, agentSkillPersistenceDecision, agentThreadSummaryCompareAndSetDecision, agentTurnExecutionClaimDecision, authoritativeAgentActionManualRetryAuthorization, committedAgentTurnExecution, finalizedAgentTurnCancellation, normalizeAgentEntityIdPage, normalizePendingAgentReviewRecoveryPage, normalizeStaleTurnQuery, normalizeTurnEventPage, normalizeUpdatedAtIdRecoveryPage, persistedAgentSkillVersion, reclaimableAgentTurnStatuses, requestedAgentTurnCancellation, settledAgentActionReceipt } from './productStoreContract.mjs'
+import { agentActionManualRetryConsumptionDecision, agentActionReceiptClaimDecision, agentActionReceiptResolutionDecision, agentSkillPersistenceDecision, agentThreadSummaryCompareAndSetDecision, agentTurnExecutionClaimDecision, authoritativeAgentActionManualRetryAuthorization, canvasGraphConflictCode, canvasMutationConflictCode, canvasSyncEpochStaleError, committedAgentTurnExecution, finalizedAgentTurnCancellation, normalizeAgentEntityIdPage, normalizeCanvasGraphMutation, normalizePendingAgentReviewRecoveryPage, normalizeStaleTurnQuery, normalizeTurnEventPage, normalizeUpdatedAtIdRecoveryPage, persistedAgentSkillVersion, reclaimableAgentTurnStatuses, requestedAgentTurnCancellation, settledAgentActionReceipt } from './productStoreContract.mjs'
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { assertProjectPermission, assertWorkspacePermission, projectPermissionDecision } from './authorization.mjs'
@@ -138,9 +138,16 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
   ensureBootstrapUser(state, bootstrapAccessToken, bootstrapEmail)
   backfillArtifactIndexes()
   persist(path, state)
+  let durableState = clone(state)
 
   function save() {
-    persist(path, state)
+    try {
+      persist(path, state)
+      durableState = clone(state)
+    } catch (error) {
+      state = clone(durableState)
+      throw error
+    }
   }
 
   function audit({ actorId, action, projectId, targetId, detail = {} }) {
@@ -350,12 +357,14 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
           ...canvasGraph(project.document),
         },
         graphRevision: 1,
+        syncProtocolEpoch: 1,
         updates: [],
         updatedAt: project.updatedAt,
       }
       state.canvasGraphs.push(entry)
       save()
     }
+    if (!Array.isArray(entry.committedMutations)) entry.committedMutations = []
     return entry
   }
 
@@ -546,6 +555,7 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
         }, agentState, { includeMessages: false }),
         revision: project.revision,
         graphRevision: graph.graphRevision,
+        syncProtocolEpoch: graph.syncProtocolEpoch ?? 1,
       }
       observeProductStoreRead('readProject', {
         projectId,
@@ -572,6 +582,12 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
       return projectPermissionDecision(role, 'edit') === 'allow'
     },
 
+    readCanvasSyncProtocolEpoch(userId, projectId) {
+      const project = state.projects.find((item) => item.id === projectId)
+      if (!project || !canAccess(project, userId)) return undefined
+      return ensureCanvasGraph(project).syncProtocolEpoch ?? 1
+    },
+
     writeProject(userId, document, expectedRevision, expectedGraphRevision) {
       const existing = state.projects.find((item) => item.id === document.id)
       if (existing) {
@@ -585,6 +601,9 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
         const graph = ensureCanvasGraph(existing)
         const nextGraph = canvasGraph(document)
         const graphChanged = !sameGraph(graph.graph, nextGraph)
+        if (graphChanged && (graph.syncProtocolEpoch ?? 1) >= 2) {
+          throw canvasSyncEpochStaleError(graph.syncProtocolEpoch)
+        }
         if (graphChanged && Number.isInteger(expectedGraphRevision) && expectedGraphRevision !== graph.graphRevision) {
           const conflict = new Error('画布图谱已被其他成员更新，请刷新后再保存。')
           conflict.code = 'CANVAS_GRAPH_CONFLICT'
@@ -607,6 +626,7 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
           document: { ...clone(existing.document), ...clone(graph.graph) },
           revision: existing.revision,
           graphRevision: graph.graphRevision,
+          syncProtocolEpoch: graph.syncProtocolEpoch ?? 1,
           created: false,
         }
       }
@@ -625,13 +645,14 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
         projectId: project.id,
         graph: canvasGraph(document),
         graphRevision: 1,
+        syncProtocolEpoch: 1,
         updates: [],
         updatedAt: project.updatedAt,
       })
       syncAgentStateFromDocument(userId, document)
       audit({ actorId: userId, action: 'project.created', projectId: project.id })
       save()
-      return { document: clone(project.document), revision: project.revision, graphRevision: 1, created: true }
+      return { document: clone(project.document), revision: project.revision, graphRevision: 1, syncProtocolEpoch: 1, created: true }
     },
 
     /**
@@ -698,29 +719,62 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
       return clone({
         graph: entry.graph,
         graphRevision: entry.graphRevision,
+        syncProtocolEpoch: entry.syncProtocolEpoch ?? 1,
         snapshot: entry.snapshot,
         updates: entry.updates,
         updatedAt: entry.updatedAt,
       })
     },
 
-    appendCanvasGraphUpdate(userId, projectId, { update, graph }) {
+    appendCanvasGraphUpdate(userId, projectId, input) {
       const project = state.projects.find((item) => item.id === projectId)
       if (!project) throw productError('未找到项目。', 'PROJECT_NOT_FOUND')
       assertProjectPermission(project.members.find((item) => item.userId === userId)?.role, 'edit', 'PROJECT_WRITE_FORBIDDEN')
-      if (typeof update !== 'string' || !update || !Array.isArray(graph?.nodes) || !Array.isArray(graph?.edges)) {
-        throw new TypeError('画布协作更新格式无效。')
-      }
+      const { update, graph, mutationId, payloadHash, expectedGraphRevision, syncProtocolEpoch } = normalizeCanvasGraphMutation(input)
       const entry = ensureCanvasGraph(project)
+      const currentSyncProtocolEpoch = entry.syncProtocolEpoch ?? 1
+      if (currentSyncProtocolEpoch >= 2 && syncProtocolEpoch !== currentSyncProtocolEpoch) {
+        throw canvasSyncEpochStaleError(currentSyncProtocolEpoch)
+      }
+      const committed = entry.committedMutations.find((item) => item.mutationId === mutationId)
+      if (committed) {
+        if (committed.payloadHash !== payloadHash) {
+          throw productError('画布协作提交身份已绑定到其他更新。', canvasMutationConflictCode)
+        }
+        return {
+          graphRevision: entry.graphRevision,
+          mutationRevision: committed.graphRevision,
+          updatedAt: entry.updatedAt,
+          updateCount: entry.updates.length,
+          duplicate: true,
+          ...(committed.update ? { update: committed.update } : {}),
+        }
+      }
+      if (Number.isInteger(expectedGraphRevision) && expectedGraphRevision !== entry.graphRevision) {
+        throw productError('画布已被其他成员更新，请重新同步。', canvasGraphConflictCode)
+      }
       entry.graph = clone(graph)
       entry.graphRevision += 1
       entry.updates.push(update)
       entry.updatedAt = now()
+      entry.committedMutations.push({
+        mutationId,
+        payloadHash,
+        update,
+        graphRevision: entry.graphRevision,
+        committedAt: entry.updatedAt,
+      })
       save()
-      return { graphRevision: entry.graphRevision, updatedAt: entry.updatedAt, updateCount: entry.updates.length }
+      return {
+        graphRevision: entry.graphRevision,
+        mutationRevision: entry.graphRevision,
+        updatedAt: entry.updatedAt,
+        updateCount: entry.updates.length,
+        duplicate: false,
+      }
     },
 
-    compactCanvasGraphUpdates(userId, projectId, { snapshot, graph }) {
+    compactCanvasGraphUpdates(userId, projectId, { snapshot, graph, expectedGraphRevision }) {
       const project = state.projects.find((item) => item.id === projectId)
       if (!project) throw productError('未找到项目。', 'PROJECT_NOT_FOUND')
       assertProjectPermission(project.members.find((item) => item.userId === userId)?.role, 'edit', 'PROJECT_WRITE_FORBIDDEN')
@@ -728,9 +782,13 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
         throw new TypeError('画布协作快照格式无效。')
       }
       const entry = ensureCanvasGraph(project)
+      if (Number.isInteger(expectedGraphRevision) && expectedGraphRevision !== entry.graphRevision) {
+        throw productError('画布已被其他成员更新，请重新同步。', canvasGraphConflictCode)
+      }
       entry.graph = clone(graph)
       entry.snapshot = snapshot
       entry.updates = []
+      entry.committedMutations.forEach((mutation) => { delete mutation.update })
       entry.updatedAt = now()
       save()
       return { graphRevision: entry.graphRevision, updatedAt: entry.updatedAt }

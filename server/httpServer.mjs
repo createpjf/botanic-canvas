@@ -104,12 +104,17 @@ async function publishGenerationProjectUpdated(event) {
   if (config.redisUrl) return agentRunEvents.publishProjectUpdated?.(event)
   return realtimeHub?.publishProjectUpdated(event)
 }
+async function publishGenerationCanvasUpdate(event) {
+  if (config.redisUrl) return canvasRealtimeEventPublisher?.publishCanvasUpdate(event)
+  return realtimeHub?.receiveCanvasUpdate(event)
+}
 const localProcessor = !redisQueue && !config.production
   ? createGenerationProcessor({
       productStore, mediaService, config,
       cancelRegistry: localJobCancelRegistry,
       publishAgentRunUpdated,
       publishProjectUpdated: publishGenerationProjectUpdated,
+      publishCanvasUpdate: publishGenerationCanvasUpdate,
       observeAgentRun,
     })
   : undefined
@@ -302,8 +307,13 @@ async function streamMedia(response, media) {
   throw new Error('不支持的媒体流类型。')
 }
 
-async function publishProjectUpdated(saved, actorId) {
-  await publishProjectUpdatedSafely(realtimeHub, saved, actorId)
+async function publishProjectUpdated(saved, actorId, graphCommit) {
+  await publishProjectUpdatedSafely(realtimeHub, saved, actorId, console, graphCommit)
+}
+
+async function commitCanvasUpdate(input) {
+  if (!realtimeHub) throw new HttpError(503, 'CANVAS_SYNC_UNAVAILABLE', 'Canvas Sync 服务尚未就绪。')
+  return realtimeHub.commitCanvasUpdate(input)
 }
 
 function expectedGraphRevision(request, fallback) {
@@ -344,6 +354,7 @@ const handleProjectRoute = createProjectRouteHandler({
   enforceRateLimit,
   securityControls,
   publishProjectUpdated,
+  commitCanvasUpdate,
   expectedGraphRevision,
   projectResponseHeaders,
 })

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { agentThreadSummaryCompareAndSetDecision, normalizeAgentEntityIdPage, normalizePendingAgentReviewRecoveryPage, normalizeStaleTurnQuery, normalizeTurnEventPage, normalizeUpdatedAtIdRecoveryPage, persistedAgentSkillVersion } from './productStoreContract.mjs'
+import { agentThreadSummaryCompareAndSetDecision, canvasGraphConflictCode, canvasMutationConflictCode, canvasSyncEpochStaleError, normalizeAgentEntityIdPage, normalizeCanvasGraphMutation, normalizePendingAgentReviewRecoveryPage, normalizeStaleTurnQuery, normalizeTurnEventPage, normalizeUpdatedAtIdRecoveryPage, persistedAgentSkillVersion } from './productStoreContract.mjs'
 import { createClient } from '@supabase/supabase-js'
 import { isRetryableSupabaseError, retrySupabaseOperation } from './supabaseRetry.mjs'
 import { decodeAuthAssurance } from './authAssurance.mjs'
@@ -146,6 +146,10 @@ function canvasGraph(document) {
     nodes: Array.isArray(document?.nodes) ? clone(document.nodes) : [],
     edges: Array.isArray(document?.edges) ? clone(document.edges) : [],
   }
+}
+
+function sameGraph(left, right) {
+  return JSON.stringify(left) === JSON.stringify(right)
 }
 
 /**
@@ -740,7 +744,7 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
         if (!role) return undefined
         const [{ data, error }, graphResult, agentState] = await Promise.all([
           supabase.from('projects').select('document, revision, updated_at').eq('id', projectId).maybeSingle(),
-          supabase.from('canvas_graphs').select('graph, revision, updated_at').eq('project_id', projectId).maybeSingle(),
+          supabase.from('canvas_graphs').select('graph, revision, sync_protocol_epoch, updated_at').eq('project_id', projectId).maybeSingle(),
           readAgentStateRows(projectId, userId, { includeMessages: false }),
         ])
         fail(error)
@@ -756,6 +760,7 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
           document: mergeAgentStateIntoDocument({ ...clone(data.document), ...clone(graph), updatedAt }, agentState, { includeMessages: false }),
           revision: data.revision,
           graphRevision: graphResult.data?.revision ?? 1,
+          syncProtocolEpoch: Number(graphResult.data?.sync_protocol_epoch ?? 1),
           readMetrics: { messageRowCount: 0, sessionCount: agentState.sessions?.length ?? 0 },
         }
       })
@@ -773,6 +778,14 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
     async canEditProject(userId, projectId) {
       const role = await memberRole(projectId, userId)
       return projectPermissionDecision(role, 'edit') === 'allow'
+    },
+
+    async readCanvasSyncProtocolEpoch(userId, projectId) {
+      if (!await memberRole(projectId, userId)) return undefined
+      const { data, error } = await supabase.from('canvas_graphs')
+        .select('sync_protocol_epoch').eq('project_id', projectId).maybeSingle()
+      fail(error)
+      return data ? Number(data.sync_protocol_epoch ?? 1) : undefined
     },
 
     /**
@@ -799,16 +812,34 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
       // 项目 RPC 一旦成功就不能回滚；先证明派生字段安全同步能力已部署，
       // 避免缺迁移时先把带旧 Summary 的兼容文档写成功再报错。
       await assertAgentDerivedFieldWriterAvailable(userId, document.id)
-      const { data: previous, error: previousError } = await supabaseRequest(() => supabase.from('projects').select('document').eq('id', document.id).maybeSingle())
+      const [{ data: previous, error: previousError }, { data: graphEntry, error: graphError }] = await Promise.all([
+        supabaseRequest(() => supabase.from('projects').select('document').eq('id', document.id).maybeSingle()),
+        supabaseRequest(() => supabase.from('canvas_graphs').select('graph, revision, sync_protocol_epoch').eq('project_id', document.id).maybeSingle()),
+      ])
       fail(previousError)
+      fail(graphError)
+      const syncProtocolEpoch = Number(graphEntry?.sync_protocol_epoch ?? 1)
+      if (syncProtocolEpoch >= 2 && !sameGraph(graphEntry?.graph ?? canvasGraph(previous?.document), canvasGraph(document))) {
+        throw canvasSyncEpochStaleError(syncProtocolEpoch)
+      }
+      const guardedGraphRevision = syncProtocolEpoch >= 2 && Number.isInteger(graphEntry?.revision)
+        ? Number(graphEntry.revision)
+        : Number.isInteger(expectedGraphRevision) ? expectedGraphRevision : null
       const { data, error } = await supabase.rpc('botanic_write_project_document', {
         p_actor: userId,
         p_document: stripAgentMessagesFromDocument(document),
         p_expected_revision: Number.isInteger(expectedRevision) ? expectedRevision : null,
-        p_expected_graph_revision: Number.isInteger(expectedGraphRevision) ? expectedGraphRevision : null,
+        p_expected_graph_revision: guardedGraphRevision,
       }).single()
       if (error?.code === '40001') throw productError('项目已被其他成员更新，请刷新后再保存。', 'PROJECT_CONFLICT')
-      if (error?.code === 'BG001') throw productError('画布已被其他成员更新，请刷新后再保存。', 'CANVAS_GRAPH_CONFLICT')
+      if (error?.code === 'BG001') {
+        if (syncProtocolEpoch >= 2) throw canvasSyncEpochStaleError(syncProtocolEpoch)
+        throw productError('画布已被其他成员更新，请刷新后再保存。', 'CANVAS_GRAPH_CONFLICT')
+      }
+      if (error?.code === '55000') {
+        const staleEpoch = Number(error.details)
+        throw canvasSyncEpochStaleError(Number.isInteger(staleEpoch) && staleEpoch > 0 ? staleEpoch : syncProtocolEpoch)
+      }
       if (error?.code === '42501') throw productError('你没有编辑该项目的权限。', 'PROJECT_WRITE_FORBIDDEN')
       fail(error, '项目保存失败。')
       try {
@@ -820,7 +851,13 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
         // 伪装成失败。读取仍会回退旧字段，下一次写入继续补偿。
         console.warn(`[agent-persistence] entity sync deferred for ${document.id}: ${caught instanceof Error ? caught.message : String(caught)}`)
       }
-      return { document: clone(data.document), revision: data.revision, graphRevision: data.graph_revision, created: data.created }
+      return {
+        document: clone(data.document),
+        revision: data.revision,
+        graphRevision: data.graph_revision,
+        syncProtocolEpoch: Number(data.sync_protocol_epoch ?? syncProtocolEpoch),
+        created: data.created,
+      }
     },
 
     async deleteProject(userId, projectId) {
@@ -849,53 +886,69 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
     },
 
     async loadCanvasCollaboration(userId, projectId) {
-      if (!await memberRole(projectId, userId)) return undefined
-      const [{ data: graphEntry, error: graphError }, { data: updates, error: updatesError }] = await Promise.all([
-        supabase.from('canvas_graphs').select('graph, revision, yjs_snapshot, updated_at').eq('project_id', projectId).maybeSingle(),
-        supabase.from('canvas_graph_updates').select('update_base64').eq('project_id', projectId).order('id', { ascending: true }),
-      ])
-      fail(graphError)
-      fail(updatesError)
-      if (!graphEntry) return undefined
+      const { data, error } = await supabase.rpc('botanic_load_canvas_collaboration', {
+        p_actor: userId,
+        p_project_id: projectId,
+      }).maybeSingle()
+      fail(error)
+      if (!data) return undefined
       return {
-        graph: clone(graphEntry.graph),
-        graphRevision: graphEntry.revision,
-        snapshot: graphEntry.yjs_snapshot ?? undefined,
-        updates: (updates ?? []).map((entry) => entry.update_base64),
-        updatedAt: new Date(graphEntry.updated_at).getTime(),
+        graph: clone(data.graph),
+        graphRevision: data.graph_revision,
+        syncProtocolEpoch: Number(data.sync_protocol_epoch ?? 1),
+        snapshot: data.snapshot ?? undefined,
+        updates: data.updates ?? [],
+        updatedAt: new Date(data.updated_at).getTime(),
       }
     },
 
-    async appendCanvasGraphUpdate(userId, projectId, { update, graph }) {
-      if (typeof update !== 'string' || !update || !Array.isArray(graph?.nodes) || !Array.isArray(graph?.edges)) {
-        throw new TypeError('画布协作更新格式无效。')
-      }
+    async appendCanvasGraphUpdate(userId, projectId, input) {
+      const { update, graph, mutationId, payloadHash, expectedGraphRevision, syncProtocolEpoch } = normalizeCanvasGraphMutation(input)
       const { data, error } = await supabase.rpc('botanic_append_canvas_graph_update', {
         p_actor: userId,
         p_project_id: projectId,
         p_update_base64: update,
         p_graph: graph,
+        p_mutation_id: mutationId,
+        p_payload_sha256: payloadHash,
+        p_expected_graph_revision: expectedGraphRevision ?? null,
+        p_sync_protocol_epoch: syncProtocolEpoch ?? null,
       }).single()
       if (error?.code === '42501') throw productError('你没有编辑该项目的权限。', 'PROJECT_WRITE_FORBIDDEN')
+      if (error?.code === '40001') throw productError('画布已被其他成员更新，请重新同步。', canvasGraphConflictCode)
+      if (error?.code === '22000') throw productError('画布协作提交身份已绑定到其他更新。', canvasMutationConflictCode)
+      if (error?.code === '55000') {
+        const syncProtocolEpoch = Number(error.details)
+        throw canvasSyncEpochStaleError(Number.isInteger(syncProtocolEpoch) && syncProtocolEpoch > 0 ? syncProtocolEpoch : undefined)
+      }
       fail(error, '画布协作更新保存失败。')
       return {
         graphRevision: data.graph_revision,
+        mutationRevision: data.mutation_revision,
         updateCount: data.update_count,
         updatedAt: new Date(data.updated_at).getTime(),
+        duplicate: data.duplicate,
+        ...(data.committed_update ? { update: data.committed_update } : {}),
       }
     },
 
-    async compactCanvasGraphUpdates(userId, projectId, { snapshot, graph }) {
+    async compactCanvasGraphUpdates(userId, projectId, { snapshot, graph, expectedGraphRevision }) {
       if (typeof snapshot !== 'string' || !snapshot || !Array.isArray(graph?.nodes) || !Array.isArray(graph?.edges)) {
         throw new TypeError('画布协作快照格式无效。')
+      }
+      if (expectedGraphRevision !== undefined
+        && (!Number.isInteger(expectedGraphRevision) || expectedGraphRevision < 1)) {
+        throw new TypeError('画布协作 expectedGraphRevision 无效。')
       }
       const { data, error } = await supabase.rpc('botanic_compact_canvas_graph_updates', {
         p_actor: userId,
         p_project_id: projectId,
         p_snapshot: snapshot,
         p_graph: graph,
+        p_expected_graph_revision: expectedGraphRevision ?? null,
       }).single()
       if (error?.code === '42501') throw productError('你没有编辑该项目的权限。', 'PROJECT_WRITE_FORBIDDEN')
+      if (error?.code === '40001') throw productError('画布已被其他成员更新，请重新同步。', canvasGraphConflictCode)
       fail(error, '画布协作快照保存失败。')
       return { graphRevision: data.graph_revision, updatedAt: new Date(data.updated_at).getTime() }
     },

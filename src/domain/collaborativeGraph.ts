@@ -21,13 +21,45 @@ type CollaborativeGraphOptions = {
 
 const localOrigin = Symbol('canvas-local')
 const remoteOrigin = Symbol('canvas-remote')
+const mediaReferenceKeys = new Set(['image', 'maskImage', 'externalImage', 'mediaUrl', 'thumbnailUrl', 'previewUrl'])
+const mediaPayloadKeys = new Set(['blob', 'dataUrl', 'base64', 'bytes', 'buffer'])
 
 function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T
 }
 
+function stableMediaReference(value: unknown) {
+  if (typeof value !== 'string' || !value.trim()) return undefined
+  return /^(?:data:|blob:|https?:|\/\/|[a-z][a-z\d+.-]*:)/i.test(value) ? undefined : value
+}
+
+function sanitizeCollaborativeValue(value: unknown, key?: string, mediaContext = false, stripExternalReferences = false): unknown {
+  if (typeof value === 'string') {
+    const normalized = value.trim()
+    if (/^(?:data:|blob:)/i.test(normalized) || (stripExternalReferences && /^(?:\/\/|[a-z][a-z\d+.-]*:)/i.test(normalized))) return undefined
+  }
+  if (value instanceof ArrayBuffer || ArrayBuffer.isView(value)) return undefined
+  if (mediaReferenceKeys.has(key ?? '') || (mediaContext && key === 'url')) return stableMediaReference(value)
+  if (mediaPayloadKeys.has(key ?? '') || (key === 'data' && typeof value === 'string' && /^(?:data:|blob:)/i.test(value))) return undefined
+  if (Array.isArray(value)) {
+    return value.map((item) => sanitizeCollaborativeValue(item, undefined, mediaContext, stripExternalReferences)).filter((item) => item !== undefined)
+  }
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).flatMap(([childKey, childValue]) => {
+      const sanitized = sanitizeCollaborativeValue(
+        childValue,
+        childKey,
+        mediaContext || key === 'media' || key === 'mask',
+        stripExternalReferences,
+      )
+      return sanitized === undefined ? [] : [[childKey, sanitized]]
+    }))
+  }
+  return value
+}
+
 function collaborativeNode(node: CanvasNode): CanvasNode {
-  const normalized = clone(node)
+  const normalized = sanitizeCollaborativeValue(node) as CanvasNode
   delete normalized.selected
   if (normalized.type === 'result' && 'selected' in normalized.data) {
     delete normalized.data.selected
@@ -39,10 +71,14 @@ function collaborativeNode(node: CanvasNode): CanvasNode {
   return normalized
 }
 
+function collaborativeEdge(edge: Edge): Edge {
+  return sanitizeCollaborativeValue(edge, undefined, false, true) as Edge
+}
+
 function normalizedGraph(graph: CollaborativeGraph): CollaborativeGraph {
   return {
     nodes: graph.nodes.map(collaborativeNode),
-    edges: graph.edges.map((edge) => clone(edge)),
+    edges: graph.edges.map(collaborativeEdge),
   }
 }
 
@@ -179,6 +215,9 @@ export function createCollaborativeGraph({
     },
     applyRemoteUpdate(update: Uint8Array) {
       Y.applyUpdate(document, update, remoteOrigin)
+    },
+    stateVector() {
+      return Y.encodeStateVector(document)
     },
     destroy() {
       document.destroy()

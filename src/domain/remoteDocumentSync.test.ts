@@ -7,6 +7,7 @@ test('旧版 412 与新版 409 的项目和画布版本冲突使用同一判定'
   assert.equal(isRemoteDocumentConflict({ status: 412 }), true)
   assert.equal(isRemoteDocumentConflict({ status: 409, code: 'CANVAS_GRAPH_CONFLICT' }), true)
   assert.equal(isRemoteDocumentConflict({ status: 409, code: 'PROJECT_CONFLICT' }), true)
+  assert.equal(isRemoteDocumentConflict({ status: 409, code: 'CANVAS_SYNC_EPOCH_STALE' }), false)
   assert.equal(isRemoteDocumentConflict({ status: 422, code: 'INVALID_DOCUMENT' }), false)
 })
 

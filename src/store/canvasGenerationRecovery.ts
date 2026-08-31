@@ -10,12 +10,17 @@ function mergeGenerationJob(current: GenerationJob | undefined, recovered: Gener
     ...(current?.dismissedOutputIds ?? []),
     ...(recovered.dismissedOutputIds ?? []),
   ])]
+  const projectionDismissedAt = Math.max(
+    current?.projectionDismissedAt ?? 0,
+    recovered.projectionDismissedAt ?? 0,
+  ) || undefined
   const outputs = preferred.outputs?.filter((output) => !dismissedOutputIds.includes(output.id))
   return {
     ...preferred,
     outputs,
     outputCount: outputs?.length ?? preferred.outputCount,
     dismissedOutputIds: dismissedOutputIds.length ? dismissedOutputIds : undefined,
+    projectionDismissedAt,
   }
 }
 
@@ -27,7 +32,7 @@ function resultOutputIdentity(node: CanvasNode) {
 }
 
 function agentWorkflowNodeIds(document: CanvasDocument, jobs: GenerationJob[]) {
-  const recoverableJobs = jobs.filter((job) => job.status === 'succeeded' && job.outputs?.length && job.agentRun)
+  const recoverableJobs = jobs.filter((job) => job.status === 'succeeded' && job.outputs?.length && job.agentRun && !job.projectionDismissedAt)
   const jobIds = new Set(recoverableJobs.map((job) => job.id))
   const nodeIds = new Set<string>()
   for (const job of recoverableJobs) {
@@ -113,6 +118,8 @@ function recoverySignature(document: CanvasDocument) {
     generateNodeId: job.generateNodeId,
     resultNodeId: job.resultNodeId,
     projectWritebackPending: job.projectWritebackPending,
+    projectionDismissedAt: job.projectionDismissedAt,
+    dismissedOutputIds: job.dismissedOutputIds,
     error: job.error,
   })).sort((left, right) => left.id.localeCompare(right.id))
   return JSON.stringify({ nodes, edges, jobs })
@@ -133,7 +140,7 @@ export function mergeRecoveredGenerationJobs(current: CanvasDocument, recovered:
 
   const recoverableOutputs = new Map<string, Set<string>>()
   for (const job of jobsById.values()) {
-    if (job.status !== 'succeeded' || !job.outputs?.length) continue
+    if (job.status !== 'succeeded' || !job.outputs?.length || job.projectionDismissedAt) continue
     const outputIds = new Set(job.outputs.map((output) => output.id))
     if (job.outputs.length === 1) outputIds.add('__single__')
     recoverableOutputs.set(job.id, outputIds)

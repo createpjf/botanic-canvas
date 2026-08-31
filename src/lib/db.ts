@@ -12,6 +12,7 @@ import { reconcileAgentSessionsAfterDocumentSync, stripAgentSessionMessages } fr
 import { isRemoteDocumentConflict } from '../domain/remoteDocumentSync'
 import { ProductApiError, productRequest, serverPersistenceEnabled } from './productSession'
 import { discardLocalDraftAndRefreshRemote, persistAcceptedRemoteRefresh } from './remoteDocumentRefresh'
+import type { CanvasSyncMutation, CanvasSyncOutboxStorage } from './canvasSyncOutbox'
 
 type CanvasDocumentBackup = {
   id: string
@@ -57,6 +58,7 @@ class BotanicCanvasDatabase extends Dexie {
   documentBackups!: Table<CanvasDocumentBackup, string>
   media!: Table<CanvasMediaRecord, string>
   pendingSync!: Table<CanvasPendingSyncRecord, string>
+  canvasGraphOutbox!: Table<CanvasSyncMutation, string>
 
   constructor() {
     super('botanic-canvas-ui')
@@ -86,10 +88,25 @@ class BotanicCanvasDatabase extends Dexie {
       media: 'id, updatedAt',
       pendingSync: 'id, updatedAt',
     })
+    this.version(6).stores({
+      documents: 'id, updatedAt',
+      assetLibraries: 'id, updatedAt',
+      workflowTemplateLibraries: 'id, updatedAt',
+      documentBackups: 'id, updatedAt',
+      media: 'id, updatedAt',
+      pendingSync: 'id, updatedAt',
+      canvasGraphOutbox: 'id, projectId, createdAt',
+    })
   }
 }
 
 export const canvasDb = new BotanicCanvasDatabase()
+
+export const canvasSyncOutboxStorage: CanvasSyncOutboxStorage = {
+  put: (mutation) => enqueuePersistence(() => canvasDb.canvasGraphOutbox.put(mutation).then(() => undefined)),
+  list: (projectId) => enqueuePersistence(() => canvasDb.canvasGraphOutbox.where('projectId').equals(projectId).sortBy('createdAt')),
+  delete: (id) => enqueuePersistence(() => canvasDb.canvasGraphOutbox.delete(id)),
+}
 
 /**
  * 画布写入、全局素材迁移和跨项目删除共用一条队列。
@@ -99,6 +116,7 @@ export const canvasDb = new BotanicCanvasDatabase()
 let persistenceTail: Promise<void> = Promise.resolve()
 const remoteRevisions = new Map<string, number>()
 const remoteGraphRevisions = new Map<string, number>()
+const remoteSyncProtocolEpochs = new Map<string, number>()
 const remoteDocuments = new Map<string, CanvasDocument>()
 const remoteConflictRevisions = new Map<string, CanvasConflictRevision>()
 const remoteWriteDebounceMs = 500
@@ -122,8 +140,16 @@ function rememberRemoteRevisions(id: string, response: { revision: number; graph
   return true
 }
 
-function rememberRemoteDocument(id: string, response: { document: CanvasDocument; revision: number; graphRevision?: number }) {
+export function rememberRemoteSyncProtocolEpoch(id: string, epoch?: number) {
+  const value = Number(epoch)
+  if (!Number.isInteger(value) || value < 1) return
+  const current = remoteSyncProtocolEpochs.get(id)
+  if (current === undefined || value > current) remoteSyncProtocolEpochs.set(id, value)
+}
+
+function rememberRemoteDocument(id: string, response: { document: CanvasDocument; revision: number; graphRevision?: number; syncProtocolEpoch?: number }) {
   if (!rememberRemoteRevisions(id, response)) return false
+  rememberRemoteSyncProtocolEpoch(id, response.syncProtocolEpoch)
   remoteDocuments.set(id, response.document)
   return true
 }
@@ -141,12 +167,22 @@ export function rememberAppliedRemoteRevision(id: string, revision?: number) {
   if (current === undefined || revision > current) appliedRemoteRevisions.set(id, revision)
 }
 
+export function rememberAppliedCanvasGraphRevision(id: string, graphRevision?: number) {
+  if (typeof graphRevision !== 'number' || !Number.isInteger(graphRevision) || graphRevision < 1) return
+  const current = remoteGraphRevisions.get(id)
+  if (current === undefined || graphRevision > current) remoteGraphRevisions.set(id, graphRevision)
+}
+
 export function appliedRemoteRevision(id: string) {
   return appliedRemoteRevisions.get(id)
 }
 
 export function lastKnownRemoteRevision(id: string) {
   return remoteRevisions.get(id)
+}
+
+export function lastKnownCanvasSyncProtocolEpoch(id: string) {
+  return remoteSyncProtocolEpochs.get(id)
 }
 
 type CollectionPatch<T extends { id: string }> = {
@@ -166,7 +202,7 @@ export type RemoteCanvasDocumentRefresh = {
 }
 
 type ReadCanvasDocumentOptions = {
-  onRemoteDocument?: (refresh: RemoteCanvasDocumentRefresh) => boolean
+  onRemoteDocument?: (refresh: RemoteCanvasDocumentRefresh) => boolean | CanvasDocument
 }
 
 type RemoteWriteWaiter = {
@@ -436,7 +472,12 @@ async function clearPendingSyncDocument(id: string, savedUpdatedAt: number) {
 /** 用户选择刷新远端版本时，丢弃该项目尚未同步的本地草稿。 */
 export async function discardPendingCanvasDraft(id: string) {
   discardedDraftEpochs.set(id, (discardedDraftEpochs.get(id) ?? 0) + 1)
-  await enqueuePersistence(() => canvasDb.pendingSync.delete(id))
+  await enqueuePersistence(async () => {
+    await canvasDb.transaction('rw', canvasDb.pendingSync, canvasDb.canvasGraphOutbox, async () => {
+      await canvasDb.pendingSync.delete(id)
+      await canvasDb.canvasGraphOutbox.where('projectId').equals(id).delete()
+    })
+  })
 }
 
 /**
@@ -501,18 +542,20 @@ export function cachedProjectCapabilities(id: string) {
 async function readRemoteCanvasDocument(id: string) {
   try {
     const response = await productRequest<{
-      document: CanvasDocument; revision: number; graphRevision: number; capabilities?: string[]
+      document: CanvasDocument; revision: number; graphRevision: number; syncProtocolEpoch?: number; capabilities?: string[]
     }>(`/api/projects/${encodeURIComponent(id)}/document`, {
       timeoutMs: remoteDocumentReadTimeoutMs,
       timeoutMessage: '项目文档较大，读取超时。请稍后重试。',
     })
     if (Array.isArray(response.capabilities)) projectCapabilityCache.set(id, response.capabilities)
+    rememberRemoteSyncProtocolEpoch(id, response.syncProtocolEpoch)
     rememberRemoteDocument(id, response)
     return remoteDocuments.get(id) ?? response.document
   } catch (error) {
     if (error instanceof ProductApiError && error.status === 404) {
       remoteRevisions.delete(id)
       remoteGraphRevisions.delete(id)
+      remoteSyncProtocolEpochs.delete(id)
       remoteDocuments.delete(id)
       projectCapabilityCache.delete(id)
       return undefined
@@ -525,10 +568,11 @@ async function readRemoteCanvasDocument(id: string) {
 export async function previewRemoteCanvasDocument(id: string) {
   if (!serverPersistenceEnabled) return undefined
   try {
-    const response = await productRequest<{ document: CanvasDocument; revision: number; graphRevision?: number }>(`/api/projects/${encodeURIComponent(id)}/document`, {
+    const response = await productRequest<{ document: CanvasDocument; revision: number; graphRevision?: number; syncProtocolEpoch?: number }>(`/api/projects/${encodeURIComponent(id)}/document`, {
       timeoutMs: remoteDocumentReadTimeoutMs,
       timeoutMessage: '项目文档较大，读取超时。请稍后重试。',
     })
+    rememberRemoteSyncProtocolEpoch(id, response.syncProtocolEpoch)
     const conflict = remoteConflictRevisions.get(id)
     return {
       document: response.document,
@@ -577,7 +621,7 @@ function collectionPatch<T extends { id: string }>(previous: T[], next: T[]): Co
   } : undefined
 }
 
-function createCanvasDocumentPatch(previous: CanvasDocument, next: CanvasDocument): CanvasDocumentPatch {
+function createCanvasDocumentPatch(previous: CanvasDocument, next: CanvasDocument, includeGraph = true): CanvasDocumentPatch {
   const fields: Record<string, unknown> = {}
   // 这两个集合只允许专用工作流 API 修改；旧本地快照不能在画布冲突重试时把它们删掉。
   const ignored = new Set(['id', 'nodes', 'edges', 'productionWorkflows', 'productionWorkflowRuns'])
@@ -587,13 +631,18 @@ function createCanvasDocumentPatch(previous: CanvasDocument, next: CanvasDocumen
     const nextValue = next[key as keyof CanvasDocument]
     if (!unchanged(previousValue, nextValue)) fields[key] = nextValue
   }
-  const nodes = collectionPatch(previous.nodes, next.nodes)
-  const edges = collectionPatch(previous.edges, next.edges)
+  const nodes = includeGraph ? collectionPatch(previous.nodes, next.nodes) : undefined
+  const edges = includeGraph ? collectionPatch(previous.edges, next.edges) : undefined
   return {
     ...(Object.keys(fields).length ? { fields } : {}),
     ...(nodes ? { nodes } : {}),
     ...(edges ? { edges } : {}),
   }
+}
+
+function withoutCanvasGraph(document: CanvasDocument) {
+  const { nodes: _nodes, edges: _edges, ...metadata } = document
+  return metadata as CanvasDocument
 }
 
 async function writeRemoteCanvasDocument(document: CanvasDocument) {
@@ -603,18 +652,20 @@ async function writeRemoteCanvasDocument(document: CanvasDocument) {
   if (!remoteDocuments.has(document.id) && !remoteRevisions.has(document.id)) {
     await readRemoteCanvasDocument(document.id)
   }
+  const v2 = (lastKnownCanvasSyncProtocolEpoch(document.id) ?? 1) >= 2
   const revision = remoteRevisions.get(document.id)
   const graphRevision = remoteGraphRevisions.get(document.id)
   const previous = remoteDocuments.get(document.id)
-  const patch = previous ? createCanvasDocumentPatch(previous, persistable) : undefined
+  const patch = previous ? createCanvasDocumentPatch(previous, persistable, !v2) : undefined
+  const payload = v2 ? withoutCanvasGraph(persistable) : persistable
   const send = async (payload: CanvasDocumentPatch | CanvasDocument, method: 'PATCH' | 'PUT', expectedRevision?: number) => {
     const prepared = await serializeRemoteMediaValue(payload)
-    return productRequest<{ document: CanvasDocument; revision: number; graphRevision: number }>(`/api/projects/${encodeURIComponent(document.id)}/document`, {
+    return productRequest<{ document: CanvasDocument; revision: number; graphRevision: number; syncProtocolEpoch?: number }>(`/api/projects/${encodeURIComponent(document.id)}/document`, {
       method,
       headers: {
         'Content-Type': 'application/json',
         ...(expectedRevision === undefined ? {} : { 'If-Match': String(expectedRevision) }),
-        ...(remoteGraphRevisions.has(document.id) ? { 'X-Canvas-Graph-Revision': String(remoteGraphRevisions.get(document.id)) } : {}),
+        ...(remoteGraphRevisions.has(document.id) && !v2 ? { 'X-Canvas-Graph-Revision': String(remoteGraphRevisions.get(document.id)) } : {}),
       },
       body: JSON.stringify(prepared),
     })
@@ -624,9 +675,12 @@ async function writeRemoteCanvasDocument(document: CanvasDocument) {
   let conflictAttempts = 0
   while (true) {
     try {
-      response = await send(patch ?? persistable, patch ? 'PATCH' : 'PUT', conflictAttempts ? remoteRevisions.get(document.id) : revision)
+      response = await send(patch ?? payload, patch ? 'PATCH' : 'PUT', conflictAttempts ? remoteRevisions.get(document.id) : revision)
       break
     } catch (error) {
+      if (error instanceof ProductApiError && error.code === 'CANVAS_SYNC_EPOCH_STALE') {
+        rememberRemoteSyncProtocolEpoch(document.id, 2)
+      }
       if (!isRemoteDocumentConflict(error) || !patch || conflictAttempts >= 3) {
         if (isRemoteDocumentConflict(error)) remoteConflictRevisions.set(document.id, {
           localRevision: revision,
@@ -643,6 +697,7 @@ async function writeRemoteCanvasDocument(document: CanvasDocument) {
     }
   }
   remoteConflictRevisions.delete(document.id)
+  rememberRemoteSyncProtocolEpoch(document.id, response.syncProtocolEpoch)
   rememberRemoteDocument(document.id, {
     ...response,
     document: stripAgentSessionMessages(response.document),
@@ -663,11 +718,12 @@ export async function createCanvasProject(document: CanvasDocument) {
     return document
   }
   const prepared = await serializeRemoteMediaValue(stripAgentSessionMessages(document)) as CanvasDocument
-  const response = await productRequest<{ document: CanvasDocument; revision: number; graphRevision: number }>('/api/projects', {
+  const response = await productRequest<{ document: CanvasDocument; revision: number; graphRevision: number; syncProtocolEpoch?: number }>('/api/projects', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ document: prepared }),
   })
+  rememberRemoteSyncProtocolEpoch(document.id, response.syncProtocolEpoch)
   rememberRemoteDocument(document.id, response)
   rememberAppliedRemoteRevision(document.id, response.revision)
   await persistLocalDocument(response.document)
@@ -687,7 +743,7 @@ export async function renameCanvasProject(id: string, name: string) {
   // PATCH 成功后才携带新 revision 写回，把刚保存的名称覆盖成旧名称。
   // 只冲刷本项目：等待其他项目的远端写入会让重命名被无关的慢请求拖住。
   await flushRemoteDocumentWrite(id)
-  const send = (revision?: number) => productRequest<{ document: CanvasDocument; revision: number; graphRevision: number }>(`/api/projects/${encodeURIComponent(id)}`, {
+  const send = (revision?: number) => productRequest<{ document: CanvasDocument; revision: number; graphRevision: number; syncProtocolEpoch?: number }>(`/api/projects/${encodeURIComponent(id)}`, {
     method: 'PATCH',
     headers: {
       'Content-Type': 'application/json',
@@ -709,6 +765,7 @@ export async function renameCanvasProject(id: string, name: string) {
       await readRemoteCanvasDocument(id)
     }
   }
+  rememberRemoteSyncProtocolEpoch(id, response.syncProtocolEpoch)
   rememberRemoteDocument(id, {
     ...response,
     document: { ...response.document, name: response.document.name },
@@ -802,10 +859,11 @@ export async function writeCanvasDocument(document: CanvasDocument, options: { i
 /** 删除项目时同步清理浏览器缓存，避免远端删除后本地旧项目再次出现。 */
 export async function deleteCanvasDocument(id: string) {
   const deleteLocal = () => enqueuePersistence(async () => {
-    await canvasDb.transaction('rw', canvasDb.documents, canvasDb.documentBackups, canvasDb.pendingSync, async () => {
+    await canvasDb.transaction('rw', canvasDb.documents, canvasDb.documentBackups, canvasDb.pendingSync, canvasDb.canvasGraphOutbox, async () => {
       await canvasDb.documents.delete(id)
       await canvasDb.documentBackups.delete(id)
       await canvasDb.pendingSync.delete(id)
+      await canvasDb.canvasGraphOutbox.where('projectId').equals(id).delete()
     })
   })
 
@@ -814,10 +872,16 @@ export async function deleteCanvasDocument(id: string) {
     await productRequest<void>(`/api/projects/${encodeURIComponent(id)}`, { method: 'DELETE' })
     remoteRevisions.delete(id)
     remoteGraphRevisions.delete(id)
+    remoteSyncProtocolEpochs.delete(id)
     remoteDocuments.delete(id)
     remoteConflictRevisions.delete(id)
   } catch (error) {
     if (!(error instanceof ProductApiError && error.status === 404)) throw error
+    remoteRevisions.delete(id)
+    remoteGraphRevisions.delete(id)
+    remoteSyncProtocolEpochs.delete(id)
+    remoteDocuments.delete(id)
+    remoteConflictRevisions.delete(id)
   }
   await deleteLocal()
 }

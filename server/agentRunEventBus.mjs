@@ -67,9 +67,8 @@ function validProjectUpdateEvent(event) {
     && Number.isFinite(Number(event.revision))
     && Number.isFinite(Number(event.graphRevision))
     && Number.isFinite(Number(event.updatedAt))
-    && event.graph
-    && Array.isArray(event.graph.nodes)
-    && Array.isArray(event.graph.edges),
+    && (event.graph === undefined
+      || (Array.isArray(event.graph?.nodes) && Array.isArray(event.graph?.edges))),
   )
 }
 

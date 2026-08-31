@@ -3,6 +3,7 @@ import { requireProjectPermission } from './projectAuthorization.mjs'
 import { projectCapabilities } from './authorization.mjs'
 import { collaborationChangeFromDocuments, decodeCollaborationActivityCursor, encodeCollaborationActivityCursor } from './collaborationActivityPersistence.mjs'
 import { filterAuditEvents } from './agentActionGovernance.mjs'
+import { canvasSyncEpochStaleCode } from './productStoreContract.mjs'
 
 const projectWritePermissionCodes = new Set(['PROJECT_ACCESS_FORBIDDEN', 'PROJECT_WRITE_FORBIDDEN'])
 
@@ -23,12 +24,14 @@ export function createProjectRouteHandler({
   requireSensitiveSession,
   enforceRateLimit,
   publishProjectUpdated,
+  commitCanvasUpdate,
   expectedGraphRevision,
   projectResponseHeaders,
 }) {
   return async function handleProjectRoute(request, response, url, routeMatches) {
     const {
       document: documentMatch,
+      projectCanvasSync: canvasSyncMatch,
       project: projectMatch,
       projectMembers: memberMatch,
       projectAudit: auditMatch,
@@ -56,13 +59,49 @@ export function createProjectRouteHandler({
           return json(response, saved.created ? 201 : 200, saved, projectResponseHeaders(saved))
         } catch (caught) {
           if (caught?.code === 'MEDIA_VALIDATION_FAILED') return error(response, 400, caught.code, caught.message)
-          if (caught?.code === 'PROJECT_CONFLICT' || caught?.code === 'CANVAS_GRAPH_CONFLICT') return error(response, 409, caught.code, caught.message)
+          if (caught?.code === 'PROJECT_CONFLICT' || caught?.code === 'CANVAS_GRAPH_CONFLICT' || caught?.code === canvasSyncEpochStaleCode) return error(response, 409, caught.code, caught.message)
           return error(response, 403, 'PROJECT_CREATE_FORBIDDEN', caught instanceof Error ? caught.message : '无法新建项目。')
         }
       }
       return json(response, 405, { error: { code: 'METHOD_NOT_ALLOWED', message: '项目集合接口不支持该请求方法。' } }, {
         Allow: 'GET, POST',
       })
+    }
+
+    if (canvasSyncMatch) {
+      if (request.method !== 'POST') {
+        return json(response, 405, { error: { code: 'METHOD_NOT_ALLOWED', message: 'Canvas Sync 资源只接受提交请求。' } }, { Allow: 'POST' })
+      }
+      const user = await requireUser(request)
+      const projectId = decodeURIComponent(canvasSyncMatch[1])
+      await requireProjectPermission(productStore, user.id, projectId, 'edit')
+      const body = await readJson(request, 720_000, 'Canvas Sync 请求过大。')
+      if (body?.type !== 'canvas.crdt.update'
+        || body.projectId !== projectId
+        || typeof body.mutationId !== 'string'
+        || !/^[A-Za-z0-9._:-]{1,200}$/.test(body.mutationId)
+        || typeof body.update !== 'string'
+        || !body.update
+        || body.update.length > 700_000
+        || !/^[A-Za-z0-9+/]*={0,2}$/.test(body.update)
+        || (body.syncProtocolEpoch !== undefined
+          && (!Number.isInteger(body.syncProtocolEpoch) || body.syncProtocolEpoch < 1))) {
+        return error(response, 400, 'INVALID_CANVAS_SYNC_UPDATE', 'Canvas Sync 增量格式无效。')
+      }
+      try {
+        const committed = await commitCanvasUpdate({
+          projectId,
+          userId: user.id,
+          actorName: user.name,
+          mutationId: body.mutationId,
+          update: body.update,
+          syncProtocolEpoch: body.syncProtocolEpoch,
+        })
+        return json(response, 200, committed)
+      } catch (caught) {
+        if (caught?.code === canvasSyncEpochStaleCode) return error(response, 409, caught.code, caught.message)
+        throw caught
+      }
     }
 
     if (projectMatch && request.method === 'PATCH') {
@@ -92,7 +131,7 @@ export function createProjectRouteHandler({
         await publishProjectUpdated(saved, user.id)
         return json(response, 200, saved, projectResponseHeaders(saved))
       } catch (caught) {
-        if (caught?.code === 'PROJECT_CONFLICT' || caught?.code === 'CANVAS_GRAPH_CONFLICT') return error(response, 409, caught.code, caught.message)
+        if (caught?.code === 'PROJECT_CONFLICT' || caught?.code === 'CANVAS_GRAPH_CONFLICT' || caught?.code === canvasSyncEpochStaleCode) return error(response, 409, caught.code, caught.message)
         return error(response, 403, 'PROJECT_RENAME_FORBIDDEN', caught instanceof Error ? caught.message : '无法重命名项目。')
       }
     }
@@ -159,7 +198,7 @@ export function createProjectRouteHandler({
         return json(response, saved.created ? 201 : 200, saved, projectResponseHeaders(saved))
       } catch (caught) {
         if (caught?.code === 'MEDIA_VALIDATION_FAILED') return error(response, 400, caught.code, caught.message)
-        if (caught?.code === 'PROJECT_CONFLICT' || caught?.code === 'CANVAS_GRAPH_CONFLICT') return error(response, 409, caught.code, caught.message)
+        if (caught?.code === 'PROJECT_CONFLICT' || caught?.code === 'CANVAS_GRAPH_CONFLICT' || caught?.code === canvasSyncEpochStaleCode) return error(response, 409, caught.code, caught.message)
         if (projectWritePermissionCodes.has(caught?.code)) {
           return error(response, 403, 'PROJECT_WRITE_FORBIDDEN', caught instanceof Error ? caught.message : '没有编辑项目的权限。')
         }
@@ -193,7 +232,7 @@ export function createProjectRouteHandler({
         return json(response, 200, saved, projectResponseHeaders(saved))
       } catch (caught) {
         if (caught?.code === 'MEDIA_VALIDATION_FAILED') return error(response, 400, caught.code, caught.message)
-        if (caught?.code === 'PROJECT_CONFLICT' || caught?.code === 'CANVAS_GRAPH_CONFLICT') return error(response, 409, caught.code, caught.message)
+        if (caught?.code === 'PROJECT_CONFLICT' || caught?.code === 'CANVAS_GRAPH_CONFLICT' || caught?.code === canvasSyncEpochStaleCode) return error(response, 409, caught.code, caught.message)
         if (caught instanceof TypeError) return error(response, 400, 'INVALID_DOCUMENT_PATCH', caught.message)
         if (projectWritePermissionCodes.has(caught?.code)) {
           return error(response, 403, 'PROJECT_WRITE_FORBIDDEN', caught instanceof Error ? caught.message : '没有编辑项目的权限。')

@@ -180,6 +180,14 @@ export function createCanvasGenerationActions({
     const existingJob = get().document.generationJobs.find((item) => item.id === job.id)
     if (job.status === 'succeeded') {
       const recordedJob = recordedDocument.generationJobs.find((item) => item.id === job.id) ?? job
+      if (recordedJob.projectionDismissedAt) {
+        void commitDocument(recordedDocument, {
+          generationStatus: 'idle', generationProgress: 0, generationError: null,
+          expectedCandidateCount: 0, generationCandidates: [],
+          assistantMessage: '任务已完成，已按你的删除保留在结果面板。',
+        }, { immediate: true })
+        return
+      }
       const candidates = candidatesFromJob(recordedJob, request)
       const document = candidates.length
         ? materializeGenerationOutputs(recordedDocument, recordedJob, request)

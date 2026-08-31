@@ -29,11 +29,11 @@ import type {
   RefinementMode,
   UploadedAssetInput,
 } from '../domain/canvas'
-import type { ProjectRealtimeConnectionState } from '../domain/realtimeSync'
+import type { CanvasSyncStatus, ProjectRealtimeConnectionState } from '../domain/realtimeSync'
 
 export type GenerationStatus = 'idle' | 'uploading' | 'queued' | 'running' | 'recovering' | 'error'
 export type PersistenceStatus = 'saved' | 'saving' | 'offline' | 'conflict' | 'error'
-export type CollaborationStatus = 'disabled' | Exclude<ProjectRealtimeConnectionState, 'closed'>
+export type CollaborationStatus = 'disabled' | Exclude<ProjectRealtimeConnectionState, 'closed'> | CanvasSyncStatus
 
 export type TaskNodeIds = {
   generateNodeId: string
@@ -108,7 +108,7 @@ export type CanvasStore = {
   undoSnapshot: CanvasDocument | null
   hydrate: () => Promise<void>
   openDocument: (documentId: string) => Promise<boolean>
-  refreshDocumentFromRemote: () => Promise<boolean>
+  refreshDocumentFromRemote: (options?: { preserveCanvasGraph?: boolean }) => Promise<boolean>
   recoverGenerationResultsFromRemote: () => Promise<boolean>
   recoverUnknownGenerationSubmission: () => Promise<boolean>
   openNewDocument: (document: CanvasDocument) => void

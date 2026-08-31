@@ -94,6 +94,16 @@ export function findAvailableAsset(document: CanvasDocument, globalAssets: Asset
   return availableAssets(document, globalAssets).find((asset) => asset.id === assetId)
 }
 
+export function hydrateAssetNodeImages(nodes: CanvasNode[], document: CanvasDocument, globalAssets: AssetRecord[]) {
+  return nodes.map((node) => {
+    if (node.type !== 'asset') return node
+    const asset = findAvailableAsset(document, globalAssets, (node.data as AssetNodeData).assetId)
+    return asset && (node.data as AssetNodeData).image !== asset.image
+      ? { ...node, data: { ...node.data, image: asset.image } }
+      : node
+  }) as CanvasNode[]
+}
+
 export function withoutReference(recipe: import('../domain/canvas.ts').GenerationRecipe, assetId: string) {
   const references = recipe.references.filter((reference) => reference.assetId !== assetId)
   const primary = references.find((reference) => reference.nodeId === recipe.primaryReferenceNodeId && reference.role === '商品')
