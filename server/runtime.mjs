@@ -76,6 +76,8 @@ export function runtimeConfig(rootDir = process.cwd()) {
   // 服务端总闸门：客户端还必须逐会话明确请求。打开后原文也只随当轮响应下发，
   // 不写入 Message、Plan、Run、Turn Event 或 Artifact。
   const agentRawReasoning = (process.env.AGENT_RAW_REASONING ?? '').trim().toLowerCase() === 'true'
+  // Runtime 环内 ephemeral 压缩才可开；默认关。不进入 Coordinator CAS / Shadow / 手动压缩。
+  const agentContextLlmSummary = (process.env.AGENT_CONTEXT_LLM_SUMMARY ?? '').trim().toLowerCase() === 'true'
   const publicAppUrl = process.env.BOTANIC_WEB_URL ?? process.env.PUBLIC_APP_URL
   // Railway 不一定自动注入 NODE_ENV；正式 Web 回跳地址也应将 API 视为生产环境。
   const production = process.env.NODE_ENV === 'production'
@@ -140,6 +142,7 @@ export function runtimeConfig(rootDir = process.cwd()) {
       process.env.AGENT_MODEL_CONTEXT_POLICIES_JSON,
     ),
     agentRawReasoning,
+    agentContextLlmSummary,
     agentLegacyClientHistory: process.env.AGENT_LEGACY_CLIENT_HISTORY === 'true',
     telemetry: resolveBotanicTelemetryConfig(process.env),
     agentFeatureFlags: resolveAgentFeatureFlags(process.env),

@@ -39,6 +39,10 @@ import { createAgentContextCoordinator } from './agentContextCoordinator.mjs'
 import { resolveAgentContextRollout } from './agentContextRollout.mjs'
 import { createAgentContextObserver } from './agentContextObservability.mjs'
 import {
+  createAgentContextCheckpointEnricher,
+  createFlockContextSummaryInvoker,
+} from './agentContextSummarizer.mjs'
+import {
   AgentManualContextCompactionServiceError,
   createAgentManualContextCompactionService,
 } from './agentManualContextCompactionService.mjs'
@@ -258,6 +262,7 @@ export function createAgentRouteHandler({
       resolveVisionMedia: visionMediaResolver,
       durableSubagentRunner,
       observeAgentContext,
+      enrichAgentContextCheckpoint,
       persistUsageAnchor: persistAgentContextUsageAnchor,
       consumeWebResearchQuota,
     })
@@ -279,6 +284,7 @@ export function createAgentRouteHandler({
       turnSubmission,
       durableSubagentRunner,
       observeAgentContext,
+      enrichAgentContextCheckpoint,
       persistUsageAnchor: persistAgentContextUsageAnchor,
     })
     return compatibilityTurnModule(command)
@@ -347,6 +353,14 @@ export function createAgentRouteHandler({
   let agentContextCoordinator
   let manualAgentContextCompaction = agentManualContextCompactionService
   const observeAgentContext = createAgentContextObserver()
+  // 仅 Runtime 环内 ephemeral 压缩；默认关。不进 Coordinator CAS / Shadow / 手动压缩。
+  const enrichAgentContextCheckpoint = config.agentContextLlmSummary
+    ? createAgentContextCheckpointEnricher({
+      enabled: true,
+      invokeChat: createFlockContextSummaryInvoker(config),
+      observe: observeAgentContext,
+    })
+    : undefined
   const durableAgentContextCoordinator = () => {
     agentContextCoordinator ??= createAgentContextCoordinator({
       productStore,

@@ -42,11 +42,44 @@ const CONSTRAINT_LIMIT = 16
 const QUESTION_LIMIT = 8
 const ENTITY_LIMIT = 40
 const ARTIFACT_LIMIT = 12
+const PENDING_ACTION_LIMIT = 8
 const ARTIFACT_LABEL_LIMIT = 60
 const TEXT_LIMIT = 400
 const COVERED_MESSAGE_LIMIT = 200
 const FACT_CANDIDATE_LIMIT = COVERED_MESSAGE_LIMIT
 const SUMMARY_ARTIFACT_KINDS = new Set(['image', 'video', 'text', 'workflow', 'asset_group', 'file'])
+const SETTINGS_TEXT_LIMIT = 80
+
+function creativeSettingsFromPlan(settings) {
+  if (!settings || typeof settings !== 'object' || Array.isArray(settings)) return undefined
+  const picked = {
+    ...(typeof settings.model === 'string' && settings.model.trim()
+      ? { model: settings.model.trim().slice(0, SETTINGS_TEXT_LIMIT) }
+      : {}),
+    ...(typeof settings.aspectRatio === 'string' && settings.aspectRatio.trim()
+      ? { aspectRatio: settings.aspectRatio.trim().slice(0, SETTINGS_TEXT_LIMIT) }
+      : {}),
+    ...(typeof settings.resolution === 'string' && settings.resolution.trim()
+      ? { resolution: settings.resolution.trim().slice(0, SETTINGS_TEXT_LIMIT) }
+      : {}),
+  }
+  return Object.keys(picked).length ? picked : undefined
+}
+
+function pendingActionsFromPlan(plan) {
+  if (!Array.isArray(plan?.actions)) return []
+  return plan.actions
+    .filter((action) => action?.status === 'awaiting_confirmation')
+    .flatMap((action) => {
+      const toolName = typeof action.toolName === 'string' ? action.toolName.trim().slice(0, SETTINGS_TEXT_LIMIT) : ''
+      if (!toolName) return []
+      return [{
+        toolName,
+        label: redactSummaryText(action.label ?? toolName).slice(0, ARTIFACT_LABEL_LIMIT) || toolName,
+      }]
+    })
+    .slice(0, PENDING_ACTION_LIMIT)
+}
 
 /**
  * 摘要里的每一段文本都要过这里。
@@ -100,12 +133,14 @@ export function messageSummaryRevision(message) {
 function decisionFromMessage(message) {
   const plan = message?.plan
   if (!plan) return undefined
+  const settings = creativeSettingsFromPlan(plan.settings)
   return {
     messageId: message.id,
     intent: plan.intent,
     summary: redactSummaryText(plan.summary ?? message.content),
     ...(message.runId ? { runId: message.runId } : {}),
     ...(plan.output?.count ? { outputCount: Number(plan.output.count) } : {}),
+    ...(settings ? { settings } : {}),
     decidedAt: message.updatedAt ?? message.createdAt,
   }
 }
@@ -151,6 +186,7 @@ function summaryFactsFromMessage(message) {
         question: redactSummaryText(message.question?.question ?? message.content),
       }
     : undefined
+  const pendingActions = pendingActionsFromPlan(message?.plan)
   return {
     goals: goal ? [goal] : [],
     decisions: decision ? [decision] : [],
@@ -158,6 +194,7 @@ function summaryFactsFromMessage(message) {
       ? (message.plan?.constraints ?? []).map((constraint) => `${constraint.dimension}:${constraint.mode}`)
       : [],
     openQuestions: openQuestion?.question ? [openQuestion] : [],
+    pendingActions,
     entityIds: uniqueList([
       message?.runId,
       ...(message?.mentions ?? []).map((mention) => mention?.nodeId ?? mention?.id),
@@ -185,6 +222,7 @@ function factCandidateFromMessage(message) {
     ...(facts.decisions.length ? { decisions: facts.decisions } : {}),
     ...(facts.constraints.length ? { constraints: facts.constraints } : {}),
     ...(facts.openQuestions.length ? { openQuestions: facts.openQuestions } : {}),
+    ...(facts.pendingActions.length ? { pendingActions: facts.pendingActions } : {}),
     ...(facts.entityIds.length ? { entityIds: facts.entityIds } : {}),
     ...(facts.artifacts.length ? { artifacts: facts.artifacts } : {}),
     ...(facts.entityReferences.length ? { entityReferences: facts.entityReferences } : {}),
@@ -193,7 +231,7 @@ function factCandidateFromMessage(message) {
 
 function hasCandidateFacts(candidate) {
   return [
-    'goals', 'decisions', 'constraints', 'openQuestions',
+    'goals', 'decisions', 'constraints', 'openQuestions', 'pendingActions',
     'entityIds', 'artifacts', 'entityReferences',
   ].some((field) => Array.isArray(candidate?.[field]) && candidate[field].length > 0)
 }
@@ -311,6 +349,12 @@ export function buildThreadSummaryCheckpoint({ messages = [], previous, now = Da
   const openQuestions = newestCandidateValues(
     factCandidates, 'openQuestions', (value) => value?.messageId, QUESTION_LIMIT,
   )
+  const pendingActions = newestCandidateValues(
+    factCandidates,
+    'pendingActions',
+    (value) => value?.toolName && value?.label ? `${value.toolName}:${value.label}` : value?.toolName,
+    PENDING_ACTION_LIMIT,
+  )
   const entityIds = newestCandidateValues(factCandidates, 'entityIds', (value) => value, ENTITY_LIMIT)
   const artifacts = newestCandidateValues(factCandidates, 'artifacts', (value) => value?.id, ARTIFACT_LIMIT)
   const entityReferences = newestCandidateValues(
@@ -332,6 +376,7 @@ export function buildThreadSummaryCheckpoint({ messages = [], previous, now = Da
     decisions,
     constraints,
     openQuestions,
+    ...(pendingActions.length ? { pendingActions } : {}),
     entityIds,
     ...(artifacts.length ? { artifacts } : {}),
     ...(entityReferences.length ? { entityReferences } : {}),
@@ -368,7 +413,14 @@ export function renderThreadSummary(summary, { locale = 'zh-CN' } = {}) {
     lines.push(en ? `Stated goals: ${summary.goals.join(' / ')}` : `已表达目标：${summary.goals.join('；')}`)
   }
   if (summary.decisions?.length) {
-    const rendered = summary.decisions.map((decision) => `${decision.summary}${decision.runId ? `（${decision.runId}）` : ''}`)
+    const rendered = summary.decisions.map((decision) => {
+      const settingsText = decision.settings
+        ? [decision.settings.model, decision.settings.aspectRatio, decision.settings.resolution]
+          .filter(Boolean)
+          .join(' · ')
+        : ''
+      return `${decision.summary}${settingsText ? ` [${settingsText}]` : ''}${decision.runId ? `（${decision.runId}）` : ''}`
+    })
     lines.push(en ? `Confirmed decisions: ${rendered.join(' / ')}` : `已确认决策：${rendered.join('；')}`)
   }
   if (summary.constraints?.length) {
@@ -377,6 +429,10 @@ export function renderThreadSummary(summary, { locale = 'zh-CN' } = {}) {
   if (summary.openQuestions?.length) {
     const rendered = summary.openQuestions.map((entry) => entry.question)
     lines.push(en ? `Open questions: ${rendered.join(' / ')}` : `尚未回答的问题：${rendered.join('；')}`)
+  }
+  if (summary.pendingActions?.length) {
+    const rendered = summary.pendingActions.map((action) => `${action.label || action.toolName}（${action.toolName}）`)
+    lines.push(en ? `Pending confirmations: ${rendered.join(' / ')}` : `待确认行动：${rendered.join('；')}`)
   }
   if (summary.entityIds?.length) {
     lines.push(en ? `Referenced entities: ${summary.entityIds.join(', ')}` : `涉及实体：${summary.entityIds.join('、')}`)

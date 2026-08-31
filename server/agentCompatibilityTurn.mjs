@@ -13,6 +13,7 @@ export function createAgentCompatibilityTurn({
   turnSubmission,
   durableSubagentRunner,
   observeAgentContext,
+  enrichAgentContextCheckpoint,
   persistUsageAnchor,
 }) {
   return async function executeCompatibilityTurn({
@@ -59,6 +60,9 @@ export function createAgentCompatibilityTurn({
         ...resolveOptions,
         subagentRunner: durableSubagentRunner,
         observeAgentContext,
+        ...(typeof enrichAgentContextCheckpoint === 'function'
+          ? { enrichAgentContextCheckpoint }
+          : {}),
         ...(sessionId ? {
           persistAgentContextUsageAnchor: persistUsageAnchor({ userId: user.id, projectId, sessionId }),
         } : {}),

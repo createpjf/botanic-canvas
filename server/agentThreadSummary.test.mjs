@@ -452,3 +452,40 @@ test('没有产出时不写这个键，摘要形状与改动前一致', () => {
   assert.equal('artifacts' in checkpoint, false)
   assert.equal(/产出/u.test(renderThreadSummary(checkpoint)), false)
 })
+
+test('检查点保留创作 settings 与待确认行动，并渲染进摘要', () => {
+  const summary = buildThreadSummaryCheckpoint({
+    messages: [
+      {
+        id: 'm-plan', role: 'assistant', kind: 'plan', status: 'submitted', runId: 'run-creative',
+        content: '出两张首图。', createdAt: 1, updatedAt: 1,
+        plan: {
+          intent: 'generate_image', summary: '出两张首图。',
+          settings: { model: 'gpt-image-2', aspectRatio: '3:4', resolution: '2K' },
+          constraints: [{ dimension: 'person', mode: 'preserve' }],
+          actions: [
+            { id: 'a1', toolName: 'generate_image', label: '生成首图', status: 'awaiting_confirmation' },
+            { id: 'a2', toolName: 'generate_image', label: '生成备选', status: 'succeeded' },
+            {
+              id: 'a3', toolName: 'asset_store', label: '存 https://evil.example/x',
+              status: 'awaiting_confirmation',
+            },
+          ],
+        },
+      },
+    ],
+    now: 10,
+  })
+  assert.deepEqual(summary.decisions[0].settings, {
+    model: 'gpt-image-2', aspectRatio: '3:4', resolution: '2K',
+  })
+  assert.deepEqual(summary.pendingActions, [
+    { toolName: 'generate_image', label: '生成首图' },
+    { toolName: 'asset_store', label: '存 [链接已省略]' },
+  ])
+  const rendered = renderThreadSummary(summary)
+  assert.match(rendered, /gpt-image-2 · 3:4 · 2K/u)
+  assert.match(rendered, /待确认行动：/u)
+  assert.match(rendered, /生成首图（generate_image）/u)
+  assert.equal(rendered.includes('https://'), false)
+})
