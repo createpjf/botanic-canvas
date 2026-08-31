@@ -70,7 +70,7 @@ type CanvasGenerationDependencies = {
 export type CanvasGenerationController = {
   actions: GenerationActions
   stopPolling: () => void
-  pollJob: (jobId: string) => void
+  pollJob: (jobId: string, boundRequest?: GenerationRequest) => void
   recoverTaskNodeJobs: (documentId: string) => void
   recoverResults: (documentId: string) => Promise<boolean>
   createSubmissionKey: () => string
@@ -233,10 +233,15 @@ export function createCanvasGenerationActions({
     set(transientState)
   }
 
-  const pollJob = (jobId: string) => {
+  const pollJob = (jobId: string, boundRequest?: GenerationRequest) => {
     clearPollTimer(jobId)
     const runEpoch = pollEpoch
     let retryDelay = 1_500
+    const requestForJob = () => {
+      if (boundRequest?.jobId === jobId) return boundRequest
+      const latest = get().lastGenerationRequest
+      return latest?.jobId === jobId ? latest : boundRequest
+    }
     const schedulePoll = (delay: number) => {
       pollTimers.set(jobId, window.setTimeout(() => void poll(), delay))
     }
@@ -245,7 +250,7 @@ export function createCanvasGenerationActions({
       try {
         const job = await getGenerationJob(jobId)
         if (runEpoch !== pollEpoch) return
-        syncJob(job)
+        syncJob(job, requestForJob())
         if (job.status === 'succeeded' || job.status === 'failed' || job.status === 'cancelled') {
           clearPollTimer(jobId)
           return
@@ -314,8 +319,8 @@ export function createCanvasGenerationActions({
         if (job.status === 'queued' || job.status === 'running') {
           // 只有仍在执行、需要接管轮询的任务才成为“当前任务”。
           set({ lastGenerationRequest: request })
-          syncJob(job)
-          pollJob(job.id)
+          syncJob(job, request)
+          pollJob(job.id, request)
           return
         }
         // 已终结的任务只补投影，不改写 lastGenerationRequest。
