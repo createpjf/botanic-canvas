@@ -352,6 +352,7 @@ test('没有兼容备用模型时保留 Provider 原始错误码对应的用户�
     async recordSuccess() {},
     async recordFailure() {},
   }
+  const reportedFailures = []
   const processJob = createGenerationProcessor({
     productStore,
     mediaService: {},
@@ -365,6 +366,7 @@ test('没有兼容备用模型时保留 Provider 原始错误码对应的用户�
       error.providerResponseSummary = { type: 'object', candidateCount: 0 }
       throw error
     },
+    reportWorkerFailure: (failure, context) => reportedFailures.push({ failure, context }),
   })
 
   await processJob(storedJob.id)
@@ -373,6 +375,12 @@ test('没有兼容备用模型时保留 Provider 原始错误码对应的用户�
   assert.equal(storedJob.error, '上游请求超时，请稍后重试。')
   assert.deepEqual(storedJob.providerResponseSummary, { type: 'object', candidateCount: 0 })
   assert.doesNotMatch(storedJob.error, /备用模型|规格不兼容/)
+  // 业务终态失败不会抛出 BullMQ failed 事件，必须经 reportWorkerFailure 显式上报且可稳定聚合。
+  assert.equal(reportedFailures.length, 1)
+  assert.equal(reportedFailures[0].failure.code, 'REQUEST_TIMEOUT')
+  assert.equal(reportedFailures[0].context.tags.error_code, 'REQUEST_TIMEOUT')
+  assert.deepEqual(reportedFailures[0].context.fingerprint, ['generation-worker-terminal-failure', 'REQUEST_TIMEOUT', 'primary-image'])
+  assert.doesNotMatch(JSON.stringify(reportedFailures), /生成一张品牌首图/)
 })
 
 test('普通生成任务也由服务端把生命周期状态权威回写到项目画布', async () => {

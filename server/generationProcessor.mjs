@@ -34,6 +34,8 @@ export function createGenerationProcessor({
   clearIntervalFn = clearInterval,
   leaseTokenFactory = randomUUID,
   acquireProviderAdmission = acquireGenerationProviderAdmission,
+  // 终态失败的可聚合上报（Sentry 等）。只传错误码/Provider/模型，不传 Prompt 与媒体。
+  reportWorkerFailure = () => {},
 }) {
   function resolvedInputProvenance(provenance, input) {
     if (!provenance) return provenance
@@ -906,6 +908,18 @@ export function createGenerationProcessor({
       const detail = caught instanceof Error ? `${caught.name}: ${caught.message}` : String(caught)
       const upstream = failure.upstreamMessage ? ` 上游原文：${failure.upstreamMessage}` : ''
       console.error(`[generation] ${jobId} failed (${failure.code}): ${detail}${upstream}`)
+      try {
+        // 模型级 Provider 故障此前只在 Railway 日志可见；按码+模型稳定聚合，不逐 Job 开 Issue。
+        reportWorkerFailure(failure, {
+          tags: {
+            component: 'worker',
+            error_code: failure.code,
+            provider: latest.provider ?? 'unknown',
+            model: latest.settings?.model ?? 'unknown',
+          },
+          fingerprint: ['generation-worker-terminal-failure', failure.code, latest.settings?.model ?? 'unknown'],
+        })
+      } catch { /* 可观测性不得改变任务状态。 */ }
       // 错误码随任务落库：失败消息是给人看的，服务端的重试策略要按码分类
       // （瞬时故障可自动重试，其余停下等用户）。只存消息的话策略永远判不出来。
       let failed = await commitExecutionJob({

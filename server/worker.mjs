@@ -158,6 +158,8 @@ const worker = createGenerationWorker({
     providerCircuitBreaker: providerHealth,
     ensureReviewTask: (ownerId, runId) => reviewService.ensureReviewTaskForRun(ownerId, runId),
     enqueueDerivedTask: (kind, dedupeId, payload) => derivedQueue?.enqueue(kind, dedupeId, payload),
+    // 业务终态失败在 Worker 内部被捕获落库，不会触发 BullMQ failed 事件；这里显式上报。
+    reportWorkerFailure: (failure, context) => captureException(failure, context),
   }),
 })
 
@@ -359,9 +361,14 @@ derivedWorker.on('error', (caught) => {
 })
 // 注册幂等：BullMQ 按 repeat key 去重，多实例重复注册不会产生多份定时任务。
 for (const [kind, everyMs] of [['turn.reclaim', 60_000], ['review.run', 120_000], ['workflow.advance', 45_000], ['branch.retry', 90_000], ['run.submit', 30_000]]) {
-  await derivedQueue?.scheduleSweep(kind, everyMs).catch((caught) => {
-    console.error(`[derived] ${kind} 清扫注册失败: ${caught instanceof Error ? caught.message : String(caught)}`)
-  })
+  try {
+    await derivedQueue?.scheduleSweep(kind, everyMs)
+  } catch (caught) {
+    captureException(caught, { tags: { component: 'derived-worker', sweep: kind } })
+    await flushSentry()
+    console.error(`[derived] ${kind} 清扫注册失败，Worker 退出以便平台重启：${caught instanceof Error ? caught.message : String(caught)}`)
+    process.exit(1)
+  }
 }
 console.log('Botanic derived-task worker started (turn.reclaim 60s, review.run 120s, workflow.advance 45s, branch.retry 90s, run.submit 30s)')
 
