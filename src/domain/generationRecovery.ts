@@ -13,7 +13,7 @@ export function findUnknownSubmissionAnchor(nodes: CanvasNode[]): UnknownSubmiss
     .filter((node) => node.type === 'result')
     .filter((node) => {
       const result = node.data as ResultNodeData
-      return result.taskStatus === 'submission_unknown'
+      return (result.taskStatus === 'submission_unknown' || result.taskStatus === 'uploading')
         && !result.jobId
         && (!result.taskGroupId || result.taskGroupId === node.id)
     })
