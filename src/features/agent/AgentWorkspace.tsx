@@ -2552,7 +2552,7 @@ export default function AgentWorkspace({
         }
         routedFailedCommand.sourceMessageId = durableInputMessage.id
         routedFailedCommand.requestId = options.requestId
-          ?? `agent-chat:${sourceTurnId ?? durableInputMessage.id}`
+          ?? `agent-chat-${sourceTurnId ?? durableInputMessage.id}`
         await ensureMessageDurable(durableInputMessage)
         const response = await streamBotanicAgentChat({
           projectId,
@@ -2840,7 +2840,7 @@ export default function AgentWorkspace({
       draft.instruction,
       draft.structuredVariants,
       draft.variationAxisLabel,
-      sourceTurnId ? `agent-plan:${sourceTurnId}` : undefined,
+      sourceTurnId ? `agent-plan-${sourceTurnId}` : undefined,
       requestedIntent,
     )
     if (!nextPlan || !session || !isCurrentAgentProject()) return
