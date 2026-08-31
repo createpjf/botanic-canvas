@@ -78,6 +78,15 @@ test('引用失效在 Resolve 阶段阻断，并标明失败阶段', () => {
   )
 })
 
+test('声明过图片引用却全部无法解析时阻断，不静默降级成零引用任务', () => {
+  const run = persistentRun()
+  run.plan.contextSnapshot = [{ nodeId: 'asset-node-gone', label: '原图', kind: '素材', mediaKind: 'image' }]
+  assert.throws(
+    () => resolveCreativePlan({ run, document: projectDocument(), models }),
+    (error) => error.code === 'AGENT_REFERENCE_UNRESOLVED' && error.stage === 'resolve' && error.statusCode === 409,
+  )
+})
+
 test('Run 不属于当前画布时不进入编译', () => {
   const run = { ...persistentRun(), projectId: 'project-other' }
   assert.throws(
