@@ -868,8 +868,14 @@ function turnThreadContextV2(snapshot, model) {
 }
 
 async function executeTurnAttempt({ config, model, system, messages, registry, options, allowRawReasoning, snapshot, attempt }) {
-  const timeoutSignal = AbortSignal.timeout(config.timeoutMs)
-  const signal = options.signal ? AbortSignal.any([options.signal, timeoutSignal]) : timeoutSignal
+  // 超时按单次模型调用计，不罩整轮 tool loop：调研回合搜索+读页 8 步很容易超过
+  // 30s 整轮预算，被整体掐死后用户只看到「响应超时」。单步卡死仍在 timeoutMs 内中止；
+  // 步数由 maximumSteps 封顶，工具各有自己的超时。
+  let activeCallTimeout
+  const providerCallSignal = () => {
+    activeCallTimeout = AbortSignal.timeout(config.timeoutMs)
+    return options.signal ? AbortSignal.any([options.signal, activeCallTimeout]) : activeCallTimeout
+  }
   const fetchImpl = options.fetchImpl ?? fetch
   // 有实时通道时才向提供方请求流式；工具步仍以 loop emit 为准，禁止客户端预插成功。
   const streaming = typeof options.onEvent === 'function'
@@ -916,7 +922,7 @@ async function executeTurnAttempt({ config, model, system, messages, registry, o
               temperature: botanicAgentProviderTemperature(model),
               stream: streaming,
             }),
-            signal,
+            signal: providerCallSignal(),
           })
         let response = await requestProvider(turnMessages)
         if (!response.ok) {
@@ -936,8 +942,12 @@ async function executeTurnAttempt({ config, model, system, messages, registry, o
           }
           if (!response.ok) throw providerError(response.status)
         }
-        if (!streaming) return await response.json().catch(() => null)
-        return await readStreamedChatCompletion(response.body, {
+        if (!streaming) {
+          const parsed = await response.json().catch(() => null)
+          activeCallTimeout = undefined
+          return parsed
+        }
+        const parsed = await readStreamedChatCompletion(response.body, {
           onEvent: (event) => {
             if (event.type === 'reasoning') {
               if (allowRawReasoning) emitEvent({ type: 'reasoning', step, delta: event.delta })
@@ -946,6 +956,8 @@ async function executeTurnAttempt({ config, model, system, messages, registry, o
             if (event.type === 'answer') emitEvent({ type: 'answer', step, delta: event.delta })
           },
         })
+        activeCallTimeout = undefined
+        return parsed
       },
     })
     if (result.output && typeof result.output === 'object' && result.output.__turnKind === 'generation') {
@@ -1016,8 +1028,8 @@ async function executeTurnAttempt({ config, model, system, messages, registry, o
       // 禁止被归一成「服务不可用」后静默切换 attempt。
       throw new BotanicAgentChatError(caught.statusCode ?? 409, caught.code, caught.message, { cause: caught })
     }
-    if (timeoutSignal.aborted) throw new BotanicAgentChatError(504, 'PROVIDER_TIMEOUT', 'Agent 响应超时，请重试。')
     if (options.signal?.aborted) throw new BotanicAgentChatError(499, 'REQUEST_CANCELLED', 'Agent 请求已取消。')
+    if (activeCallTimeout?.aborted) throw new BotanicAgentChatError(504, 'PROVIDER_TIMEOUT', 'Agent 响应超时，请重试。')
     if (caught instanceof AgentToolRuntimeError) {
       throw new BotanicAgentChatError(502, 'INVALID_PROVIDER_RESPONSE', 'Agent 返回了不允许的工具调用。', { cause: caught })
     }

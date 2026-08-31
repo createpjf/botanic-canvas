@@ -169,8 +169,12 @@ function chatModelContextBinding(options, model) {
 async function executeChatAttempt({ input, config, model, system, messages, registry, mountedSkills, attemptId, options, allowRawReasoning, emitEvent, streaming }) {
   const hasWebSearch = Boolean(registry.get('web_search'))
   const hasWebFetch = Boolean(registry.get('web_fetch'))
-  const timeoutSignal = AbortSignal.timeout(config.timeoutMs)
-  const signal = options.signal ? AbortSignal.any([options.signal, timeoutSignal]) : timeoutSignal
+  // 超时按单次模型调用计，不罩整轮 tool loop；与 Turn 链路同一语义。
+  let activeCallTimeout
+  const providerCallSignal = () => {
+    activeCallTimeout = AbortSignal.timeout(config.timeoutMs)
+    return options.signal ? AbortSignal.any([options.signal, activeCallTimeout]) : activeCallTimeout
+  }
   const fetchImpl = options.fetchImpl ?? fetch
   const contextBinding = chatModelContextBinding(options, model)
   const snapshot = freezeAgentStepSnapshot({
@@ -223,16 +227,20 @@ async function executeChatAttempt({ input, config, model, system, messages, regi
             temperature: botanicAgentProviderTemperature(model),
             stream: streaming,
           }),
-          signal,
+          signal: providerCallSignal(),
         })
         if (!response.ok) {
           const failureBody = await response.text().catch(() => '')
           throwIfAgentProviderContextOverflow(response.status, failureBody)
           throw providerError(response.status)
         }
-        if (!streaming) return await response.json().catch(() => null)
+        if (!streaming) {
+          const parsed = await response.json().catch(() => null)
+          activeCallTimeout = undefined
+          return parsed
+        }
         // 传输层把增量还原成非流式形状，工具循环下游完全不感知流式。
-        return await readStreamedChatCompletion(response.body, {
+        const parsed = await readStreamedChatCompletion(response.body, {
           onEvent: (event) => {
             if (event.type === 'reasoning') {
               if (allowRawReasoning) emitEvent({ type: 'reasoning', step, delta: event.delta })
@@ -241,6 +249,8 @@ async function executeChatAttempt({ input, config, model, system, messages, regi
             if (event.type === 'answer') emitEvent({ type: 'answer', step, delta: event.delta })
           },
         })
+        activeCallTimeout = undefined
+        return parsed
       },
     })
     if (typeof result.output !== 'string' || !result.output.trim()) {
@@ -269,8 +279,8 @@ async function executeChatAttempt({ input, config, model, system, messages, regi
         || caught.code.startsWith('AGENT_ACTION_'))) {
       throw new BotanicAgentChatError(caught.statusCode ?? 409, caught.code, caught.message)
     }
-    if (timeoutSignal.aborted) throw new BotanicAgentChatError(504, 'PROVIDER_TIMEOUT', 'Agent 对话超时，请重试。')
     if (options.signal?.aborted) throw new BotanicAgentChatError(499, 'REQUEST_CANCELLED', 'Agent 对话请求已取消。')
+    if (activeCallTimeout?.aborted) throw new BotanicAgentChatError(504, 'PROVIDER_TIMEOUT', 'Agent 对话超时，请重试。')
     if (caught instanceof AgentToolRuntimeError) {
       throw new BotanicAgentChatError(502, 'INVALID_PROVIDER_RESPONSE', 'Agent 返回了不允许的工具调用。')
     }

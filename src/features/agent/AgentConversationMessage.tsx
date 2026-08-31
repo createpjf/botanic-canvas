@@ -72,6 +72,7 @@ import type { BotanicAgentRunReview } from '../../domain/agentReviewContract'
 import {
   agentMcpServerBrandLogoSrc,
   agentMcpServerIdFromLabel,
+  agentTimelineHasRenderableContent,
   agentTimelineOrbState,
   agentTimelineStepToolName,
   agentToolAccordionElapsedLabel,
@@ -1213,8 +1214,8 @@ export function AgentConversationMessage({
       ? streaming
         ? message.content
           ? <AgentPromptResponse content={message.content} prompt={message.prompt} mentionCatalog={mentionCatalog} />
-          // 已有时间线 / accordion 时进度在上面，不再叠一句空正文占位。
-          : timeline ? null : <p className="agent-message__pending">{t('正在规划这一步…', 'Planning the next step…')}</p>
+          // 时间线画得出内容时进度在上面；空时间线仍要占位，不能让气泡整段空白。
+          : timeline && agentTimelineHasRenderableContent(timeline) ? null : <p className="agent-message__pending">{t('正在规划这一步…', 'Planning the next step…')}</p>
         : <AgentCollapsibleContent content={message.content} prompt={message.prompt} mentionCatalog={mentionCatalog} />
       : <AgentMessageRichContent content={message.content} mentions={message.mentions} catalogs={mentionCatalog} />) : null
 
