@@ -1,3 +1,5 @@
+// @ts-check
+
 import { AgentToolRuntimeError } from './agentToolRuntime.mjs'
 
 /**
@@ -103,6 +105,7 @@ export function applyBotanicAgentCanvasNodeDeletion(document, { nodeIds }, now =
  */
 export function createCanvasAgentEditExecutors({ productStore, publishProjectUpdated, models, userId, projectId }) {
   const editDocument = async (mutate) => {
+    /** @type {any} */
     let edited
     const mutateDocument = (document) => {
       edited = mutate(document)
@@ -118,12 +121,13 @@ export function createCanvasAgentEditExecutors({ productStore, publishProjectUpd
         saved = await productStore.writeProject(userId, mutateDocument(project.document), project.revision, project.graphRevision)
       }
     } catch (caught) {
-      if (caught?.code === 'PROJECT_CONFLICT' || caught?.code === 'CANVAS_GRAPH_CONFLICT') {
+      const failure = /** @type {any} */ (caught)
+      if (failure?.code === 'PROJECT_CONFLICT' || failure?.code === 'CANVAS_GRAPH_CONFLICT') {
         throw editError('CANVAS_EDIT_CONFLICT', '画布刚被其他改动更新，请重试本次修改。', 409)
       }
       throw caught
     }
-    if (!saved) throw editError('PROJECT_NOT_FOUND', '未找到当前项目。', 404)
+    if (!saved || !edited) throw editError('PROJECT_NOT_FOUND', '未找到当前项目。', 404)
     await publishProjectUpdated(saved, userId)
     return { saved, edited }
   }
