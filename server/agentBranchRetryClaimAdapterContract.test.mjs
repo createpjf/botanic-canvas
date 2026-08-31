@@ -114,6 +114,9 @@ test('PostgreSQL/Supabase Adapter 与新增 migration 暴露同一原子 Branch 
 
   assert.match(postgres, /async claimAgentBranchRetry\(/u)
   assert.match(postgres, /for update/u)
+  // agent_runs.updated_at 是 epoch-ms bigint；写 to_timestamp 会 500（BOTANIC-CANVAS-7）。
+  assert.match(postgres, /updated_at = \$\{decision\.run\.updatedAt\}/u)
+  assert.doesNotMatch(postgres, /to_timestamp\(/u)
   assert.match(supabase, /botanic_claim_agent_branch_retry/u)
   assert.match(migration, /create or replace function public\.botanic_claim_agent_branch_retry\(/u)
   assert.match(migration, /for update/u)
