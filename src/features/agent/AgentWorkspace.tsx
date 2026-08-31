@@ -314,6 +314,7 @@ export default function AgentWorkspace({
   onUseResultContext,
   onRetryPersistence,
   onRefreshRemote,
+  onBindBrand,
   collaborationAwareness,
   onDismissRemoteChange,
   onClearCollaborationActivities,
@@ -401,6 +402,7 @@ export default function AgentWorkspace({
   onUseResultContext: (sourceNodeIds: string[]) => void
   onRetryPersistence: () => Promise<boolean>
   onRefreshRemote: () => Promise<boolean>
+  onBindBrand: (brandId: string) => Promise<boolean>
   onDismissRemoteChange: () => Promise<void>
   onClearCollaborationActivities: () => Promise<void>
   onLoadMoreCollaborationActivities: () => Promise<void>
@@ -432,7 +434,7 @@ export default function AgentWorkspace({
     promptMissing: 'I could not find the prompt you referenced. Ask Agent to write one or paste the complete prompt. The canvas was not changed.',
     settingsMissing: 'No complete generation settings are available. Check the model catalog.', planFailed: 'Unable to create the generation plan. Try again shortly.', customDirection: 'Custom direction',
     usePrompt: 'Use this prompt to generate', nextRoundOne: 'Continue from this result:', nextRoundMany: (count: number) => `Continue from these ${count} results:`, continueArtifact: (label: string) => `Continue editing “${label}”:`,
-    conflict: { title: 'A newer canvas version is available', detail: 'Your local draft and generation results are preserved.', actionLabel: 'Review changes' },
+    conflict: { title: 'A newer canvas version is available', detail: 'Your local draft and generation results are preserved.', actionLabel: 'Review changes' }, useRemoteConfirm: 'Replace this local draft with the cloud version?',
     offline: { title: 'Using an offline draft', detail: 'This edit will sync when the connection is restored.', actionLabel: 'Retry sync' },
     syncError: { title: 'Canvas sync is temporarily unavailable', detail: 'Your current edits remain saved locally and can sync later.', actionLabel: 'Retry sync' },
     dropImages: 'Drop to add image assets', uploadLimits: uploadLimitsLabel('en'), imageLimit: (count: number) => `You can add up to ${count} images at once. Extra images were skipped.`, imageReadFailed: 'Unable to read the images. Drop or select them again.',
@@ -448,7 +450,7 @@ export default function AgentWorkspace({
     promptMissing: '没有找到你指的 Prompt。请先让 Agent 写一段 Prompt，或粘贴完整 Prompt；本次没有改动画布。',
     settingsMissing: '当前没有可用的完整生成设置，请检查模型目录。', planFailed: '暂时无法创建生成计划。', customDirection: '自定义优化方向',
     usePrompt: '使用这段 Prompt 生成', nextRoundOne: '基于这张结果继续生成：', nextRoundMany: (count: number) => `基于这 ${count} 张结果继续生成：`, continueArtifact: (label: string) => `基于「${label}」继续修改：`,
-    conflict: { title: '画布有新的云端版本', detail: '本地草稿仍保留，生成任务与结果不会丢失。', actionLabel: '查看变更' },
+    conflict: { title: '画布有新的云端版本', detail: '本地草稿仍保留，生成任务与结果不会丢失。', actionLabel: '查看变更' }, useRemoteConfirm: '确定用云端版本替换当前本地草稿吗？',
     offline: { title: '正在使用离线草稿', detail: '恢复网络后会继续同步当前编辑。', actionLabel: '重试同步' },
     syncError: { title: '画布同步暂时失败', detail: '当前编辑仍在本地，稍后可以继续同步。', actionLabel: '重试同步' },
     dropImages: '松开即可添加图片素材', uploadLimits: uploadLimitsLabel('zh-CN'), imageLimit: (count: number) => `最多同时添加 ${count} 张图片，超出部分已跳过。`, imageReadFailed: '图片读取失败，请重新拖入或选择图片。',
@@ -474,7 +476,7 @@ export default function AgentWorkspace({
     ? session!.plannerModel!
     : plannerModels[0] ?? defaultAgentPlannerModels[0]
   const [composerState, updateComposerState] = useReducer(agentComposerStateReducer, initialAgentComposerState)
-  const { instruction, error, lastFailedInstruction, lastFailedCommand, lastFailedPlanMessageId, mentionQuery, pendingGenerationOverrides } = composerState
+  const { instruction, error, lastFailedInstruction, lastFailedCommand, lastFailedPlanMessageId, mentionQuery, pendingGenerationOverrides, pendingRecoveryContextSnapshot } = composerState
   const setInstruction = useCallback((value: string) => updateComposerState({ instruction: value }), [])
   const setError = useCallback((value: string) => updateComposerState({ error: value }), [])
   const setLastFailedInstruction = useCallback((value: string) => updateComposerState({
@@ -1530,6 +1532,9 @@ export default function AgentWorkspace({
   ): Promise<BotanicAgentPlan | BotanicAgentClarificationResponse | null> => {
     if (!session || !target || !isCurrentAgentProject()) return null
     const assetGroup = compatibleGroups.find((group) => group.id === groupId)
+    // 失败 Run 恢复的权威引用优先进入快照（构建时按 nodeId 去重，先到先得）。
+    const recoveryContextItems = failedCommand?.options.recoveryContextSnapshot ?? []
+    const planContextSnapshot = () => createBotanicAgentContextSnapshot([...recoveryContextItems, ...contextItems])
     const input = {
       projectId,
       locale,
@@ -1552,7 +1557,7 @@ export default function AgentWorkspace({
       generationOverrides,
       clarificationAnswers,
       creativeBrief,
-      contextSnapshot: createBotanicAgentContextSnapshot(contextItems),
+      contextSnapshot: planContextSnapshot(),
       ...(outputCount ? { outputCount } : {}),
     }
     plannerControllerRef.current?.abort()
@@ -1629,7 +1634,7 @@ export default function AgentWorkspace({
             selectedResultLabel: target.label,
             rootRecipe: target.rootRecipe,
             assetGroup,
-            contextSnapshot: createBotanicAgentContextSnapshot(contextItems),
+            contextSnapshot: planContextSnapshot(),
             ...(outputCount ? { outputCount } : {}),
             settings: { ...target.rootRecipe.settings, ...generationOverrides },
           })
@@ -1670,7 +1675,7 @@ export default function AgentWorkspace({
             rootRecipe: target.rootRecipe,
             assetGroup,
             creativeBrief,
-            contextSnapshot: createBotanicAgentContextSnapshot(contextItems),
+            contextSnapshot: planContextSnapshot(),
             ...(outputCount ? { outputCount } : {}),
           }), plannerModel, settings: { ...target.rootRecipe.settings, ...generationOverrides } }
           const applied = applyBotanicAgentVariationToPlan(fallbackPlan, {
@@ -1843,6 +1848,8 @@ export default function AgentWorkspace({
       ...lockedContextIds,
     ])]
     if (recoveryContextIds.length) onUseResultContext(recoveryContextIds)
+    // 权威引用直接随下一次指令结构化下发；UI 上下文只是可见回显，不再是唯一来源。
+    updateComposerState({ pendingRecoveryContextSnapshot: run.plan.contextSnapshot?.length ? run.plan.contextSnapshot : undefined })
     setIntent(run.plan.intent)
     setGroupId('')
     setRecoveryModelMenuKey('')
@@ -1900,6 +1907,7 @@ export default function AgentWorkspace({
       ...(options.sourceTurnId ? { turnId: options.sourceTurnId } : {}),
       options: {
         ...(options.generationOverrides ? { generationOverrides: options.generationOverrides } : {}),
+        ...(options.recoveryContextSnapshot?.length ? { recoveryContextSnapshot: options.recoveryContextSnapshot } : {}),
         ...(options.clarificationAnswers ? { clarificationAnswers: options.clarificationAnswers } : {}),
         ...(options.creativeBrief ? { creativeBrief: options.creativeBrief } : {}),
         ...(options.sourcePromptMessageId ? { sourcePromptMessageId: options.sourcePromptMessageId } : {}),
@@ -2627,7 +2635,11 @@ export default function AgentWorkspace({
       target: instructionTarget
         ? { id: instructionTarget.id, label: instructionTarget.label, image: instructionTarget.image, inheritedSettings: instructionTarget.rootRecipe.settings }
         : undefined,
-      contextItems,
+      // 失败 Run 恢复的权威引用排在最前：身份、顺序与角色以原计划快照为准，
+      // 快照构建会按 nodeId 去重，UI 里新增的引用仍可追加在后。
+      contextItems: resolvedOptions.recoveryContextSnapshot?.length
+        ? [...resolvedOptions.recoveryContextSnapshot, ...contextItems]
+        : contextItems,
       variationAssetGroup: variationGroup
         ? { id: variationGroup.id, role: variationGroup.role, assetCount: variationGroup.assetIds.length }
         : undefined,
@@ -3144,7 +3156,7 @@ export default function AgentWorkspace({
     setLastFailedPlanMessageId('')
     setInstruction('')
     setMentionQuery(undefined)
-    setPendingGenerationOverrides({})
+    updateComposerState({ pendingGenerationOverrides: {}, pendingRecoveryContextSnapshot: undefined })
     void runInstruction(retryInstruction, {
       ...command?.options,
       ...(command?.sourceMessageId
@@ -3182,12 +3194,14 @@ export default function AgentWorkspace({
     setMentionQuery(undefined)
     setLastFailedPlanMessageId('')
     const generationOverrides = pendingGenerationOverrides
-    setPendingGenerationOverrides({})
+    const recoveryContextSnapshot = pendingRecoveryContextSnapshot
+    updateComposerState({ pendingGenerationOverrides: {}, pendingRecoveryContextSnapshot: undefined })
     try {
       await runInstruction(prepared.instruction, {
         appendUser: prepared.content,
         mentions: prepared.mentions,
         generationOverrides,
+        ...(recoveryContextSnapshot?.length ? { recoveryContextSnapshot } : {}),
       })
     } finally {
       sendingInstructionRef.current = false
@@ -3320,6 +3334,10 @@ export default function AgentWorkspace({
   const keepLocalDraft = () => {
     setPersistenceAction('retry')
     void onRetryPersistence().catch(() => undefined).finally(() => setPersistenceAction(''))
+  }
+  const useRemoteCanvas = () => {
+    if (!window.confirm(flowCopy.useRemoteConfirm)) return
+    resolvePersistenceIssue()
   }
   const inspectPersistenceIssue = () => {
     if (persistenceStatus === 'conflict') {
@@ -3491,7 +3509,7 @@ export default function AgentWorkspace({
           onMarkRead={onDismissRemoteChange}
           onClear={onClearCollaborationActivities}
           onKeepLocal={keepLocalDraft}
-          onUseRemote={resolvePersistenceIssue}
+          onUseRemote={useRemoteCanvas}
           historyStatus={collaborationAwareness.historyStatus}
           historyHasMore={collaborationAwareness.historyHasMore}
           historyErrorAction={collaborationAwareness.historyErrorAction}
@@ -3504,6 +3522,7 @@ export default function AgentWorkspace({
         /></div> : null}
         {brandPanelOpen ? <div data-agent-flip className="agent-workspace__flip-surface"><BrandKitPanel
           projectId={projectId}
+          onBindBrand={onBindBrand}
         /></div> : null}
         {memoryPanelOpen ? <div data-agent-flip className="agent-workspace__flip-surface"><AgentMemoryPanel
           memory={memory}

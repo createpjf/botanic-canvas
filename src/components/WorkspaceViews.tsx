@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type MouseEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
 import type { WorkspaceAuditEvent } from '../domain/auditEvents'
 import { formatProductNumber, formatProductRelativeTime, type LocalizedText, type ProductLocale } from '../i18n/core'
 import { useProductI18n, useProductMessages } from '../i18n/react'
@@ -26,6 +26,7 @@ const projectLibraryMessages = {
     title: '创意项目', eyebrow: '创意项目', description: '从不同的商品与创作目标，进入各自独立的画布。', updating: '正在更新…',
     loadTitle: '项目列表暂时无法加载', loadError: '请检查网络或稍后重试。', retry: '重试', loadingAria: '正在加载项目',
     newProject: '新建项目', newProjectDescription: '从空白画布开始', noCover: '尚未生成封面',
+    searchProjects: '搜索项目', searchPlaceholder: '按项目名称或内容搜索', noSearchResults: '没有匹配的项目。',
     renameTitle: '重命名项目', settingsEyebrow: '项目设置', projectName: '项目名称', cancel: '取消', save: '保存', deleteTitle: '删除项目', deleteEyebrow: '删除项目',
     deleteDescription: '项目画布、生成结果和项目私有素材会被永久删除，无法恢复。', confirmDelete: '确认删除',
     renameError: '项目名称未保存，请检查网络后重试。', deleteError: '删除未完成，请稍后重试。', createError: '新建项目失败，请检查网络后重试。',
@@ -38,6 +39,7 @@ const projectLibraryMessages = {
     title: 'Creative projects', eyebrow: 'Projects', description: 'One canvas per product and brief.', updating: 'Updating…',
     loadTitle: 'Projects are temporarily unavailable', loadError: 'Check your connection and try again.', retry: 'Try again', loadingAria: 'Loading projects',
     newProject: 'New project', newProjectDescription: 'Blank canvas', noCover: 'No cover yet',
+    searchProjects: 'Search projects', searchPlaceholder: 'Search by project name or content', noSearchResults: 'No matching projects.',
     renameTitle: 'Rename project', settingsEyebrow: 'Settings', projectName: 'Project name', cancel: 'Cancel', save: 'Save', deleteTitle: 'Delete project', deleteEyebrow: 'Delete',
     deleteDescription: 'The project canvas, generated outputs, and private project assets will be permanently deleted.', confirmDelete: 'Delete project',
     renameError: 'The project name was not saved. Check your connection and try again.', deleteError: 'The project could not be deleted. Try again shortly.', createError: 'The project could not be created. Check your connection and try again.',
@@ -118,6 +120,7 @@ export function ProjectLibrary({
   const [deletingProject, setDeletingProject] = useState<WorkspaceProject | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [creating, setCreating] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
   const [operationError, setOperationError] = useState('')
   const [accountMenuAnchor, setAccountMenuAnchor] = useState<AccountMenuAnchor | null>(null)
   const [accountDialog, setAccountDialog] = useState<'profile' | 'security' | 'members' | 'audit' | null>(null)
@@ -137,6 +140,10 @@ export function ProjectLibrary({
   const visibleDeletingProject = useRetainedValue(deletingProject)
   useRestoreFocus(Boolean(editingProject || deletingProject))
   const projectDialogRef = useDialogFocusTrap(Boolean(editingProject || deletingProject))
+  const normalizedSearchQuery = searchQuery.trim().toLocaleLowerCase(locale)
+  const visibleProjects = useMemo(() => normalizedSearchQuery
+    ? projects.filter((project) => `${project.name} ${project.summaryByLocale?.[locale] ?? project.summary}`.toLocaleLowerCase(locale).includes(normalizedSearchQuery))
+    : projects, [locale, normalizedSearchQuery, projects])
 
   useEffect(() => {
     setProjectName(editingProject?.name ?? '')
@@ -242,13 +249,17 @@ export function ProjectLibrary({
           <div><strong>{copy.loadTitle}</strong><span>{locale === 'zh-CN' ? loadError : copy.loadError}</span></div>
           <button type="button" onClick={onRetry} disabled={loading}>{copy.retry}</button>
         </section> : null}
+        {projects.length ? <label className="project-library-search">
+          <span className="visually-hidden">{copy.searchProjects}</span>
+          <input type="search" value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder={copy.searchPlaceholder} aria-label={copy.searchProjects} />
+        </label> : null}
         {loading && projects.length === 0 ? <div className="project-library-page__grid project-library-page__grid--loading" role="status" aria-label={copy.loadingAria}>
           {[0, 1, 2].map((index) => <div className="project-card project-card--skeleton" key={index} />)}
-        </div> : <div className="project-library-page__grid">
-          <button type="button" className="project-card project-card--new" onClick={() => void createProject()} disabled={creating}>
+        </div> : normalizedSearchQuery && visibleProjects.length === 0 ? <p className="project-library-search-empty" role="status">{copy.noSearchResults}</p> : <div className="project-library-page__grid">
+          {!normalizedSearchQuery ? <button type="button" className="project-card project-card--new" onClick={() => void createProject()} disabled={creating}>
             <i>＋</i><strong>{copy.newProject}</strong><span>{copy.newProjectDescription}</span>
-          </button>
-          {projects.map((project) => (
+          </button> : null}
+          {visibleProjects.map((project) => (
             <article
               className="project-card"
               key={project.id}

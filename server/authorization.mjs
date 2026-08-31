@@ -40,6 +40,7 @@ export function workspacePermissionDecision(user, permission) {
 export function productAuthorizationError(message, code) {
   const error = new Error(message)
   error.code = code
+  error.statusCode = 403
   return error
 }
 

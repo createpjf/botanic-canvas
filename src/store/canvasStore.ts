@@ -27,8 +27,7 @@ import {
   writeCanvasDocument,
 } from '../lib/db'
 import { cancelPersistentBotanicAgentRun, retryPersistentBotanicAgentBranch, submitPersistentBotanicAgentSession } from '../lib/agentApi'
-import { serverPersistenceEnabled } from '../lib/productSession'
-import { ProductApiError } from '../lib/productSession'
+import { ProductApiError, serverPersistenceEnabled } from '../lib/productSession'
 import type { CanvasStore, GenerationRequest } from './canvasStore.types'
 import { createCanvasAgentActions } from './canvasAgentActions'
 import { createCanvasBatchVariationActions } from './canvasBatchVariationActions'
@@ -252,6 +251,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => {
     stopGenerationPolling: generation.stopPolling,
     pollGenerationJob: generation.pollJob,
     recoverGenerationResults: generation.recoverResults,
+    commitDocument: commitCanvasEdit,
   })
   const assetGraphActions = createCanvasAssetGraphActions({
     set,
@@ -282,8 +282,6 @@ export const useCanvasStore = create<CanvasStore>((set, get) => {
 
   ...documentLifecycle,
   ...assetGraphActions,
-
-
 
   ...createCanvasAgentActions({
     set,

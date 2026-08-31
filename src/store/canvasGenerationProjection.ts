@@ -267,9 +267,12 @@ const generationSubmissionTimeoutMs = 5 * 60_000
 
 /**
  * 提交请求在写入服务端 jobId 前中断时，旧版本会把占位结果永久恢复为 uploading。
- * 打开画布时把超过时限的占位任务变为可重试失败状态。
+ * 打开画布时把超过时限的占位任务变为可重试失败状态；恢复场景可立即收口无 jobId 占位。
  */
-export function settleExpiredGenerationSubmissions(document: CanvasDocument) {
+export function settleExpiredGenerationSubmissions(
+  document: CanvasDocument,
+  options?: { immediate?: boolean },
+) {
   const now = Date.now()
   let nextDocument = document
   let changed = false
@@ -281,15 +284,23 @@ export function settleExpiredGenerationSubmissions(document: CanvasDocument) {
       result.taskStatus !== 'uploading'
       || result.jobId
       || !result.outputOf
-      || !result.submittedAt
-      || now - result.submittedAt < generationSubmissionTimeoutMs
     ) continue
+    const generateNode = nextDocument.nodes.find((node) => node.id === result.outputOf && node.type === 'generate')
+    const generate = generateNode?.type === 'generate' ? generateNode.data as GenerateNodeData : undefined
+    const submissionKey = result.submissionKey ?? generate?.submissionKey
+    // 有幂等键的 uploading 占位应走 recovering 确认，不能刷新即标 failed 诱发重复提交。
+    if (options?.immediate && submissionKey) continue
+    if (!options?.immediate) {
+      if (!result.submittedAt || now - result.submittedAt < generationSubmissionTimeoutMs) continue
+    }
     nextDocument = updateTaskNodes(
       nextDocument,
       { generateNodeId: result.outputOf, resultNodeId: node.id },
       'failed',
       undefined,
-      '任务提交超过 5 分钟，未进入生成队列。请重试。',
+      options?.immediate
+        ? '任务提交已中断，请重试。'
+        : '任务提交超过 5 分钟，未进入生成队列。请重试。',
     )
     changed = true
   }

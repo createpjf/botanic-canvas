@@ -3,16 +3,17 @@ import {
   botanicAgentNextIterationTargetId,
   collectBotanicAgentResults,
   mergeBotanicAgentArtifactIndex,
+  readBotanicAgentCanvasWritebacks,
   recordBotanicAgentCanvasWritebacks,
   expandBotanicAgentContextNodeIds,
   resolveBotanicAgentWorkflowReferenceNodeIds,
   resolveBotanicAgentCanvasCommands,
   botanicAgentBatchBranchTitles,
+  botanicAgentBranchId,
   botanicAgentLocalInitialGenerationDecision,
   type BotanicAgentActionProposal,
   type BotanicAgentActionResult,
   type BotanicAgentArtifact,
-  type BotanicAgentCanvasWriteback,
   type BotanicAgentManualRetryAuthorization,
   type BotanicAgentPlan,
 } from '../../domain/agent'
@@ -473,18 +474,21 @@ export function useCanvasAgentExecutionBridge({
       return { ...output, message: `${output.message} ${copy.projectChangedResult}` }
     }
     const canvasCommands = resolveBotanicAgentCanvasCommands(output)
-    if (useCanvasStore.getState().collaborationStatus === 'reconnecting' && canvasCommands.length) {
+    const writebacks = readBotanicAgentCanvasWritebacks(action.result)
+    const completedArtifactIds = new Set(writebacks.map((writeback) => writeback.artifactId))
+    const pendingCanvasCommands = canvasCommands.filter(({ artifact }) => !completedArtifactIds.has(artifact.id))
+    if (useCanvasStore.getState().collaborationStatus === 'reconnecting' && pendingCanvasCommands.length) {
       useCanvasStore.setState({ assistantMessage: locale === 'en'
         ? 'Realtime is reconnecting. The completed Agent result is saved and can be written back after reconnection.'
         : '实时连接正在恢复；Agent 结果已保留，连接恢复后可继续回写画布。' })
-      return { ...output, canvasWritebackPending: true }
+      return { ...recordBotanicAgentCanvasWritebacks(output, writebacks), canvasWritebackPending: true }
     }
     const nodes = useCanvasStore.getState().document.nodes
     const origin = nodes.length
       ? { x: Math.max(...nodes.map((node) => node.position.x)) + 220, y: Math.min(...nodes.map((node) => node.position.y)) + 120 }
       : { x: 180, y: 160 }
-    const writebacks: BotanicAgentCanvasWriteback[] = []
     for (const [index, resolved] of canvasCommands.entries()) {
+      if (completedArtifactIds.has(resolved.artifact.id)) continue
       const position = { x: origin.x + (index % 2) * 240, y: origin.y + Math.floor(index / 2) * 260 }
       if (resolved.command.type === 'create_text_node' && resolved.artifact.content) {
         const nodeId = addTextNode(position, { select: false })
@@ -492,6 +496,7 @@ export function useCanvasAgentExecutionBridge({
           updateTextNode(nodeId, resolved.artifact.content)
           renameCanvasNode(nodeId, resolved.artifact.label)
           writebacks.push({ artifactId: resolved.artifact.id, nodeId })
+          completedArtifactIds.add(resolved.artifact.id)
         }
       }
       if (resolved.command.type === 'create_media_node' && resolved.artifact.url) {
@@ -505,11 +510,16 @@ export function useCanvasAgentExecutionBridge({
           tags: ['Agent', resolved.artifact.provenance.externalTool ?? resolved.artifact.provenance.toolName],
         }], position)
         const nodeId = useCanvasStore.getState().document.nodes.find((node) => !existingNodeIds.has(node.id))?.id
-        if (nodeId) writebacks.push({ artifactId: resolved.artifact.id, nodeId })
+        if (nodeId) {
+          writebacks.push({ artifactId: resolved.artifact.id, nodeId })
+          completedArtifactIds.add(resolved.artifact.id)
+        }
       }
     }
     const result = recordBotanicAgentCanvasWritebacks(output, writebacks)
-    return writebacks.length === canvasCommands.length ? result : { ...result, canvasWritebackPending: true }
+    return canvasCommands.every(({ artifact }) => completedArtifactIds.has(artifact.id))
+      ? result
+      : { ...result, canvasWritebackPending: true }
   }, [addTextNode, addUploadedAssetsToCanvas, copy.projectChangedResult, document.id, locale, renameCanvasNode, updateTextNode])
 
   const confirmPlan = useCallback(async (plan: BotanicAgentPlan, submissionKey?: string) => {
@@ -525,7 +535,7 @@ export function useCanvasAgentExecutionBridge({
       ? botanicAgentBatchBranchTitles(plan, drafts.map((draft) => draft.label))
       : drafts.map((draft) => draft.label)
     const branchInputs = drafts.map((draft, index) => ({
-      branchId: `branch-${crypto.randomUUID()}`,
+      branchId: botanicAgentBranchId(submissionKey, index),
       label: labels[index] ?? draft.label,
       ...(draft.assetId ? { assetId: draft.assetId } : {}),
       ...(draft.variation ? { variation: draft.variation } : {}),

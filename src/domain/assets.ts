@@ -1,5 +1,9 @@
 import type { AssetRecord, GenerationMediaKind } from './canvas'
 
+export function createUploadedAssetId(timestamp: number, index: number) {
+  return `upload-${timestamp}-${index}-${crypto.randomUUID()}`
+}
+
 /** 兼容旧资产：V21 之前没有 mediaKind 与 collection。 */
 export function normalizeAssetMediaKind(value: GenerationMediaKind | undefined): GenerationMediaKind {
   return value === 'video' ? 'video' : 'image'

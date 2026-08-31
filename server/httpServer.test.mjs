@@ -334,6 +334,91 @@ test('Agent 行动执行中冲突经过统一 HTTP 层保留 409 与业务码', 
   assert.equal(JSON.parse(response.body).error.code, 'AGENT_ACTION_IN_PROGRESS')
 })
 
+test('Agent Run 幂等冲突经过统一 HTTP 层保留 409，不降成可重试的 INTERNAL_ERROR', async () => {
+  const dependencies = testDependencies()
+  dependencies.runtime.productStore = {
+    async authenticate() { return { id: 'user-1' } },
+    async projectAccess() { return { exists: true, role: 'owner' } },
+    async readAgentRun() {
+      return { idempotencyBinding: { version: 1, scope: 'agent-run.create', projectId: 'project-conflict', requestHash: 'another-request' } }
+    },
+    async putAgentRun() { throw new Error('幂等冲突时不应写入') },
+  }
+  const application = createBotanicHttpServer(dependencies)
+  const { response } = testResponse()
+  const request = testRequest({
+    method: 'POST',
+    url: '/api/agent-runs',
+    body: {
+      projectId: 'project-conflict',
+      plan: {
+        intent: 'initial_generation',
+        instruction: '生成一张海边人像',
+        summary: '海边人像',
+        prompt: '自然光海边人像',
+        settings: { model: 'gpt-image-2', aspectRatio: '1:1', resolution: '1K' },
+        constraints: [],
+        output: { mode: 'single', count: 1, candidatesPerItem: 1 },
+        contextSnapshot: [{ nodeId: 'asset-1', label: '参考人物', kind: '素材', mediaKind: 'image' }],
+      },
+      branches: [{ id: 'branch-agent-plan-message-1-abc123-1', label: '海边人像' }],
+    },
+  })
+  request.headers['idempotency-key'] = 'agent-plan-message-1-abc123'
+  await application.handleRequest(request, response)
+
+  assert.equal(response.statusCode, 409)
+  assert.equal(JSON.parse(response.body).error.code, 'AGENT_RUN_IDEMPOTENCY_CONFLICT')
+})
+
+test('Agent Run 目标漂移经过统一 HTTP 层保留 409，不降成可重试的 INTERNAL_ERROR', async () => {
+  const dependencies = testDependencies()
+  dependencies.runtime.productStore = {
+    async authenticate() { return { id: 'user-1' } },
+    async projectAccess() { return { exists: true, role: 'owner' } },
+    async readAgentTurn() {
+      return {
+        request: {
+          targetBinding: { nodeId: 'result-turn' },
+          selectedResultNodeId: 'result-turn',
+        },
+      }
+    },
+    async putAgentRun() { throw new Error('目标漂移时不应写入') },
+  }
+  const application = createBotanicHttpServer(dependencies)
+  const { response } = testResponse()
+  const request = testRequest({
+    method: 'POST',
+    url: '/api/agent-runs',
+    body: {
+      projectId: 'project-stale',
+      turnId: 'turn-stale',
+      plan: {
+        intent: 'replace_scene',
+        instruction: '换背景',
+        summary: '换背景',
+        prompt: '保持人物，换海边背景',
+        selectedResultNodeId: 'result-plan',
+        settings: { model: 'gpt-image-2', aspectRatio: '1:1', resolution: '1K' },
+        constraints: [{ dimension: 'scene', mode: 'vary', sourceAssetGroupId: 'group-scenes' }],
+        output: { mode: 'single', count: 1, candidatesPerItem: 1 },
+        contextSnapshot: [
+          { nodeId: 'asset-1', label: '参考', kind: '素材', mediaKind: 'image' },
+          { nodeId: 'result-plan', label: '当前结果', kind: '结果', mediaKind: 'image' },
+        ],
+        assetGroupId: 'group-scenes',
+      },
+      branches: [{ id: 'branch-stale-1', label: '换背景' }],
+    },
+  })
+  request.headers['idempotency-key'] = 'agent-run-stale-target'
+  await application.handleRequest(request, response)
+
+  assert.equal(response.statusCode, 409)
+  assert.equal(JSON.parse(response.body).error.code, 'AGENT_TARGET_STALE')
+})
+
 test('Agent 行动调和错误经过统一 HTTP 层保留状态码与业务码', async () => {
   const action = {
     id: 'action-http-reconciliation',

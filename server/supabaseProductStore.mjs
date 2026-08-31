@@ -1128,7 +1128,7 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
       }))
       if (error) {
         if (missingAgentEntityRpc(error)) {
-          throw productError('Agent Thread Summary CAS 迁移尚未部署。', 'AGENT_THREAD_SUMMARY_CAS_REQUIRED')
+          throw Object.assign(productError('Agent Thread Summary CAS 迁移尚未部署。', 'AGENT_THREAD_SUMMARY_CAS_REQUIRED'), { statusCode: 503 })
         }
         if (error.code === '42501') throw productError('你没有更新该 Agent 会话摘要的权限。', 'PROJECT_WRITE_FORBIDDEN')
         if (error.code === '22023') return { kind: 'invalid', changed: false }

@@ -95,7 +95,10 @@ function refinementReferences(run, document) {
   if (!Array.isArray(snapshot) || !snapshot.length) return []
   const nodesById = new Map((document.nodes ?? []).map((node) => [node.id, node]))
   const parentNodeId = run.plan?.selectedResultNodeId
-  return snapshot.flatMap((item, index) => {
+  const declaredImageCount = snapshot.filter((item) => (
+    (item.kind === '素材' || item.kind === '结果') && item.mediaKind === 'image' && item.nodeId !== parentNodeId
+  )).length
+  const references = snapshot.flatMap((item, index) => {
     if (item.kind !== '素材' && item.kind !== '结果') return []
     if (item.mediaKind !== 'image') return []
     if (item.nodeId === parentNodeId) return []
@@ -115,6 +118,12 @@ function refinementReferences(run, document) {
       priority: index + 1,
     }]
   })
+  // 计划声明过图片引用却一个都解析不出来，说明引用在任务创建前已丢失。
+  // 静默降级会产出与用户确认语义不符的任务（BOTANIC-CANVAS 2026-08-31 事故）。
+  if (declaredImageCount > 0 && !references.length) {
+    throw resolveError('AGENT_REFERENCE_UNRESOLVED', '计划引用的参考图已不在画布上，请重新选择参考后再执行。')
+  }
+  return references
 }
 
 /**

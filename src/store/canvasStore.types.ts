@@ -113,6 +113,7 @@ export type CanvasStore = {
   recoverUnknownGenerationSubmission: () => Promise<boolean>
   openNewDocument: (document: CanvasDocument) => void
   renameDocument: (name: string) => Promise<void>
+  bindProjectBrand: (brandId: string) => Promise<boolean>
   setNodes: (nodes: CanvasNode[]) => void
   replaceMediaSources: (replacements: Record<string, string>) => Promise<void>
   setNodesTransient: (nodes: CanvasNode[]) => void

@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { normalizeAssetCollection, normalizeAssetRecord } from './assets.ts'
+import { createUploadedAssetId, normalizeAssetCollection, normalizeAssetRecord } from './assets.ts'
+
+test('同一毫秒的连续上传仍生成不同素材 ID', () => {
+  assert.notEqual(createUploadedAssetId(42, 0), createUploadedAssetId(42, 0))
+})
 
 test('旧素材缺少媒体类型时按图片兼容', () => {
   const asset = normalizeAssetRecord({

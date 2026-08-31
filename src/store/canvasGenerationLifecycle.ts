@@ -3,6 +3,8 @@ import { findUnknownSubmissionAnchor, type UnknownSubmissionAnchor } from '../do
 import type { CanvasDocument, CanvasNode, GenerationJob, GenerateNodeData, ResultNodeData } from '../domain/canvas.ts'
 import type { GenerationRequest, PersistedGenerationState } from './canvasStore.types.ts'
 
+import { settleExpiredGenerationSubmissions } from './canvasGenerationProjection.ts'
+
 export function requestFromPersistedGenerationJob(document: CanvasDocument, job: GenerationJob): GenerationRequest | null {
   if (!job.generateNodeId || !job.resultNodeId) return null
   const generateNode = document.nodes.find((node) => node.id === job.generateNodeId && node.type === 'generate')
@@ -157,7 +159,9 @@ export function requestFromPendingGenerationSource(document: CanvasDocument, sou
 export function restoreGenerationLifecycleState(
   document: CanvasDocument,
   fallbackMessage: string,
-): { state: PersistedGenerationState; pollJobId?: string } {
+): { state: PersistedGenerationState; pollJobId?: string; document: CanvasDocument } {
+  const settled = settleExpiredGenerationSubmissions(document, { immediate: true })
+  document = settled.document
   const idleState: PersistedGenerationState = {
     assistantMessage: fallbackMessage,
     generationStatus: 'idle',
@@ -177,11 +181,12 @@ export function restoreGenerationLifecycleState(
         expectedCandidateCount: unknownSubmissionRequest.batchCount,
         assistantMessage: '已恢复一个提交状态未知的任务；正在用原幂等键确认，请勿重复提交。',
       },
+      document,
     }
   }
   const latestJob = [...document.generationJobs].sort((left, right) => right.updatedAt - left.updatedAt)[0]
   const request = latestJob ? requestFromPersistedGenerationJob(document, latestJob) : null
-  if (!latestJob || !request) return { state: idleState }
+  if (!latestJob || !request) return { state: idleState, document }
 
   if (latestJob.status === 'queued' || latestJob.status === 'running') {
     return {
@@ -193,6 +198,7 @@ export function restoreGenerationLifecycleState(
         assistantMessage: '已恢复生成任务，正在同步生成服务状态。',
       },
       pollJobId: latestJob.id,
+      document,
     }
   }
   if (latestJob.status === 'succeeded' && latestJob.outputs?.length) {
@@ -202,6 +208,7 @@ export function restoreGenerationLifecycleState(
         lastGenerationRequest: { ...request, jobId: latestJob.id },
         assistantMessage: `已恢复 ${latestJob.outputs.length} 个生成结果；每个结果都保留在画布中。`,
       },
+      document,
     }
   }
   if (latestJob.status === 'failed') {
@@ -215,10 +222,11 @@ export function restoreGenerationLifecycleState(
         expectedCandidateCount: latestJob.batchCount,
         assistantMessage: message,
       },
+      document,
     }
   }
   if (latestJob.status === 'cancelled') {
-    return { state: { ...idleState, assistantMessage: '上一次生成任务已取消；提示词、参考组和节点记录仍可继续使用。' } }
+    return { state: { ...idleState, assistantMessage: '上一次生成任务已取消；提示词、参考组和节点记录仍可继续使用。' }, document }
   }
-  return { state: idleState }
+  return { state: idleState, document }
 }

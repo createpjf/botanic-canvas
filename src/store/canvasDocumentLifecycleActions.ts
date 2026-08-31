@@ -28,6 +28,7 @@ type DocumentLifecycleActions = Pick<CanvasStore,
   | 'refreshDocumentFromRemote'
   | 'openNewDocument'
   | 'renameDocument'
+  | 'bindProjectBrand'
 >
 
 type CanvasDocumentLifecycleDependencies = {
@@ -38,6 +39,11 @@ type CanvasDocumentLifecycleDependencies = {
   stopGenerationPolling: () => void
   pollGenerationJob: (jobId: string) => void
   recoverGenerationResults: (documentId: string) => Promise<boolean>
+  commitDocument: (
+    document: CanvasDocument,
+    extra?: Partial<CanvasStore>,
+    options?: { immediate?: boolean; rejectOnFailure?: boolean },
+  ) => Promise<void>
 }
 
 const openDocumentOperations = createLatestOperation()
@@ -51,6 +57,7 @@ export function createCanvasDocumentLifecycleActions({
   stopGenerationPolling,
   pollGenerationJob,
   recoverGenerationResults,
+  commitDocument,
 }: CanvasDocumentLifecycleDependencies): DocumentLifecycleActions {
   const applyRemoteDocumentRefresh = (
     remoteDocument: CanvasDocument,
@@ -69,7 +76,7 @@ export function createCanvasDocumentLifecycleActions({
     const syncedMessage = canvasDocumentLifecycleAssistantMessage({ kind: 'synced', locale: readProductLocale() })
     const recoveredGeneration = restoreGenerationLifecycleState(document, syncedMessage)
     set({
-      document,
+      document: recoveredGeneration.document,
       persistenceStatus: 'saved',
       selectedNodeId: selectedNode?.id ?? null,
       ...recoveredGeneration.state,
@@ -97,7 +104,7 @@ export function createCanvasDocumentLifecycleActions({
         canvasDocumentReadyAssistantMessage(document, readProductLocale()),
       )
       set({
-        document,
+        document: recoveredGeneration.document,
         globalAssets: [],
         sharedTemplates: [],
         hydrated: true,
@@ -130,8 +137,9 @@ export function createCanvasDocumentLifecycleActions({
         document,
         canvasDocumentReadyAssistantMessage(document, readProductLocale()),
       )
+      const persistedDocument = recoveredGeneration.document
       set({
-        document,
+        document: persistedDocument,
         globalAssets: get().globalAssets,
         hydrated: true,
         persistenceStatus: 'saved',
@@ -140,9 +148,9 @@ export function createCanvasDocumentLifecycleActions({
         undoAction: null,
         undoSnapshot: null,
       })
-      if (settledSubmission.changed || document.schemaVersion !== stored.schemaVersion || hasCrampedStarterV03Layout(stored.nodes)) {
+      if (settledSubmission.changed || persistedDocument !== document || document.schemaVersion !== stored.schemaVersion || hasCrampedStarterV03Layout(stored.nodes)) {
         try {
-          await writeCanvasDocument(document)
+          await writeCanvasDocument(persistedDocument)
           if (openDocumentOperations.isCurrent(operationToken) && get().document.id === documentId) set({ persistenceStatus: 'saved' })
         } catch {
           if (openDocumentOperations.isCurrent(operationToken) && get().document.id === documentId) {
@@ -169,15 +177,11 @@ export function createCanvasDocumentLifecycleActions({
 
     refreshDocumentFromRemote: async () => {
       const baseline = get().document
-      try {
-        const latest = await readLatestCanvasDocument(baseline.id)
-        if (!latest.document) return false
-        const applied = applyRemoteDocumentRefresh(latest.document, baseline.updatedAt, latest.hasPendingDraft)
-        if (applied) await persistAcceptedRemoteCanvasDocument(latest.document)
-        return applied
-      } catch {
-        return false
-      }
+      const latest = await readLatestCanvasDocument(baseline.id)
+      if (!latest.document) return false
+      const applied = applyRemoteDocumentRefresh(latest.document, baseline.updatedAt, latest.hasPendingDraft)
+      if (applied) await persistAcceptedRemoteCanvasDocument(latest.document)
+      return applied
     },
 
     openNewDocument: (inputDocument) => {
@@ -193,7 +197,7 @@ export function createCanvasDocumentLifecycleActions({
         canvasDocumentReadyAssistantMessage(document, readProductLocale()),
       )
       set({
-        document,
+        document: recoveredGeneration.document,
         hydrated: true,
         persistenceStatus: 'saved',
         selectedNodeId: selectedNode?.id ?? null,
@@ -241,6 +245,21 @@ export function createCanvasDocumentLifecycleActions({
         }
         throw error
       })
+    },
+
+    bindProjectBrand: async (brandId) => {
+      const nextBrandId = brandId.trim()
+      const document = get().document
+      if (!nextBrandId) return false
+      if (document.brandId === nextBrandId && get().persistenceStatus === 'saved') return true
+      await commitDocument({ ...document, brandId: nextBrandId }, {
+        assistantMessage: readProductLocale() === 'en'
+          ? `Bound brand “${nextBrandId}”.`
+          : `已绑定品牌「${nextBrandId}」。`,
+      }, { immediate: true, rejectOnFailure: true })
+      return get().document.id === document.id
+        && get().document.brandId === nextBrandId
+        && get().persistenceStatus === 'saved'
     },
   }
 }

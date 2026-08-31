@@ -1,4 +1,5 @@
-import { productRequest } from './productSession'
+import { syncPendingCanvasDrafts } from './db'
+import { ProductApiError, productRequest, serverPersistenceEnabled } from './productSession'
 import type { ProjectBrandKit } from '../domain/canvas'
 import type { ResolvedBrandKit } from '../domain/brandKitPresentation'
 
@@ -26,11 +27,23 @@ export type BrandKitLibrary = {
  * 那条。返回 `null` 表示项目未绑定品牌 —— 与「绑定了但一条规则都没有」是两回事，
  * 界面必须区分，否则「没有品牌规则」看起来像「品牌规则都满足了」。
  */
-export async function fetchProjectBrandKit(projectId: string): Promise<ResolvedBrandKit | null> {
-  const response = await productRequest<{ brandKit: ResolvedBrandKit | null }>(
+export async function fetchProjectBrandKit(projectId: string): Promise<{
+  brandKit: ResolvedBrandKit | null
+  capabilities?: string[]
+}> {
+  const request = () => productRequest<{ brandKit: ResolvedBrandKit | null; capabilities?: string[] }>(
     `/api/projects/${encodeURIComponent(projectId)}/brand-kit`,
   )
-  return response?.brandKit ?? null
+  let response
+  try {
+    response = await request()
+  } catch (error) {
+    if (!(serverPersistenceEnabled && error instanceof ProductApiError && error.status === 404)) throw error
+    // 新项目首个内容与面板打开可发生在同一帧；先让本地草稿完成建项，再只重读一次。
+    await syncPendingCanvasDrafts()
+    response = await request()
+  }
+  return { brandKit: response?.brandKit ?? null, capabilities: response?.capabilities }
 }
 
 export async function fetchBrandKitLibrary(): Promise<BrandKitLibrary | undefined> {

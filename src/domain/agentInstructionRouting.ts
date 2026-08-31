@@ -1,4 +1,4 @@
-import type { BotanicAgentContextSnapshotInput, BotanicAgentIntent, BotanicAgentMessage, BotanicAgentPlan, BotanicAgentRegionSelection } from './agent.ts'
+import type { BotanicAgentContextSnapshot, BotanicAgentContextSnapshotInput, BotanicAgentIntent, BotanicAgentMessage, BotanicAgentPlan, BotanicAgentRegionSelection } from './agent.ts'
 import { buildBotanicAgentPlan, createBotanicAgentContextSnapshot, inferBotanicAgentIntent } from './agent.ts'
 import {
   botanicAgentRequestUsesGenerationTurn,
@@ -36,6 +36,11 @@ export type BotanicAgentInstructionOptions = {
   region?: BotanicAgentRegionSelection
   /** 方案卡点击或重放时指定的成套方案；缺省则取会话里最近一条 composition 消息。 */
   composition?: BotanicAgentComposition
+  /**
+   * 失败 Run 恢复时携带的权威计划快照引用。它直接进入下一次计划构建，
+   * 不依赖异步 UI 上下文状态，保证换模型/调参数不丢原图引用。
+   */
+  recoveryContextSnapshot?: BotanicAgentContextSnapshot[]
   /**
    * 服务端 Turn 固定的父结果；null 表示这轮原本就没有选中结果。
    * 字段存在时禁止回退到当前 UI 选中。

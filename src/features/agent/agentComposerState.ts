@@ -1,5 +1,6 @@
 import {
   normalizeBotanicAgentContextNodeIds,
+  type BotanicAgentContextSnapshot,
   type BotanicAgentMentionQuery,
   type BotanicAgentMessage,
   type BotanicAgentSession,
@@ -63,6 +64,8 @@ export type AgentComposerState = {
   lastFailedPlanMessageId: string
   mentionQuery?: BotanicAgentMentionQuery
   pendingGenerationOverrides: GenerationSizeOverride
+  /** 失败 Run 恢复暂存的权威快照引用；下一次发送随指令结构化下发后清空。 */
+  pendingRecoveryContextSnapshot?: BotanicAgentContextSnapshot[]
 }
 
 export const initialAgentComposerState: AgentComposerState = {

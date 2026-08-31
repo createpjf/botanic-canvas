@@ -231,7 +231,16 @@ function enumValue(value, allowed, name) {
   return value
 }
 
+function shapedBusinessHttpError(caught) {
+  const statusCode = caught?.statusCode
+  if (!Number.isInteger(statusCode) || statusCode < 400 || statusCode > 599) return undefined
+  if (typeof caught?.code !== 'string' || !caught.code) return undefined
+  return new HttpError(statusCode, caught.code, caught.message)
+}
+
 function agentEntityHttpError(caught) {
+  // 幂等冲突是业务 409，不能落进 INTERNAL_ERROR 触发客户端自动重试风暴。
+  if (caught?.code === 'AGENT_RUN_IDEMPOTENCY_CONFLICT') return new HttpError(409, caught.code, caught.message)
   if (caught?.code === 'INVALID_AGENT_ENTITY') return new HttpError(400, caught.code, caught.message)
   if (caught?.code === 'AGENT_SESSION_NOT_FOUND') return new HttpError(404, caught.code, caught.message)
   if (caught?.code === 'AGENT_MESSAGE_NOT_FOUND') return new HttpError(409, caught.code, caught.message)
@@ -546,7 +555,8 @@ const handleRequestCore = async (request, response) => {
         ? agentEntityFailure
       : caught?.code === 'WORKSPACE_STORE_TIMEOUT'
         ? new HttpError(503, 'WORKSPACE_STORE_TIMEOUT', caught.message)
-      : new HttpError(500, 'INTERNAL_ERROR', '服务发生未预期错误。')
+      : shapedBusinessHttpError(caught)
+        ?? new HttpError(500, 'INTERNAL_ERROR', '服务发生未预期错误。')
     if (failure.statusCode >= 500) {
       reportError(caught, {
         tags: {

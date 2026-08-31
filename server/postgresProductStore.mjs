@@ -2738,7 +2738,7 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
           await tx`
             update agent_runs set
               status = ${decision.run.status},
-              updated_at = to_timestamp(${decision.run.updatedAt} / 1000.0),
+              updated_at = ${decision.run.updatedAt},
               payload = ${tx.json(decision.run)}::jsonb
             where id = ${command.runId} and owner_id = ${userId} and project_id = ${command.projectId}
           `

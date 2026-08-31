@@ -642,6 +642,101 @@ test('重连期间画布写入与批量恢复保持暂停且不返回 phantom ID
   expect(result.nodeIds).toHaveLength(1)
 })
 
+test('共享模板远端写入完成后遇到重连仍报告成功', async ({ page }) => {
+  await stubReadOnlyRuntime(page)
+  await page.goto('/#/projects')
+  await page.getByRole('button', { name: '新建项目' }).click()
+  await page.getByRole('button', { name: '图片生成', exact: true }).click()
+
+  const result = await page.evaluate(async () => {
+    const loadStore = new Function('return import("/src/store/canvasStore.ts")') as () => Promise<{
+      useCanvasStore: {
+        getState: () => {
+          sharedTemplates: Array<{ name: string }>
+          saveCurrentAsSharedTemplate: (name: string) => Promise<boolean>
+        }
+        setState: (patch: unknown) => void
+      }
+    }>
+    const loadDb = new Function('return import("/src/lib/db.ts")') as () => Promise<{
+      canvasDb: {
+        workflowTemplateLibraries: {
+          put: (value: unknown) => Promise<unknown>
+        }
+      }
+    }>
+    const [{ useCanvasStore }, { canvasDb }] = await Promise.all([loadStore(), loadDb()])
+    const table = canvasDb.workflowTemplateLibraries
+    const originalPut = table.put.bind(table)
+    let releaseWrite = () => {}
+    let markWriteStarted = () => {}
+    const writeStarted = new Promise<void>((resolve) => { markWriteStarted = resolve })
+    const writeRelease = new Promise<void>((resolve) => { releaseWrite = resolve })
+    table.put = async (value) => {
+      markWriteStarted()
+      await writeRelease
+      return originalPut(value)
+    }
+
+    try {
+      const save = useCanvasStore.getState().saveCurrentAsSharedTemplate('已写入模板')
+      await writeStarted
+      useCanvasStore.setState({ collaborationStatus: 'reconnecting' })
+      releaseWrite()
+      const saved = await save
+      return {
+        saved,
+        templateCount: useCanvasStore.getState().sharedTemplates.filter((template) => template.name === '已写入模板').length,
+      }
+    } finally {
+      table.put = originalPut
+    }
+  })
+
+  expect(result).toEqual({ saved: true, templateCount: 1 })
+})
+
+test('远端画布刷新失败会中断重连恢复链', async ({ page }) => {
+  await stubReadOnlyRuntime(page)
+  await page.goto('/#/projects')
+  await page.getByRole('button', { name: '新建项目' }).click()
+
+  const rejected = await page.evaluate(async () => {
+    const loadStore = new Function('return import("/src/store/canvasStore.ts")') as () => Promise<{
+      useCanvasStore: {
+        getState: () => {
+          persistenceStatus: string
+          refreshDocumentFromRemote: () => Promise<boolean>
+        }
+      }
+    }>
+    const loadDb = new Function('return import("/src/lib/db.ts")') as () => Promise<{
+      canvasDb: {
+        documents: {
+          get: (id: string) => Promise<unknown>
+        }
+      }
+    }>
+    const [{ useCanvasStore }, { canvasDb }] = await Promise.all([loadStore(), loadDb()])
+    while (useCanvasStore.getState().persistenceStatus === 'saving') {
+      await new Promise((resolve) => window.setTimeout(resolve, 10))
+    }
+    const table = canvasDb.documents
+    const originalGet = table.get.bind(table)
+    table.get = async () => { throw new Error('remote refresh failed') }
+    try {
+      await useCanvasStore.getState().refreshDocumentFromRemote()
+      return false
+    } catch {
+      return true
+    } finally {
+      table.get = originalGet
+    }
+  })
+
+  expect(rejected).toBe(true)
+})
+
 test('素材连上显式生成节点后，不在素材上重复挂 composer', async ({ page }) => {
   await stubReadOnlyRuntime(page)
   await page.goto('/#/projects')
