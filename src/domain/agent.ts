@@ -525,6 +525,25 @@ export function shouldRestoreBotanicAgentRuntimeSteps(status: BotanicAgentRunSta
   return status === 'queued' || status === 'running' || status === 'executing'
 }
 
+/** 对话默认层：进行中的 Run 卡不出现；结算后计划回执让给结果卡。 */
+export function shouldShowBotanicAgentConversationMessage(input: {
+  kind: BotanicAgentMessage['kind']
+  status?: BotanicAgentMessage['status']
+  runId?: string
+  hasPlan?: boolean
+  runStatus?: BotanicAgentRunStatus
+  hasStatusMessage?: boolean
+}) {
+  if (input.kind === 'run' && input.runId) {
+    return !input.runStatus || !shouldRestoreBotanicAgentRuntimeSteps(input.runStatus)
+  }
+  if (input.hasPlan && input.status === 'submitted' && input.runId) {
+    if (!input.runStatus || shouldRestoreBotanicAgentRuntimeSteps(input.runStatus)) return true
+    return !input.hasStatusMessage
+  }
+  return true
+}
+
 /**
  * 从持久化 Run 快照恢复执行进度。
  * 只投影已发生的提交/分支状态，标明「从服务端状态恢复」；
@@ -563,7 +582,7 @@ export function restoreBotanicAgentRuntimeSteps(input: {
       steps.push({
         id: `exec-branch:${branch.id}`,
         kind: 'write',
-        label: branch.label.trim() ? `生成 · ${branch.label.trim()}` : '生成分支',
+        label: branch.label.trim() && !isBotanicAgentProcessLabel(branch.label) ? `生成 · ${branch.label.trim()}` : '生成',
         detail: '从服务端状态恢复',
         status: branchFailed ? 'failed' : branchActive ? 'running' : 'succeeded',
         ...(branchFailed ? { error: branch.error ?? (branch.status === 'cancelled' ? '任务已取消。' : '任务未完成，请查看任务面板。') } : {}),
@@ -1141,7 +1160,7 @@ export function botanicAgentRunFeedback(
       return { label: '已完成', detail: '结果已生成，正在放到画布。', action: 'view_results', actionLabel: '查看结果', tone: 'warning', terminal }
     }
     return outputCount > 0
-      ? { label: '已完成', detail: `已放到画布 · ${outputCount} 项`, action: 'view_results', actionLabel: '查看结果', tone: 'success', terminal }
+      ? { label: '已完成', detail: '已放到画布', action: 'view_results', actionLabel: '查看结果', tone: 'success', terminal }
       : { label: '已完成', detail: '已完成，暂无可用结果。', action: 'view_task', actionLabel: '查看任务', tone: 'warning', terminal }
   }
   if (status === 'partial') {
@@ -2295,19 +2314,9 @@ function constraintsForIntent(intent: BotanicAgentIntent, assetGroup?: AssetGrou
   ]
 }
 
-function intentLabel(intent: BotanicAgentIntent, locale: 'zh-CN' | 'en' = 'zh-CN') {
-  const labels: Record<BotanicAgentIntent, string> = locale === 'en' ? {
-    initial_generation: 'Initial generation',
-    continue_generation: 'Continue generation',
-    replace_scene: 'Replace scene',
-    replace_person: 'Replace model',
-    replace_product: 'Replace product',
-    change_pose: 'Adjust pose',
-    change_style: 'Change style',
-    batch_variation: 'Batch variation',
-    region_edit: 'Region edit',
-    redo_from_root: 'Rebuild from original settings',
-  } : {
+/** 意图分类名，只用来识别旧数据里的话术，不再当用户可见标题。 */
+const botanicAgentIntentProcessLabels = {
+  'zh-CN': {
     initial_generation: '首次生成',
     continue_generation: '继续生成',
     replace_scene: '替换场景',
@@ -2318,8 +2327,49 @@ function intentLabel(intent: BotanicAgentIntent, locale: 'zh-CN' | 'en' = 'zh-CN
     batch_variation: '批量变体',
     region_edit: '局部重绘',
     redo_from_root: '从原参数重做',
+  },
+  en: {
+    initial_generation: 'Initial generation',
+    continue_generation: 'Continue generation',
+    replace_scene: 'Replace scene',
+    replace_person: 'Replace model',
+    replace_product: 'Replace product',
+    change_pose: 'Adjust pose',
+    change_style: 'Change style',
+    batch_variation: 'Batch variation',
+    region_edit: 'Region edit',
+    redo_from_root: 'Rebuild from original settings',
+  },
+} as const satisfies Record<'zh-CN' | 'en', Record<BotanicAgentIntent, string>>
+
+const botanicAgentProcessLabelExtras = [
+  '新版本', '新图', '生成', '生成分支',
+  'Generate', 'Continue', 'Scene', 'Model', 'Product', 'Pose', 'Style', 'Variants', 'Rebuild',
+] as const
+
+const botanicAgentProcessLabels = new Set<string>([
+  ...Object.values(botanicAgentIntentProcessLabels['zh-CN']),
+  ...Object.values(botanicAgentIntentProcessLabels.en),
+  ...botanicAgentProcessLabelExtras,
+])
+
+/** 分支/摘要里残留的意图分类名，对话和回执都不该再念出来。 */
+export function isBotanicAgentProcessLabel(value: string) {
+  return botanicAgentProcessLabels.has(value.trim())
+}
+
+/** 旧计划摘要常以「首次生成，」起头；展示时剥掉，只留后半句。 */
+export function presentBotanicAgentPlanSummary(summary: string) {
+  const text = summary.trim()
+  if (!text) return ''
+  for (const label of botanicAgentProcessLabels) {
+    if (text === label) return ''
+    for (const glue of ['，', ', ', '. '] as const) {
+      const prefix = `${label}${glue}`
+      if (text.startsWith(prefix)) return text.slice(prefix.length).trim()
+    }
   }
-  return labels[intent]
+  return text
 }
 
 export const botanicAgentNodeTitleLimit = 8
@@ -2352,8 +2402,7 @@ export function summarizeBotanicAgentNodeTitle(
   if (!base && vary.length > 1) {
     base = clipBotanicAgentNodeTitle(vary.map((constraint) => varyDimensionShortTitle[constraint.dimension]).join(''))
   }
-  if (!base) base = clipBotanicAgentNodeTitle(intentLabel(plan.intent) || '新版本')
-  if (!base) base = '新版本'
+  if (!base) base = '新图'
   if (options.sequence && options.sequence > 1) {
     const suffix = String(options.sequence)
     const room = Math.max(1, botanicAgentNodeTitleLimit - suffix.length)
@@ -2580,21 +2629,21 @@ export function buildBotanicAgentPlan(input: BuildBotanicAgentPlanInput): Botani
       ? intent === 'region_edit' && input.region
         ? `Redraw ${input.region.description ?? 'the selected area'} while keeping the rest of the image unchanged.`
         : isVideoPlan
-          ? `${intentLabel(intent, locale)}. Generate ${output.count} ${output.count === 1 ? 'video' : 'videos'} of ${settings.duration} seconds from the reference image.`
-          : `${intentLabel(intent, locale)}. ${output.mode === 'batch_by_asset'
-            ? `Generate ${output.count} ${output.count === 1 ? 'image' : 'images'} from “${input.assetGroup?.name}”`
+          ? `Generate ${output.count} ${output.count === 1 ? 'video' : 'videos'} of ${settings.duration} seconds from the reference image.`
+          : output.mode === 'batch_by_asset'
+            ? `Generate ${output.count} ${output.count === 1 ? 'image' : 'images'} from “${input.assetGroup?.name}”.`
             : isDirectTextGeneration
-              ? `Generate ${output.count} ${output.count === 1 ? 'image' : 'images'} directly from the prompt`
-              : `Generate ${output.count} new ${output.count === 1 ? 'version' : 'versions'}`}.`
+              ? `Generate ${output.count} ${output.count === 1 ? 'image' : 'images'} directly from the prompt.`
+              : `Generate ${output.count} new ${output.count === 1 ? 'version' : 'versions'}.`
       : intent === 'region_edit' && input.region
         ? `局部重绘${input.region.description ?? '所选区域'}，其余画面保持原样。`
         : isVideoPlan
-          ? `${intentLabel(intent)}，以参考图为首帧生成 ${output.count} 条 ${settings.duration} 秒视频。`
-          : `${intentLabel(intent)}，${output.mode === 'batch_by_asset'
-            ? `按「${input.assetGroup?.name}」生成 ${output.count} 张`
+          ? `以参考图为首帧生成 ${output.count} 条 ${settings.duration} 秒视频。`
+          : output.mode === 'batch_by_asset'
+            ? `按「${input.assetGroup?.name}」生成 ${output.count} 张。`
             : isDirectTextGeneration
-              ? `根据文字描述直接生成 ${output.count} 张图片`
-              : `生成 ${output.count} 张新版本`}。`,
+              ? `根据文字描述直接生成 ${output.count} 张图片。`
+              : `生成 ${output.count} 张新版本。`,
     title: locale === 'en'
       ? ({ initial_generation: 'Generate', continue_generation: 'Continue', replace_scene: 'Scene', replace_person: 'Model', replace_product: 'Product', change_pose: 'Pose', change_style: 'Style', batch_variation: 'Variants', redo_from_root: 'Rebuild', region_edit: 'Region edit' } as const)[intent]
       : summarizeBotanicAgentNodeTitle({ intent, constraints }),

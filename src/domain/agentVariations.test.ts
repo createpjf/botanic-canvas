@@ -548,7 +548,7 @@ test('确认卡张数与生成按钮用张，不把分支节点当常驻标题',
   assert.equal(botanicAgentPlanConfirmActionLabel(single), '生成')
   assert.equal(botanicAgentPlanConfirmActionLabel(batch), '生成 2 张')
   assert.equal(botanicAgentPlanConfirmActionLabel(batch, 'submitting'), '正在提交…')
-  assert.equal(botanicAgentPlanConfirmActionLabel(batch, 'blocked'), '先处理行动卡')
+  assert.equal(botanicAgentPlanConfirmActionLabel(batch, 'blocked'), '先确认下面的操作')
   assert.equal(botanicAgentPlanConfirmActionLabel(batch, 'failed'), '重新生成')
 })
 

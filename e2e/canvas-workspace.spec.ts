@@ -359,12 +359,56 @@ test('Agent 生成卡片默认收起已完成步骤与提示词差异，主内�
   })
 
   await expect(page.getByText('提示词')).toBeVisible()
-  const toolSteps = page.locator('details.agent-message__tools')
+  const toolAccordion = page.locator('.agent-tool-accordion')
+  const toolTitle = toolAccordion.locator('.agent-tool-accordion__title')
   const promptDiff = page.locator('details.agent-prompt-review__compare')
-  await expect(toolSteps).toBeVisible()
+  await expect(toolAccordion).toBeVisible()
   await expect(promptDiff).toBeVisible()
-  expect(await toolSteps.evaluate((element: HTMLDetailsElement) => element.open)).toBe(false)
+  await expect(toolTitle).toHaveAttribute('aria-expanded', 'false')
   expect(await promptDiff.evaluate((element: HTMLDetailsElement) => element.open)).toBe(false)
+  await expect(page.getByText('保持人物、五官、服装与姿态不变，仅将背景替换为晴朗海边。')).toBeVisible()
+})
+
+test('已提交生成卡直接展示提示词与规格芯片', async ({ page }) => {
+  await stubReadOnlyRuntime(page)
+  await page.goto('/#/projects')
+  await page.getByRole('button', { name: '新建项目' }).click()
+  await page.getByRole('button', { name: '描述目标', exact: true }).click()
+
+  await page.evaluate(async () => {
+    const loadStore = new Function('return import("/src/store/canvasStore.ts")') as () => Promise<{
+      useCanvasStore: { getState: () => {
+        ensureAgentSession: () => string
+        appendAgentMessage: (sessionId: string, message: unknown) => void
+      } }
+    }>
+    const { useCanvasStore } = await loadStore()
+    const store = useCanvasStore.getState()
+    const sessionId = store.ensureAgentSession()
+    store.appendAgentMessage(sessionId, {
+      id: 'message-receipt', role: 'assistant', kind: 'plan', status: 'submitted', createdAt: Date.now(),
+      runId: 'run-receipt',
+      content: '已提交生成。',
+      plan: {
+        intent: 'replace_scene',
+        instruction: '人物不变，背景换成海边。',
+        summary: '海边场景替换',
+        prompt: '保持人物、五官、服装与姿态不变，仅将背景替换为晴朗海边。',
+        settings: { model: 'gpt-image-2', aspectRatio: '3:4', resolution: '2K' },
+        constraints: [{ dimension: 'scene', mode: 'vary' }],
+        references: [],
+        output: { mode: 'single', count: 1, candidatesPerItem: 1 },
+      },
+    })
+  })
+
+  await expect(page.getByText('海边场景替换')).toBeVisible()
+  await expect(page.getByRole('button', { name: '查看任务' })).toHaveCount(0)
+  await expect(page.getByText('思考了')).toHaveCount(0)
+  await expect(page.locator('.agent-plan__receipt-header').getByText('GPT Image 2')).toHaveCount(0)
+  await expect(page.getByText('参数', { exact: true })).toHaveCount(0)
+  await expect(page.getByText('GPT Image 2')).toBeVisible()
+  await expect(page.getByText('3:4', { exact: true })).toBeVisible()
   await expect(page.getByText('保持人物、五官、服装与姿态不变，仅将背景替换为晴朗海边。')).toBeVisible()
 })
 

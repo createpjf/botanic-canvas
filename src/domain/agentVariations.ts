@@ -765,7 +765,7 @@ export function botanicAgentPlanConfirmActionLabel(
   state: 'ready' | 'submitting' | 'blocked' | 'failed' = 'ready',
 ) {
   if (state === 'submitting') return '正在提交…'
-  if (state === 'blocked') return '先处理行动卡'
+  if (state === 'blocked') return '先确认下面的操作'
   if (state === 'failed') return '重新生成'
   return plan.output.count > 1 ? `生成 ${plan.output.count} 张` : '生成'
 }

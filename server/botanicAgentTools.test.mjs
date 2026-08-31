@@ -364,6 +364,35 @@ test('已确认的 Skill/MCP 行动返回统一 Artifact 与画布命令', async
   })
 })
 
+test('MCP 内联 image 与 structuredContent 收成可展示 Artifact', async () => {
+  const tinyPng = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
+  const runtime = mcpRuntime(async () => ({
+    content: [
+      { type: 'text', text: '缩略图已就绪。' },
+      { type: 'image', mimeType: 'image/png', data: tinyPng },
+    ],
+    structuredContent: { scenes: 3, query: 'beach' },
+  }))
+  const descriptor = runtime.catalog()[0]
+  const registry = createBotanicAgentActionToolRegistry({ mcpRuntime: runtime })
+  const mcp = await executeConfirmedAgentAction({
+    registry, name: 'mcp_call',
+    arguments: {
+      server: descriptor.server, tool: descriptor.tool, arguments: { query: '海边' },
+      version: descriptor.version, capabilityHash: descriptor.capabilityHash,
+    },
+    toolCallId: 'call-mcp-rich-1', confirmed: true,
+  })
+  assert.equal(mcp.output.artifacts?.length, 3)
+  assert.equal(mcp.output.artifacts?.[0].kind, 'text')
+  assert.equal(mcp.output.artifacts?.[1].kind, 'text')
+  assert.match(mcp.output.artifacts?.[1].content ?? '', /"scenes": 3/)
+  assert.equal(mcp.output.artifacts?.[1].metadata?.mcpStructured, true)
+  assert.equal(mcp.output.artifacts?.[2].kind, 'image')
+  assert.match(mcp.output.artifacts?.[2].url ?? '', /^data:image\/png;base64,/)
+  assert.equal(mcp.output.artifacts?.[2].placement, 'panel')
+})
+
 test('依赖不可用的 Skill 仍挂载，但简报明说规则不完整', () => {
   // 静默丢掉会让用户以为自己挂的规则在生效；静默照用会让 Agent 拿着少了半截的约束
   // 去创作，而两边都不知道少了什么。

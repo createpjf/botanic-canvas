@@ -29,6 +29,7 @@ test('只读 Turn Events 可恢复来源时间线，并与先到的 Run 步骤�
   assert.deepEqual(hydrated?.blocks.find((block) => block.type === 'step'), {
     id: 'step:fetch-1', type: 'step', status: 'succeeded', kind: 'fetch',
     title: '网页获取 www.andlight.cn',
+    startedAt: 100, endedAt: 100,
     sources: [{ hostname: 'www.andlight.cn', url: 'https://www.andlight.cn/' }],
     sourceToolIds: ['fetch-1'],
   })
