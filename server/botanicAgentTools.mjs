@@ -299,13 +299,36 @@ function artifactKindForMimeType(value) {
   return 'file'
 }
 
+/** MCP image.data 内联上限；更大的应走 resource_link / media。 */
+const MCP_INLINE_IMAGE_BASE64_MAX = 280_000
+
+function mcpInlineImageDataUrl(item) {
+  if (item?.type !== 'image' || typeof item.data !== 'string') return undefined
+  const mimeType = typeof item.mimeType === 'string' && item.mimeType.startsWith('image/')
+    ? item.mimeType.slice(0, 120)
+    : 'image/png'
+  const data = item.data.replace(/\s+/g, '')
+  if (!data || data.length > MCP_INLINE_IMAGE_BASE64_MAX || !/^[A-Za-z0-9+/]+=*$/.test(data)) return undefined
+  return { url: `data:${mimeType};base64,${data}`, mimeType }
+}
+
+function mcpStructuredContentText(value) {
+  if (value === null || value === undefined) return ''
+  if (typeof value === 'string') return safeResultText(value)
+  try {
+    return safeResultText(JSON.stringify(value, null, 2), 8_000)
+  } catch {
+    return ''
+  }
+}
+
 function mcpArtifacts(result, { actionId, externalTool }) {
   if (result?.isError) {
     throw new AgentToolRuntimeError('MCP_TOOL_FAILED', 'MCP 工具执行失败。', 502)
   }
-  if (!Array.isArray(result?.content)) return []
   const artifacts = []
-  const textContent = safeResultText(result.content
+  const content = Array.isArray(result?.content) ? result.content : []
+  const textContent = safeResultText(content
     .filter((item) => item?.type === 'text' && typeof item.text === 'string')
     .map((item) => item.text.trim())
     .filter(Boolean)
@@ -313,7 +336,29 @@ function mcpArtifacts(result, { actionId, externalTool }) {
   if (textContent) artifacts.push({
     kind: 'text', label: `MCP · ${externalTool}`, content: textContent, placement: 'panel',
   })
-  for (const item of result.content) {
+  const structured = mcpStructuredContentText(result?.structuredContent)
+  if (structured && structured !== textContent) {
+    artifacts.push({
+      kind: 'text',
+      label: `MCP · ${externalTool} · structured`,
+      content: structured,
+      placement: 'panel',
+      metadata: { mcpStructured: true },
+    })
+  }
+  for (const item of content) {
+    if (item?.type === 'image') {
+      const inline = mcpInlineImageDataUrl(item)
+      if (!inline) continue
+      artifacts.push({
+        kind: 'image',
+        placement: 'panel',
+        label: safeResultText(item.name || item.title, 120) || 'MCP 图像',
+        url: inline.url,
+        mimeType: inline.mimeType,
+      })
+      continue
+    }
     if (item?.type !== 'resource_link') continue
     const url = safeArtifactUrl(item.uri)
     if (!url) continue

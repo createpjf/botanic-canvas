@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   botanicAgentBranchStatusLabel,
   filterBotanicAgentRunTimeline,
+  presentBotanicAgentPlanSummary,
   type BotanicAgentArtifact,
   type BotanicAgentRun,
   type BotanicAgentRunTimelineFilter,
@@ -127,7 +128,7 @@ export function AgentTaskPanel({
           className={`is-${run.status} is-${feedback.tone}${focusedRunId === run.id ? ' is-located' : ''}`}
         >
           <button type="button" className="agent-task-panel__disclosure" aria-expanded={expanded} aria-controls={detailId} onClick={() => setExpandedRunId(expanded ? '' : run.id)}>
-            <span><strong>{run.plan.summary}</strong><small>{feedback.label} · <time dateTime={new Date(run.updatedAt).toISOString()}>{new Intl.DateTimeFormat(locale, { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(run.updatedAt))}</time></small></span>
+            <span><strong>{presentBotanicAgentPlanSummary(run.plan.summary) || feedback.label}</strong><small>{feedback.label} · <time dateTime={new Date(run.updatedAt).toISOString()}>{new Intl.DateTimeFormat(locale, { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(run.updatedAt))}</time></small></span>
             <b>{run.completedBranchCount}/{run.branches.length}</b><i aria-hidden="true">{expanded ? '−' : '＋'}</i>
           </button>
           {active ? <div className="agent-run-card__track" aria-hidden="true"><i style={{ width: `${run.branches.length ? Math.round(run.completedBranchCount / run.branches.length * 100) : 0}%` }} /></div> : null}

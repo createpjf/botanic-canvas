@@ -39,6 +39,7 @@ import {
   updateBotanicAgentRuntimeStep,
   restoreBotanicAgentRuntimeSteps,
   shouldRestoreBotanicAgentRuntimeSteps,
+  shouldShowBotanicAgentConversationMessage,
   botanicAgentArtifactPlacement,
   botanicAgentPromptWithContextNotes,
   botanicAgentContextNoteLimit,
@@ -56,6 +57,7 @@ import {
   botanicAgentAppliedSkillName,
   clipBotanicAgentNodeTitle,
   summarizeBotanicAgentNodeTitle,
+  presentBotanicAgentPlanSummary,
   botanicAgentBatchBranchTitles,
   botanicAgentNodeTitleLimit,
   botanicAgentResultGroupTitle,
@@ -495,7 +497,7 @@ test('Run 状态统一提供下一步反馈，并兼容超时错误', () => {
   })
   assert.equal(botanicAgentRunFeedback('running').label, '生成中')
   assert.equal(botanicAgentRunFeedback('running').detail, '正在生成，完成后放到画布。')
-  assert.equal(botanicAgentRunFeedback('completed', 2).detail, '已放到画布 · 2 项')
+  assert.equal(botanicAgentRunFeedback('completed', 2).detail, '已放到画布')
   assert.equal(botanicAgentRunFeedback('completed', 1, undefined, { artifactCount: 1, canvasOutputCount: 0 }).detail, '结果已生成，正在放到画布。')
   assert.equal(botanicAgentRunFeedback('completed', 1, undefined, {
     artifactCount: 1, canvasOutputCount: 0, activeBranchCount: 2,
@@ -844,6 +846,10 @@ test('新图节点标题只概括变化且不超过 8 个字', () => {
     intent: 'change_pose',
     constraints: [{ dimension: 'pose', mode: 'vary' }, { dimension: 'person', mode: 'preserve' }],
   }), '换动作')
+  assert.equal(summarizeBotanicAgentNodeTitle({ intent: 'initial_generation', constraints: [] }), '新图')
+  assert.equal(presentBotanicAgentPlanSummary('首次生成，根据文字描述直接生成 1 张图片。'), '根据文字描述直接生成 1 张图片。')
+  assert.equal(presentBotanicAgentPlanSummary('首次生成'), '')
+  assert.equal(presentBotanicAgentPlanSummary('海边场景替换'), '海边场景替换')
 })
 
 test('结果批次标题用 8 字短名，不用 summary 或 Prompt', () => {
@@ -1251,6 +1257,21 @@ test('只有仍在进行的 Run 才在面板底部恢复运行轨迹', () => {
   assert.equal(shouldRestoreBotanicAgentRuntimeSteps('failed'), false)
   assert.equal(shouldRestoreBotanicAgentRuntimeSteps('cancelled'), false)
   assert.equal(shouldRestoreBotanicAgentRuntimeSteps('awaiting_confirmation'), false)
+  assert.equal(shouldShowBotanicAgentConversationMessage({
+    kind: 'run', runId: 'run-1', runStatus: 'running',
+  }), false)
+  assert.equal(shouldShowBotanicAgentConversationMessage({
+    kind: 'plan', status: 'submitted', runId: 'run-1', hasPlan: true, runStatus: 'running', hasStatusMessage: true,
+  }), true)
+  assert.equal(shouldShowBotanicAgentConversationMessage({
+    kind: 'plan', status: 'submitted', runId: 'run-1', hasPlan: true, runStatus: 'completed', hasStatusMessage: true,
+  }), false)
+  assert.equal(shouldShowBotanicAgentConversationMessage({
+    kind: 'plan', status: 'submitted', runId: 'run-1', hasPlan: true, runStatus: 'failed', hasStatusMessage: true,
+  }), false)
+  assert.equal(shouldShowBotanicAgentConversationMessage({
+    kind: 'run', runId: 'run-1', runStatus: 'completed',
+  }), true)
 
   // 恢复只投影已发生的提交/分支，不把未发生的读取步骤标成 succeeded。
   const restored = restoreBotanicAgentRuntimeSteps({
@@ -1763,7 +1784,7 @@ test('英文模式的本地计划使用英文标题、摘要与上下文说明',
   })
 
   assert.equal(plan.title, 'Generate')
-  assert.equal(plan.summary, 'Initial generation. Generate 1 new version.')
+  assert.equal(plan.summary, 'Generate 1 new version.')
   assert.match(plan.prompt, /Additional context:\n- Layout note: Keep the upper-right corner clear\./)
   assert.doesNotMatch(`${plan.title}\n${plan.summary}\n${plan.prompt}`, /[\u3400-\u9fff]/u)
 })

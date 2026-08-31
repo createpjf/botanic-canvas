@@ -8,6 +8,14 @@ import {
   createAgentTimeline,
   displayWebSourceHostname,
   persistAgentLiveTimeline,
+  conversationTimelineStepTitle,
+  isAgentPipelineTimelineStep,
+  agentToolAccordionElapsedLabel,
+  agentToolIconKey,
+  agentMcpServerIdFromLabel,
+  presentAgentTimelineConversation,
+  presentAgentToolAccordion,
+  presentAgentToolAccordionFromCalls,
   projectBotanicAgentRunOntoTimeline,
   reduceAgentTimeline,
   safeTimelineWebSources,
@@ -266,6 +274,203 @@ test('已知规划工具标题与服务端对齐；Run 投影只反映已持久�
     ['生成 · 主图', 'succeeded'],
     ['生成 · 变体', 'running'],
   ])
+  assert.equal(timeline.blocks.some((block) => block.type === 'thinking'), false)
+
+  const failedWithBranch = projectBotanicAgentRunOntoTimeline({
+    id: 'run-2',
+    status: 'failed',
+    branches: [
+      { id: 'b1', label: '首次生成', status: 'failed', attempt: 1, jobIds: ['j1'], outputCount: 1, updatedAt: 2 },
+    ],
+  }, undefined, 1_000)
+  assert.deepEqual(
+    failedWithBranch.blocks.filter((block) => block.type === 'step').map((block) => block.type === 'step' ? [block.title, block.status] : null),
+    [['提交生成任务', 'succeeded'], ['生成', 'failed']],
+  )
+
+  const failedBeforeSubmit = projectBotanicAgentRunOntoTimeline({
+    id: 'run-3',
+    status: 'failed',
+    error: '生成额度不足，请调整候选数、规格或联系工作区所有者。',
+    branches: [],
+  }, undefined, 1_000)
+  const submitOnly = failedBeforeSubmit.blocks.find((block) => block.type === 'step')
+  assert.equal(submitOnly?.type === 'step' ? submitOnly.status : '', 'failed')
+  assert.equal(submitOnly?.type === 'step' ? submitOnly.error : '', '生成额度不足，请调整候选数、规格或联系工作区所有者。')
+
+  const failedWithJob = projectBotanicAgentRunOntoTimeline({
+    id: 'run-4',
+    status: 'failed',
+    branches: [{
+      id: 'b1',
+      label: '首次生成',
+      status: 'failed',
+      attempt: 1,
+      jobIds: ['job-1'],
+      activeJobId: 'job-1',
+      outputCount: 0,
+      error: '超过 4096x4096。',
+      updatedAt: 2,
+    }],
+  }, undefined, 1_000, [{ id: 'job-1', error: '超过 4096x4096。', errorCode: 'IMAGE_TOO_LARGE_PIXELS' }])
+  const generate = failedWithJob.blocks.find((block) => block.type === 'step' && block.id === 'exec:branch:b1')
+  assert.equal(generate?.type === 'step' ? generate.error : '', '超过 4096x4096。')
+  assert.equal(generate?.type === 'step' ? generate.errorCode : '', 'IMAGE_TOO_LARGE_PIXELS')
+})
+
+test('对话时间线：空思考不出现，步骤按顺序流在主列', () => {
+  const running = presentAgentTimelineConversation({
+    blocks: [
+      { id: 'thinking', type: 'thinking', status: 'done', startedAt: 1_000, endedAt: 1_000, text: '' },
+      { id: 'exec:submit', type: 'step', status: 'succeeded', kind: 'write', title: '提交生成任务', sourceToolIds: [] },
+      { id: 'exec:branch', type: 'step', status: 'running', kind: 'write', title: '生成 · 首次生成', sourceToolIds: [] },
+    ],
+  })
+  assert.equal(running.live, true)
+  assert.deepEqual(running.visible.map((block) => block.id), ['exec:submit', 'exec:branch'])
+  assert.deepEqual(running.collapsed, [])
+
+  const settled = presentAgentTimelineConversation({
+    blocks: [
+      { id: 'thinking', type: 'thinking', status: 'done', startedAt: 1_000, endedAt: 1_000, text: '' },
+      { id: 'exec:submit', type: 'step', status: 'succeeded', kind: 'write', title: '提交生成任务', sourceToolIds: [] },
+      { id: 'exec:branch', type: 'step', status: 'succeeded', kind: 'write', title: '生成 · 首次生成', sourceToolIds: [] },
+    ],
+  })
+  assert.equal(settled.live, false)
+  assert.deepEqual(settled.visible.map((block) => block.id), ['exec:branch'])
+  assert.deepEqual(settled.collapsed, [])
+
+  const failed = presentAgentTimelineConversation({
+    blocks: [
+      { id: 'exec:submit', type: 'step', status: 'failed', kind: 'write', title: '提交生成任务', sourceToolIds: [], error: '生成服务未就绪' },
+      { id: 'exec:branch', type: 'step', status: 'failed', kind: 'write', title: '生成 · 首次生成', sourceToolIds: [] },
+    ],
+  })
+  assert.equal(failed.live, false)
+  assert.deepEqual(failed.visible.map((block) => block.id), ['exec:branch'])
+  assert.equal(failed.visible[0] && failed.visible[0].type === 'step' ? failed.visible[0].error : '', '生成服务未就绪')
+
+  const failedWithCode = presentAgentTimelineConversation({
+    blocks: [
+      { id: 'exec:submit', type: 'step', status: 'failed', kind: 'write', title: '提交生成任务', sourceToolIds: [], error: '超过 4096x4096。', errorCode: 'IMAGE_TOO_LARGE_PIXELS' },
+      { id: 'exec:branch', type: 'step', status: 'failed', kind: 'write', title: '生成 · 首次生成', sourceToolIds: [] },
+    ],
+  })
+  assert.deepEqual(failedWithCode.visible.map((block) => block.id), ['exec:branch'])
+  assert.equal(failedWithCode.visible[0] && failedWithCode.visible[0].type === 'step' ? failedWithCode.visible[0].errorCode : '', 'IMAGE_TOO_LARGE_PIXELS')
+
+  const submitOnlyFailed = presentAgentTimelineConversation({
+    blocks: [
+      { id: 'exec:submit', type: 'step', status: 'failed', kind: 'write', title: '提交生成任务', sourceToolIds: [], error: '生成服务未就绪' },
+    ],
+  })
+  assert.deepEqual(submitOnlyFailed.visible.map((block) => block.id), ['exec:submit'])
+
+  assert.equal(conversationTimelineStepTitle({
+    id: 'g', type: 'step', status: 'running', kind: 'write', title: '生成 · 首次生成', sourceToolIds: [],
+  }, 'zh-CN'), '正在出图…')
+  assert.equal(conversationTimelineStepTitle({
+    id: 'v', type: 'step', status: 'running', kind: 'write', title: '生成 · 白皙', sourceToolIds: [],
+  }, 'zh-CN'), '正在出图 · 白皙')
+  assert.equal(conversationTimelineStepTitle({
+    id: 's', type: 'step', status: 'succeeded', kind: 'write', title: '提交生成任务', sourceToolIds: [],
+  }, 'zh-CN'), '已提交')
+  assert.equal(conversationTimelineStepTitle({
+    id: 'o', type: 'step', status: 'running', kind: 'read', title: '读取本体上下文', sourceToolIds: [],
+  }, 'zh-CN'), '在看项目…')
+  assert.equal(isAgentPipelineTimelineStep({
+    id: 'g', type: 'step', status: 'running', kind: 'write', title: '生成 · 首次生成', sourceToolIds: [],
+  }), true)
+  assert.equal(isAgentPipelineTimelineStep({
+    id: 'o', type: 'step', status: 'running', kind: 'read', title: '读取本体上下文', sourceToolIds: [],
+  }), false)
+})
+
+test('tool-call accordion：按到达顺序追加，进行中展开，耗时与失败留在组内', () => {
+  let timeline = createAgentTimeline(1_000)
+  timeline = reduceAgentTimeline(timeline, {
+    type: 'tool',
+    step: 0,
+    receivedAt: 1_200,
+    toolCall: toolCall('read-1', 'canvas_read', '读取画布上下文', 'running'),
+  })
+  const live = presentAgentToolAccordion(timeline, 'zh-CN', 1_500)
+  assert.ok(live)
+  assert.equal(live.groups.length, 1)
+  assert.equal(live.groups[0].open, true)
+  assert.equal(live.groups[0].status, 'running')
+  assert.deepEqual(live.groups[0].rows.map((row) => row.id), ['read-1'])
+  assert.equal(live.groups[0].rows[0].verb, '正在读取')
+  assert.equal(agentToolAccordionElapsedLabel(live.elapsedMs, 'zh-CN'), '已处理 0秒')
+
+  timeline = reduceAgentTimeline(timeline, {
+    type: 'tool',
+    step: 0,
+    receivedAt: 2_500,
+    toolCall: toolCall('read-1', 'canvas_read', '读取画布上下文', 'succeeded'),
+  })
+  timeline = reduceAgentTimeline(timeline, {
+    type: 'tool',
+    step: 1,
+    receivedAt: 2_600,
+    toolCall: toolCall('mcp-1', 'mcp_call', '获取设计上下文', 'succeeded'),
+  })
+  timeline = reduceAgentTimeline(timeline, {
+    type: 'tool',
+    step: 2,
+    receivedAt: 2_700,
+    toolCall: toolCall('mcp-2', 'mcp_call', '获取设计上下文', 'succeeded'),
+  })
+  timeline = reduceAgentTimeline(timeline, {
+    type: 'tool',
+    step: 3,
+    receivedAt: 2_800,
+    toolCall: {
+      ...toolCall('skill-1', 'skill_read', '读取技能指南', 'running'),
+      status: 'failed',
+      error: 'Skill 不可用',
+    },
+  })
+
+  const settled = presentAgentToolAccordion(timeline, 'zh-CN', 3_000)
+  assert.ok(settled)
+  assert.equal(settled.groups[0].open, false)
+  assert.equal(settled.groups[0].status, 'failed')
+  assert.deepEqual(settled.groups[0].rows.map((row) => ({
+    id: row.id,
+    verb: row.verb,
+    callCount: row.callCount,
+    status: row.status,
+    error: row.error,
+  })), [
+    { id: 'read-1', verb: '已在 1s 内运行', callCount: undefined, status: 'succeeded', error: undefined },
+    {
+      id: 'mcp-1+mcp-2',
+      verb: '已获取',
+      callCount: 2,
+      status: 'succeeded',
+      error: undefined,
+    },
+    { id: 'skill-1', verb: '读取失败', callCount: undefined, status: 'failed', error: 'Skill 不可用' },
+  ])
+  assert.match(settled.groups[0].rows[1].detail, /2 calls/)
+
+  const conversation = presentAgentTimelineConversation(timeline)
+  assert.equal(conversation.visible.some((block) => block.type === 'step' && block.id.startsWith('step:')), false)
+  assert.equal(conversation.visible.some((block) => block.type === 'raw_group'), false)
+})
+
+test('tool accordion 图标按类别固定映射', () => {
+  assert.equal(agentToolIconKey({ toolName: 'canvas_read', kind: 'read' }), 'file-text')
+  assert.equal(agentToolIconKey({ toolName: 'project_memory_search', kind: 'search' }), 'search-code')
+  assert.equal(agentToolIconKey({ toolName: 'asset_search', kind: 'search' }), 'file-search')
+  assert.equal(agentToolIconKey({ toolName: 'mcp_call', label: '调用 MCP：figma.get_context' }), 'unplug')
+  assert.equal(agentToolIconKey({ toolName: 'shell_exec' }), 'square-terminal')
+  assert.equal(agentToolIconKey({ toolName: 'web_fetch', kind: 'fetch' }), 'globe')
+  assert.equal(agentToolIconKey({ toolName: 'generate_images', kind: 'write' }), 'image')
+  assert.equal(agentToolIconKey({ toolName: 'unknown_tool' }), 'wrench')
+  assert.equal(agentMcpServerIdFromLabel('调用 MCP：figma.get_context'), 'figma')
 })
 
 test('球体动画态只映射动作，不改工具标题', () => {

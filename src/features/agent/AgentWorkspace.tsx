@@ -22,7 +22,7 @@ import {
   pendingBotanicAgentAutoSubmission,
   shouldRetryBotanicAgentAutoSubmission,
   summarizeBotanicAgentRuntime,
-  shouldRestoreBotanicAgentRuntimeSteps,
+  shouldShowBotanicAgentConversationMessage,
   shouldShowBotanicAgentRuntimeFeed,
   type BotanicAgentActionProposal,
   type BotanicAgentActionResult,
@@ -720,12 +720,27 @@ export default function AgentWorkspace({
       return [...conversationMessages, liveConversation.message]
     })()
     // 进行中的 Run 状态由 runtime feed / 底部进度条直播，对话里不画第二张「正在生成」卡。
-    return base.filter((message) => {
-      if (message.kind !== 'run' || !message.runId) return true
-      const run = runs.find((item) => item.id === message.runId)
-      return !run || !shouldRestoreBotanicAgentRuntimeSteps(run.status)
-    })
+    // 结算后结果卡接手，已提交计划回执不再占一行。
+    return base.filter((message) => shouldShowBotanicAgentConversationMessage({
+      kind: message.kind,
+      status: message.status,
+      runId: message.runId,
+      hasPlan: Boolean(message.plan),
+      runStatus: message.runId ? runs.find((item) => item.id === message.runId)?.status : undefined,
+      hasStatusMessage: Boolean(message.runId && base.some((item) => (
+        item.runId === message.runId && (item.kind === 'run' || item.kind === 'notice')
+      ))),
+    }))
   }, [conversationMessages, liveConversation, runs, session])
+  const executionTimelineByRunId = useMemo(() => {
+    const map = new Map<string, AgentTimelineState>()
+    for (const message of session?.messages ?? []) {
+      if (!message.runId) continue
+      const timeline = executionTimelines[message.id]
+      if (timeline) map.set(message.runId, timeline)
+    }
+    return map
+  }, [executionTimelines, session?.messages])
   const latestEvaluableMessageId = useMemo(
     () => botanicAgentLatestEvaluableMessageId(renderedConversationMessages),
     [renderedConversationMessages],
@@ -908,9 +923,20 @@ export default function AgentWorkspace({
     }
   }, [sessionId])
 
+  // Job 失败码经 activeJobId 接到出图步；用稳定指纹订阅，避免每次 poll 都换新数组。
+  const agentJobFailureKey = useCanvasStore((state) => {
+    let key = ''
+    for (const job of state.document.generationJobs) {
+      if (!job.agentRun) continue
+      key += `${job.id}:${job.status}:${job.errorCode ?? ''}:${job.error ?? ''}|`
+    }
+    return key
+  })
+
   // 确认后把已持久化的 Run/分支状态投影进同款对话时间线；不发明未发生的步骤。
   useEffect(() => {
     if (!session?.messages.length || !runs.length) return
+    const jobs = useCanvasStore.getState().document.generationJobs
     const timelineMessageIdByRun = new Map<string, string>()
     for (const message of session.messages) {
       if (message.runId && message.status === 'submitted') timelineMessageIdByRun.set(message.runId, message.id)
@@ -927,7 +953,7 @@ export default function AgentWorkspace({
         if (!message.runId || timelineMessageIdByRun.get(message.runId) !== message.id) continue
         const run = runs.find((item) => item.id === message.runId)
         if (!run) continue
-        const projected = projectBotanicAgentRunOntoTimeline(run, current[message.id], run.updatedAt)
+        const projected = projectBotanicAgentRunOntoTimeline(run, current[message.id], run.updatedAt, jobs)
         const previous = current[message.id]
         const same = previous
           && previous.blocks.length === projected.blocks.length
@@ -936,6 +962,7 @@ export default function AgentWorkspace({
             if (!other || block.type !== other.type) return false
             if (block.type === 'step' && other.type === 'step') {
               return block.id === other.id && block.status === other.status && block.title === other.title
+                && block.error === other.error && block.errorCode === other.errorCode
             }
             return block.id === other.id
           })
@@ -946,7 +973,7 @@ export default function AgentWorkspace({
       }
       return changed ? next : current
     })
-  }, [runs, session?.messages])
+  }, [agentJobFailureKey, runs, session?.messages])
 
   // 已有稳定助手投影不再 observer/execute，只从 durable Turn Events 有界补回气泡时间线。
   useEffect(() => {
@@ -1014,12 +1041,18 @@ export default function AgentWorkspace({
     else messageNodesRef.current.delete(messageId)
   }, [])
 
-  const revealConversationMessage = useCallback((messageId: string, behavior: ScrollBehavior = 'smooth') => {
+  const revealConversationMessage = useCallback((
+    messageId: string,
+    behavior: ScrollBehavior = 'smooth',
+    options?: { highlight?: boolean },
+  ) => {
     const node = messageNodesRef.current.get(messageId)
     if (!node) return false
     const viewport = messagesViewportRef.current
     if (viewport) scrollElementIntoView(viewport, node, { duration: behavior === 'auto' ? 0 : botanicMotion.duration.panel, block: 'center' })
     node.focus({ preventScroll: true })
+    // 打开会话恢复阅读位置只滚动；闪框留给用户主动「定位」时。
+    if (options?.highlight === false) return true
     setLocatedMessageId(messageId)
     if (locatedMessageTimerRef.current !== null) window.clearTimeout(locatedMessageTimerRef.current)
     locatedMessageTimerRef.current = window.setTimeout(() => setLocatedMessageId(''), 1800)
@@ -1324,7 +1357,7 @@ export default function AgentWorkspace({
     if (utilityPanelOpen || !session || readingPositionRestoredRef.current) return
     const frame = requestAnimationFrame(() => {
       const anchorId = session.readingAnchorMessageId
-      const restored = anchorId ? revealConversationMessage(anchorId, 'auto') : false
+      const restored = anchorId ? revealConversationMessage(anchorId, 'auto', { highlight: false }) : false
       if (!restored) {
         const viewport = messagesViewportRef.current
         if (viewport) scrollElementIntoView(viewport, messageEndRef.current ?? 'max', { duration: 0, block: 'end' })
@@ -3586,6 +3619,7 @@ export default function AgentWorkspace({
             ? liveConversation
             : undefined
           const executionTimeline = executionTimelines[message.id]
+            ?? (message.runId ? executionTimelineByRunId.get(message.runId) : undefined)
           return <div
             key={message.id}
             ref={(node) => registerMessageNode(message.id, node)}
@@ -3619,7 +3653,6 @@ export default function AgentWorkspace({
             requestAnimationFrame(() => composerTextareaRef.current?.focus())
           }}
           onShowResults={() => setUtilityPanel('result')}
-          onShowTask={showTaskForRun}
           onFocusNodes={onFocusNodes}
           onPromoteRunToWorkflow={onPromoteRunToWorkflow}
           onAnswerClarification={(targetMessage, answers) => void answerClarification(targetMessage, answers)}

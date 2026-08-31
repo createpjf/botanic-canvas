@@ -263,3 +263,125 @@ export function ChevronDownIcon({ className }: BotanicIconProps) {
     <path d="M2 3.5 5 6.5 8 3.5" stroke="currentColor" strokeWidth="1.35" strokeLinecap="round" strokeLinejoin="round" />
   </svg>
 }
+
+/** 结果卡 · 继续改这张图，不与消息编辑铅笔、对话气泡共用 */
+export function ContinueChatIcon({ className }: BotanicIconProps) {
+  return <svg className={className} width="1em" height="1em" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+    <rect x="3.75" y="6.75" width="11" height="11" rx="2" stroke="currentColor" strokeWidth="1.5" />
+    <path d="M16.25 12h4m0 0-2.35-2.35M20.25 12l-2.35 2.35" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+}
+
+/** 结果卡 · 打开任务，不与计划模式清单共用 */
+export function TaskCardIcon({ className }: BotanicIconProps) {
+  return <svg className={className} width="1em" height="1em" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+    <rect x="5.75" y="7.25" width="12.5" height="12" rx="1.75" stroke="currentColor" strokeWidth="1.5" />
+    <path d="M8.25 4.75h9.5A1.75 1.75 0 0 1 19.5 6.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+  </svg>
+}
+
+/** 结果卡 · 跳到画布节点，不与评审取景框共用 */
+export function PinNodeIcon({ className }: BotanicIconProps) {
+  return <svg className={className} width="1em" height="1em" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+    <path d="M12 21.25s6.25-5.9 6.25-10.5a6.25 6.25 0 1 0-12.5 0c0 4.6 6.25 10.5 6.25 10.5Z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+    <circle cx="12" cy="10.75" r="2" stroke="currentColor" strokeWidth="1.5" />
+  </svg>
+}
+
+/** 结果卡 · 存成流程，不与素材文件夹共用 */
+export function FlowBranchIcon({ className }: BotanicIconProps) {
+  return <svg className={className} width="1em" height="1em" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+    <circle cx="6.25" cy="12" r="2.25" stroke="currentColor" strokeWidth="1.5" />
+    <circle cx="17.75" cy="6.75" r="2.25" stroke="currentColor" strokeWidth="1.5" />
+    <circle cx="17.75" cy="17.25" r="2.25" stroke="currentColor" strokeWidth="1.5" />
+    <path d="M8.5 12h3.25M11.75 12V6.75h3.75M11.75 12v5.25h3.75" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+  </svg>
+}
+
+/** Agent tool accordion · Lucide wrench（默认 tool） */
+export function WrenchIcon({ className }: BotanicIconProps) {
+  return <svg className={className} width="1em" height="1em" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+    <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.106-3.105c.32-.322.863-.22.983.218a6 6 0 0 1-8.259 7.057l-7.91 7.91a1 1 0 0 1-2.999-3l7.91-7.91a6 6 0 0 1 7.057-8.259c.438.12.54.662.219.984z" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+}
+
+/** Agent tool accordion · Lucide hammer（写入 / 干活） */
+export function HammerIcon({ className }: BotanicIconProps) {
+  return <svg className={className} width="1em" height="1em" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+    <path d="m15 12-9.373 9.373a1 1 0 0 1-3.001-3L12 9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    <path d="m18 15 4-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    <path d="m21.5 11.5-1.914-1.914A2 2 0 0 1 19 8.172v-.344a2 2 0 0 0-.586-1.414l-1.657-1.657A6 6 0 0 0 12.516 3H9l1.243 1.243A6 6 0 0 1 12 8.485V10l2 2h1.172a2 2 0 0 1 1.414.586L18.5 14.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+}
+
+/** Agent tool accordion · Lucide search-code（搜索类） */
+export function SearchCodeIcon({ className }: BotanicIconProps) {
+  return <svg className={className} width="1em" height="1em" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+    <path d="m13 13.5 2-2.5-2-2.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    <path d="m21 21-4.3-4.3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    <path d="M9 8.5 7 11l2 2.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    <circle cx="11" cy="11" r="8" stroke="currentColor" strokeWidth="1.5" />
+  </svg>
+}
+
+/** Agent tool accordion · Lucide file-search（搜文件） */
+export function FileSearchIcon({ className }: BotanicIconProps) {
+  return <svg className={className} width="1em" height="1em" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+    <path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    <path d="M14 2v5a1 1 0 0 0 1 1h5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    <circle cx="11.5" cy="14.5" r="2.5" stroke="currentColor" strokeWidth="1.5" />
+    <path d="M13.3 16.3 15 18" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+}
+
+/** Agent tool accordion · Lucide file-text（读文件） */
+export function FileTextIcon({ className }: BotanicIconProps) {
+  return <svg className={className} width="1em" height="1em" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+    <path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    <path d="M14 2v5a1 1 0 0 0 1 1h5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    <path d="M10 9H8M16 13H8M16 17H8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+}
+
+/** Agent tool accordion · Lucide square-terminal（shell） */
+export function SquareTerminalIcon({ className }: BotanicIconProps) {
+  return <svg className={className} width="1em" height="1em" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+    <path d="m7 11 2-2-2-2M11 13h4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    <rect width="18" height="18" x="3" y="3" rx="2" ry="2" stroke="currentColor" strokeWidth="1.5" />
+  </svg>
+}
+
+/** Agent tool accordion · Lucide unplug（MCP 无品牌 logo） */
+export function UnplugIcon({ className }: BotanicIconProps) {
+  return <svg className={className} width="1em" height="1em" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+    <path d="m19 5 3-3M2 22l3-3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    <path d="M6.3 20.3a2.4 2.4 0 0 0 3.4 0L12 18l-6-6-2.3 2.3a2.4 2.4 0 0 0 0 3.4Z" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    <path d="M7.5 13.5 10 11M10.5 16.5 13 14" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    <path d="m12 6 6 6 2.3-2.3a2.4 2.4 0 0 0 0-3.4l-2.6-2.6a2.4 2.4 0 0 0-3.4 0Z" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+}
+
+/** Agent tool accordion · Lucide mouse-pointer-click */
+export function MousePointerClickIcon({ className }: BotanicIconProps) {
+  return <svg className={className} width="1em" height="1em" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+    <path d="M14 4.1 12 6M5.1 8l-2.9-.8M6 12l-1.9 2M7.2 2.2 8 5.1" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    <path d="M9.037 9.69a.498.498 0 0 1 .653-.653l11 4.5a.5.5 0 0 1-.074.949l-4.349 1.041a1 1 0 0 0-.74.739l-1.04 4.35a.5.5 0 0 1-.95.074z" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+}
+
+/** Agent tool accordion · Lucide list-todo */
+export function ListTodoIcon({ className }: BotanicIconProps) {
+  return <svg className={className} width="1em" height="1em" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+    <path d="M13 5h8M13 12h8M13 19h8M3 17l2 2 4-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    <rect x="3" y="4" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.5" />
+  </svg>
+}
+
+/** Agent tool accordion · Lucide image */
+export function ImageIcon({ className }: BotanicIconProps) {
+  return <svg className={className} width="1em" height="1em" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+    <rect width="18" height="18" x="3" y="3" rx="2" ry="2" stroke="currentColor" strokeWidth="1.5" />
+    <circle cx="9" cy="9" r="2" stroke="currentColor" strokeWidth="1.5" />
+    <path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+}
