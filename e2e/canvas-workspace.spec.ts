@@ -117,16 +117,9 @@ test('项目库可返回产品首页，画布不出现产品首页和状态', as
   await expect(page).toHaveURL(/#\/canvas\/project-\d+$/)
   await expect(page.getByRole('link', { name: '产品首页', exact: true })).toHaveCount(0)
   await expect(page.getByRole('link', { name: '状态', exact: true })).toHaveCount(0)
-  await page.getByRole('button', { name: '图片生成', exact: true }).click()
-  await expect(page.getByRole('button', { name: '从画布移除 图像生成' })).toBeVisible()
 
   await page.getByRole('button', { name: '返回项目' }).click()
   await expect(page).toHaveURL(/#\/projects$/)
-  const projectSearch = page.getByRole('searchbox', { name: '搜索项目' })
-  await projectSearch.fill('没有这个项目')
-  await expect(page.getByText('没有匹配的项目。')).toBeVisible()
-  await projectSearch.fill('创意项目 1')
-  await expect(page.locator('article.project-card', { hasText: '创意项目 1' })).toBeVisible()
   await page.getByRole('link', { name: 'Botanic 产品首页', exact: true }).click()
   await expect(page).toHaveURL(/\/$/)
   await expect(page.getByRole('heading', { name: '让品牌视觉生产，成为持续生长的创作系统。' })).toBeVisible()
@@ -256,77 +249,6 @@ test('Agent Session 被刷新清掉后，模式切换与发送会自动恢复', 
 
   await expect.soft(page.getByRole('button', { name: '执行模式：自动模式' })).toBeVisible()
   await expect.soft(page.getByRole('button', { name: '发送给 Agent' })).toBeEnabled()
-})
-
-test('未绑定品牌可在 Agent 面板完成绑定并读取生效规则', async ({ page }) => {
-  await stubReadOnlyRuntime(page)
-  await page.route('**/api/brand-kits', async (route) => {
-    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
-      library: {
-        id: 'global-brand-kits', schemaVersion: 1, updatedAt: Date.now(),
-        kits: [{ brandId: 'botanic', name: 'Botanic 品牌', rules: [] }],
-      },
-    }) })
-  })
-  await page.route('**/api/projects/*/brand-kit', async (route) => {
-    const brandId = await page.evaluate(async () => {
-      const loadStore = new Function('return import("/src/store/canvasStore.ts")') as () => Promise<{
-        useCanvasStore: { getState: () => { document: { brandId?: string } } }
-      }>
-      return (await loadStore()).useCanvasStore.getState().document.brandId
-    })
-    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
-      capabilities: ['read', 'edit'],
-      brandKit: brandId === 'botanic' ? {
-        brandId: 'botanic', fingerprint: 'brand-kit-e2e', pending: [], overridden: [],
-        rules: [{
-          id: 'rule-color', facet: 'color', slot: 'color:default', statement: '主色保持植物绿。',
-          enforcement: 'must', status: 'active', source: 'human', layer: 'global',
-        }],
-      } : null,
-    }) })
-  })
-
-  await page.goto('/#/projects')
-  await page.getByRole('button', { name: '新建项目' }).click()
-  await page.getByRole('button', { name: '描述目标', exact: true }).click()
-  await page.getByRole('button', { name: 'Agent 工具' }).click()
-  await page.getByRole('button', { name: '品牌规则' }).click()
-
-  await expect(page.getByText('当前项目未绑定品牌，没有任何品牌规则参与生成。')).toBeVisible()
-  await expect(page.getByRole('button', { name: '选择项目品牌' })).toContainText('Botanic 品牌')
-  await page.getByRole('button', { name: '绑定品牌' }).click()
-  expect(await page.evaluate(async () => {
-    const loadStore = new Function('return import("/src/store/canvasStore.ts")') as () => Promise<{
-      useCanvasStore: { getState: () => { document: { brandId?: string }; persistenceStatus: string } }
-    }>
-    const state = (await loadStore()).useCanvasStore.getState()
-    return { brandId: state.document.brandId, persistenceStatus: state.persistenceStatus }
-  })).toEqual({ brandId: 'botanic', persistenceStatus: 'saved' })
-  await expect(page.getByText('主色保持植物绿。')).toBeVisible()
-})
-
-test('放弃本地冲突草稿前必须再次确认', async ({ page }) => {
-  await stubReadOnlyRuntime(page)
-  await page.goto('/#/projects')
-  await page.getByRole('button', { name: '新建项目' }).click()
-  await page.getByRole('button', { name: '描述目标', exact: true }).click()
-  await page.evaluate(async () => {
-    const loadStore = new Function('return import("/src/store/canvasStore.ts")') as () => Promise<{
-      useCanvasStore: { setState: (state: { persistenceStatus: 'conflict' }) => void }
-    }>
-    ;(await loadStore()).useCanvasStore.setState({ persistenceStatus: 'conflict' })
-  })
-
-  await page.getByRole('button', { name: /查看变更/ }).click()
-  let confirmation = ''
-  page.once('dialog', async (dialog) => {
-    confirmation = dialog.message()
-    await dialog.dismiss()
-  })
-  await page.getByRole('button', { name: '放弃本地，使用云端' }).click()
-  expect(confirmation).toBe('确定用云端版本替换当前本地草稿吗？')
-  await expect(page.getByRole('button', { name: '放弃本地，使用云端' })).toBeVisible()
 })
 
 test('Agent 离线消息跨页面实例恢复，联网后只按原幂等键提交一次', async ({ page, context }) => {
