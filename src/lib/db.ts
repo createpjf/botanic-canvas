@@ -775,8 +775,10 @@ export async function persistAcceptedRemoteCanvasDocument(document: CanvasDocume
 }
 
 /**
- * 接受同源 API 刚刚持久化的工作流增量。只推进远端版本并缓存当前合并视图；
- * 不把可能包含未同步编辑的本地文档误记成远端基线，也不反向 PATCH 服务端。
+ * 接受同源 API 刚刚持久化的工作流增量。推进远端版本与已应用 revision，
+ * 并缓存当前合并视图；不把可能包含未同步编辑的本地文档误记成远端基线，
+ * 也不反向 PATCH 服务端。已应用 revision 必须登记，否则同 revision 的
+ * 实时推送会再走整份刷新，冲掉补丁刚保住的本机呈现。
  */
 export async function persistAcknowledgedRemoteCanvasPatch(
   document: CanvasDocument,
@@ -784,6 +786,7 @@ export async function persistAcknowledgedRemoteCanvasPatch(
   graphRevision: number,
 ) {
   rememberRemoteRevisions(document.id, { revision, graphRevision })
+  rememberAppliedRemoteRevision(document.id, revision)
   await persistLocalDocument(document)
 }
 

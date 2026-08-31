@@ -1,6 +1,7 @@
 // @ts-check
 
 import { AgentToolRuntimeError } from './agentToolRuntime.mjs'
+import { catalogAspectRatiosForModel } from './generationOutputSize.mjs'
 
 /**
  * Agent 画布编辑的领域规则：提案-确认制的「改文字 / 调生成参数 / 删节点」。
@@ -31,8 +32,27 @@ function findNode(document, nodeId) {
 function nodeIsBusy(document, node) {
   const data = node.data ?? {}
   if (ACTIVE_NODE_STATUSES.has(data.status) || ACTIVE_TASK_STATUSES.has(data.taskStatus)) return true
-  if (!data.jobId) return false
-  return (document.generationJobs ?? []).some((job) => job.id === data.jobId && ACTIVE_JOB_STATUSES.has(job.status))
+  return (document.generationJobs ?? []).some((job) => (
+    ACTIVE_JOB_STATUSES.has(job.status)
+    && (job.id === data.jobId
+      || job.promptNodeId === node.id
+      || job.generateNodeId === node.id
+      || job.resultNodeId === node.id
+      || job.parentNodeId === node.id)
+  ))
+}
+
+function assertCompatibleGenerateSettings(merged, models) {
+  const model = (models ?? []).find((item) => item.id === merged.model)
+  if (!model) throw editError('CANVAS_MODEL_NOT_ALLOWED', '目标模型不在可用目录中。')
+  const aspectRatios = model.aspectRatios ?? catalogAspectRatiosForModel(model)
+  if (merged.aspectRatio && !aspectRatios.includes(merged.aspectRatio)) {
+    throw editError('CANVAS_SETTINGS_NOT_ALLOWED', '该模型不支持这个画面比例。')
+  }
+  const resolutions = model.resolutions ?? ['1K', '2K']
+  if (merged.resolution && !resolutions.includes(merged.resolution)) {
+    throw editError('CANVAS_SETTINGS_NOT_ALLOWED', '该模型不支持这个清晰度。')
+  }
 }
 
 function replacedNode(document, next, now) {
@@ -45,6 +65,7 @@ function replacedNode(document, next, now) {
 
 export function applyBotanicAgentCanvasTextUpdate(document, { nodeId, content, label }, now = Date.now()) {
   const node = findNode(document, nodeId)
+  if (nodeIsBusy(document, node)) throw editError('CANVAS_NODE_BUSY', '该节点的任务正在进行，不能修改。', 409)
   if (content !== undefined && node.type !== 'text') {
     throw editError('CANVAS_EDIT_NOT_ALLOWED', '只有文字节点可以改写正文。')
   }
@@ -66,9 +87,8 @@ export function applyBotanicAgentGenerateSettingsUpdate(document, { nodeId, sett
   const node = findNode(document, nodeId)
   if (node.type !== 'generate') throw editError('CANVAS_EDIT_NOT_ALLOWED', '只能调整生成节点的参数。')
   if (nodeIsBusy(document, node)) throw editError('CANVAS_NODE_BUSY', '该节点的任务正在进行，不能修改参数。', 409)
-  if (settings?.model !== undefined && !(models ?? []).some((model) => model.id === settings.model)) {
-    throw editError('CANVAS_MODEL_NOT_ALLOWED', '目标模型不在可用目录中。')
-  }
+  const merged = { ...node.data?.settings, ...settings }
+  if (settings && Object.keys(settings).length) assertCompatibleGenerateSettings(merged, models)
   const next = {
     ...node,
     data: {
