@@ -43,3 +43,11 @@ export function initializeBrowserSentry() {
 }
 
 export const sentryReactErrorHandler = Sentry.reactErrorHandler
+
+/**
+ * 静默兜底路径的最低可观测性：失败不打断用户，但要留痕，
+ * 否则「刷新没生效 / 补丁没落盘」这类断链只能靠猜。未初始化时是 no-op。
+ */
+export function recordSentryBreadcrumb(category: string, message: string) {
+  Sentry.addBreadcrumb({ category, message, level: 'warning' })
+}

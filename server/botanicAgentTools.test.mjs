@@ -85,7 +85,7 @@ test('Agent 规划工具可以读取画布上下文、搜索素材并调用白�
   })
 
   assert.deepEqual(registry.openAITools().map((item) => item.function.name), [
-    'canvas_read', 'asset_search', 'skill_run', 'skill_create_propose', 'generation_ask_clarification', 'generation_create_plan',
+    'canvas_read', 'asset_search', 'skill_run', 'skill_create_propose', 'canvas_edit_propose', 'generation_ask_clarification', 'generation_create_plan',
   ])
   const canvas = await registry.execute('canvas_read', {}, {})
   assert.deepEqual(canvas, {
@@ -179,6 +179,50 @@ test('Planner 调用 Skill 后立即生效，MCP 仍转为待确认行动', asyn
   await assert.rejects(
     registry.execute('mcp_propose', { server: 'unknown', tool: 'delete', arguments: {}, reason: '删除' }, { toolCallId: 'bad' }),
     /不在允许列表/,
+  )
+})
+
+test('画布修改走提案-确认制：规划期只出提案，确认后经注册表执行编辑器', async () => {
+  const proposals = []
+  const planning = createBotanicAgentPlanningToolRegistry({
+    input,
+    finalizePlan: (raw) => raw,
+    finalizeClarification: (raw) => raw,
+    onProposeAction: (proposal) => proposals.push(proposal),
+  })
+  await planning.execute('canvas_edit_propose', {
+    operation: 'update_text',
+    arguments: { nodeId: 'text-1', content: '新提示词' },
+    reason: '按用户要求改写生成描述。',
+  }, { toolCallId: 'call-canvas-1' })
+  assert.deepEqual(proposals, [{
+    id: 'call-canvas-1', kind: 'canvas', toolName: 'canvas_update_text', label: '修改画布文字',
+    summary: '按用户要求改写生成描述。', risk: 'write',
+    arguments: { nodeId: 'text-1', content: '新提示词' },
+    status: 'awaiting_confirmation',
+  }])
+
+  const executed = []
+  const actions = createBotanicAgentActionToolRegistry({
+    updateCanvasText: async (argumentsValue) => {
+      executed.push(argumentsValue)
+      return { message: '已更新。', canvasNodeIds: [argumentsValue.nodeId] }
+    },
+  })
+  const result = await executeConfirmedAgentAction({
+    registry: actions, name: 'canvas_update_text',
+    arguments: { nodeId: 'text-1', content: '新提示词' },
+    toolCallId: 'call-canvas-1', confirmed: true,
+  })
+  assert.deepEqual(executed, [{ nodeId: 'text-1', content: '新提示词' }])
+  assert.deepEqual(result.output.canvasNodeIds, ['text-1'])
+  // 空修改在参数校验层就被拒，不进执行器。
+  await assert.rejects(
+    executeConfirmedAgentAction({
+      registry: actions, name: 'canvas_update_text',
+      arguments: { nodeId: 'text-1' }, toolCallId: 'call-canvas-2', confirmed: true,
+    }),
+    /至少提供/,
   )
 })
 
@@ -391,6 +435,26 @@ test('MCP 内联 image 与 structuredContent 收成可展示 Artifact', async ()
   assert.equal(mcp.output.artifacts?.[2].kind, 'image')
   assert.match(mcp.output.artifacts?.[2].url ?? '', /^data:image\/png;base64,/)
   assert.equal(mcp.output.artifacts?.[2].placement, 'panel')
+
+  // 提供媒体落库 seam 时内联图变成同源地址，Artifact Index 才收得进历史。
+  const persisted = []
+  const persistedRegistry = createBotanicAgentActionToolRegistry({
+    mcpRuntime: runtime,
+    persistMcpMedia: async (dataUrl) => {
+      persisted.push(dataUrl)
+      return '/api/media/media_mcp_1'
+    },
+  })
+  const persistedCall = await executeConfirmedAgentAction({
+    registry: persistedRegistry, name: 'mcp_call',
+    arguments: {
+      server: descriptor.server, tool: descriptor.tool, arguments: { query: '海边' },
+      version: descriptor.version, capabilityHash: descriptor.capabilityHash,
+    },
+    toolCallId: 'call-mcp-rich-2', confirmed: true,
+  })
+  assert.equal(persistedCall.output.artifacts?.[2].url, '/api/media/media_mcp_1')
+  assert.match(persisted[0] ?? '', /^data:image\/png;base64,/)
 })
 
 test('依赖不可用的 Skill 仍挂载，但简报明说规则不完整', () => {

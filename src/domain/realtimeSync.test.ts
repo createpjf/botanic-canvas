@@ -57,6 +57,12 @@ test('忽略其他项目、旧版本和未知实时消息', () => {
     currentUpdatedAt: 100,
   }), false)
   assert.equal(shouldRefreshFromRealtimeEvent({
+    event: { type: 'project.updated', projectId: 'project-1', revision: 5, updatedAt: 300 },
+    currentProjectId: 'project-1',
+    currentUpdatedAt: 100,
+    appliedRevision: 5,
+  }), false)
+  assert.equal(shouldRefreshFromRealtimeEvent({
     event: { type: 'unknown', projectId: 'project-1', updatedAt: 300 },
     currentProjectId: 'project-1',
     currentUpdatedAt: 100,

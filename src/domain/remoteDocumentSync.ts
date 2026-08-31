@@ -33,22 +33,33 @@ export type RemoteCanvasRefreshInput = {
   remote: CanvasDocument
   baselineUpdatedAt: number
   hasPendingDraft: boolean
+  /** 本次读到的服务端 revision；与 appliedRevision 成对提供时按单调版本判新旧。 */
+  remoteRevision?: number
+  /** 本地画布已完整反映的服务端 revision。 */
+  appliedRevision?: number
 }
 
 /**
  * 服务器文档是权威来源，但绝不能覆盖请求发出后产生的本地编辑。
  * pending draft 由持久化层确认；updatedAt baseline 用来拦截请求飞行期间的编辑。
+ * 新旧判断优先用服务端 revision：本地写会用本机挂钟推高 `updatedAt`，
+ * 挂钟比较会把确实更新的服务端文档（如 Agent 生成中的状态回写）当旧版拒收。
  */
 export function resolveRemoteCanvasRefresh({
   current,
   remote,
   baselineUpdatedAt,
   hasPendingDraft,
+  remoteRevision,
+  appliedRevision,
 }: RemoteCanvasRefreshInput): { document: CanvasDocument; applied: boolean } {
+  const remoteIsNewer = typeof remoteRevision === 'number' && typeof appliedRevision === 'number'
+    ? remoteRevision > appliedRevision
+    : remote.updatedAt > current.updatedAt
   if (hasPendingDraft
     || current.id !== remote.id
     || current.updatedAt !== baselineUpdatedAt
-    || remote.updatedAt <= current.updatedAt) {
+    || !remoteIsNewer) {
     return { document: current, applied: false }
   }
   return {

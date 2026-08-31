@@ -72,6 +72,7 @@ import type { BotanicAgentRunReview } from '../../domain/agentReviewContract'
 import {
   agentMcpServerBrandLogoSrc,
   agentMcpServerIdFromLabel,
+  agentTimelineHasRenderableContent,
   agentTimelineOrbState,
   agentTimelineStepToolName,
   agentToolAccordionElapsedLabel,
@@ -1213,8 +1214,8 @@ export function AgentConversationMessage({
       ? streaming
         ? message.content
           ? <AgentPromptResponse content={message.content} prompt={message.prompt} mentionCatalog={mentionCatalog} />
-          // 已有时间线 / accordion 时进度在上面，不再叠一句空正文占位。
-          : timeline ? null : <p className="agent-message__pending">{t('正在规划这一步…', 'Planning the next step…')}</p>
+          // 时间线画得出内容时进度在上面；空时间线仍要占位，不能让气泡整段空白。
+          : timeline && agentTimelineHasRenderableContent(timeline) ? null : <p className="agent-message__pending">{t('正在规划这一步…', 'Planning the next step…')}</p>
         : <AgentCollapsibleContent content={message.content} prompt={message.prompt} mentionCatalog={mentionCatalog} />
       : <AgentMessageRichContent content={message.content} mentions={message.mentions} catalogs={mentionCatalog} />) : null
 
@@ -1343,12 +1344,12 @@ export function AgentConversationMessage({
                 {action.status === 'failed' ? canManualRetryAction(action) ? <div className="agent-action-card__buttons"><button type="button" disabled={executingActionId === action.id} onClick={() => onActionIntent(message, action, 'manual_retry')}>{executingActionId === action.id ? t('执行中…', 'Executing…') : action.manualRetryResumeAvailable ? t('继续执行', 'Continue') : t('重新执行', 'Run again')}</button></div> : <small>{t('本次失败不会原地换新标识重试，请重新发起行动。', 'This failed action will not be retried under a new identity. Start a new action.')}</small> : null}
               </>
               if (settled) return <details key={action.id} className={`agent-action-card is-settled is-${action.status}`}>
-                <summary><span>{action.kind === 'skill' ? 'SKILL' : 'MCP'}</span><strong>{action.label}</strong><small>{action.status === 'succeeded' ? action.result ? t('已执行', 'Executed') : t('已确认生效', 'Confirmed applied') : t('已跳过', 'Skipped')}</small></summary>
+                <summary><span>{action.kind === 'skill' ? 'SKILL' : action.kind === 'canvas' ? t('画布', 'CANVAS') : 'MCP'}</span><strong>{action.label}</strong><small>{action.status === 'succeeded' ? action.result ? t('已执行', 'Executed') : t('已确认生效', 'Confirmed applied') : t('已跳过', 'Skipped')}</small></summary>
                 <p>{action.summary}</p>
                 {body}
               </details>
               return <article key={action.id} className={`agent-action-card is-${action.status}`}>
-                <header><span>{action.kind === 'skill' ? 'SKILL' : 'MCP'}</span><small>{action.risk === 'external' ? t('外部调用', 'External action') : t('写入项目', 'Writes to project')}</small></header>
+                <header><span>{action.kind === 'skill' ? 'SKILL' : action.kind === 'canvas' ? t('画布', 'CANVAS') : 'MCP'}</span><small>{action.risk === 'external' ? t('外部调用', 'External action') : t('写入项目', 'Writes to project')}</small></header>
                 <strong>{action.label}</strong>
                 <p>{action.summary}</p>
                 {body}

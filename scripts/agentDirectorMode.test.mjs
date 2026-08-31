@@ -16,9 +16,11 @@ function between(source, from, to) {
 }
 
 test('服务端已提交的 Run 不再补打浏览器三跳，但空 queued 保留幂等兜底', () => {
-  const confirm = between(bridge, 'const snapshot = await createPersistentBotanicAgentRun', 'const execution = await executePersistentBotanicAgentRun(projectId, runId, {')
+  const confirm = between(bridge, 'const creation = await createPersistentBotanicAgentRun', 'const execution = await executePersistentBotanicAgentRun(projectId, runId, {')
   assert.match(confirm, /serverSubmitted/)
   assert.match(confirm, /branch\.activeJobId \|\| branch\.jobIds\.length/)
+  // 服务端已提交时优先用响应里的工作流增量；整份刷新只是旧服务端的回退。
+  assert.match(confirm, /creation\.canvasPatch\) await applyAgentWorkflowPatch/)
   // 旧版服务端或队列暂不可用时必须仍能走原路径，否则升级窗口内任务会卡死。
   assert.match(confirm, /executePersistentBotanicAgentRun/)
 })

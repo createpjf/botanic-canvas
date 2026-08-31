@@ -4021,11 +4021,11 @@ button.project-tab__main { border: 0; cursor: pointer; }
 .agent-message { position: relative; display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 9px; margin-bottom: 18px; }
 .agent-message.is-user { grid-template-columns: minmax(0, 1fr); }
 .agent-message.is-user .agent-message__role { display: none; }
-.agent-message.is-bob-large { grid-template-columns: 72px minmax(0, 1fr); }
+/* Bob 大回复不改列宽：头像槽恒定 28px，放大只走 transform，不挤压正文排版。 */
 .agent-message__role { display: grid; width: 28px; height: 28px; place-items: center; background: transparent; color: #2d633b; }
 .agent-message__role svg { width: 28px; height: 28px; overflow: visible; }
-.agent-message.is-bob-large .agent-message__role { width: 72px; height: 96px; align-self: start; }
-.agent-message.is-bob-large .agent-message__role svg { width: 72px; height: 96px; }
+.agent-message.is-bob-large .agent-message__role { align-self: start; }
+.agent-message.is-bob-large .agent-message__role svg { transform: scale(1.35); transform-origin: center top; }
 .agent-message__body { min-width: 0; }
 .agent-message__body > p { margin: 2px 0 0; color: #2a3d30; font-size: 13px; line-height: 1.75; white-space: pre-wrap; }
 /* 正文按 Claude 文档尺：可读字号、列表间距、表格只留横线。 */

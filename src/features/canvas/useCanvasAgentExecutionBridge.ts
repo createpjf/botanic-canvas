@@ -42,6 +42,7 @@ import { serverPersistenceEnabled } from '../../lib/productSession'
 import { localizeProductError } from '../../i18n/core'
 import { useProductI18n } from '../../i18n/react'
 import { useCanvasStore } from '../../store/canvasStore'
+import { recordSentryBreadcrumb } from '../../lib/sentry'
 import { useAgentSessionMessages } from '../agent/useAgentSessionMessages'
 import type { AgentArtifactIndexState, AgentContextItem, AgentDockTarget } from '../agent/agentWorkspace.types'
 import {
@@ -473,6 +474,9 @@ export function useCanvasAgentExecutionBridge({
     if (useCanvasStore.getState().document.id !== projectId) {
       return { ...output, message: `${output.message} ${copy.projectChangedResult}` }
     }
+    // 画布编辑类动作：更新走增量 patch 秒上屏；删除无法用 upsert 表达，整份刷新兜底。
+    if (output.canvasPatch) await applyAgentWorkflowPatch(output.canvasPatch)
+    if (output.canvasRemovedNodeIds?.length) await refreshDocumentFromRemote().catch(() => false)
     const canvasCommands = resolveBotanicAgentCanvasCommands(output)
     const writebacks = readBotanicAgentCanvasWritebacks(action.result)
     const completedArtifactIds = new Set(writebacks.map((writeback) => writeback.artifactId))
@@ -520,7 +524,7 @@ export function useCanvasAgentExecutionBridge({
     return canvasCommands.every(({ artifact }) => completedArtifactIds.has(artifact.id))
       ? result
       : { ...result, canvasWritebackPending: true }
-  }, [addTextNode, addUploadedAssetsToCanvas, copy.projectChangedResult, document.id, locale, renameCanvasNode, updateTextNode])
+  }, [addTextNode, addUploadedAssetsToCanvas, applyAgentWorkflowPatch, copy.projectChangedResult, document.id, locale, refreshDocumentFromRemote, renameCanvasNode, updateTextNode])
 
   const confirmPlan = useCallback(async (plan: BotanicAgentPlan, submissionKey?: string) => {
     const projectId = document.id
@@ -567,7 +571,7 @@ export function useCanvasAgentExecutionBridge({
         if (useCanvasStore.getState().document.id !== projectId) throw new Error(copy.projectChanged)
         await replaceMediaSources(replacements)
         if (useCanvasStore.getState().document.id !== projectId) throw new Error(copy.projectChanged)
-        const snapshot = await createPersistentBotanicAgentRun({
+        const creation = await createPersistentBotanicAgentRun({
           projectId,
           plan,
           idempotencyKey: submissionKey,
@@ -580,6 +584,7 @@ export function useCanvasAgentExecutionBridge({
             ...(branch.item ? { item: branch.item } : {}),
           })),
         })
+        const snapshot = creation.run
         if (useCanvasStore.getState().document.id !== projectId) {
           const execution = await executePersistentBotanicAgentRun(projectId, snapshot.id)
           return { started: execution.jobIds.length > 0, runId: snapshot.id }
@@ -600,7 +605,13 @@ export function useCanvasAgentExecutionBridge({
           const started = snapshot.status !== 'failed'
             && snapshot.branches.some((branch) => branch.activeJobId || branch.jobIds.length > 0)
           if (useCanvasStore.getState().document.id === projectId) {
-            await refreshDocumentFromRemote().catch(() => false)
+            // 优先用响应里的工作流增量：整份刷新会被「本机时间戳更新/有待同步草稿」
+            // 守卫拒绝（确认时刚用本机时钟写过 Run 快照），占位节点和连线就上不了画布。
+            if (creation.canvasPatch) await applyAgentWorkflowPatch(creation.canvasPatch)
+            else await refreshDocumentFromRemote().catch(() => {
+              recordSentryBreadcrumb('agent-canvas', '确认后整份画布刷新失败，等待实时推送或恢复器兜底。')
+              return false
+            })
             if (useCanvasStore.getState().document.id === projectId) {
               const visibleNodeIds = resolveRunNodes(runId)
               if (visibleNodeIds.length) {

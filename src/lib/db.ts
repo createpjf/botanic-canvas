@@ -128,6 +128,27 @@ function rememberRemoteDocument(id: string, response: { document: CanvasDocument
   return true
 }
 
+/**
+ * 本地画布已完整反映的服务端 revision。远端刷新用它做单调新旧判断：
+ * 本机 `updatedAt` 是挂钟，确认计划等本地写会把它推到服务端写库时间之后，
+ * 按挂钟比较会把更新的服务端文档当成旧版拒收。
+ */
+const appliedRemoteRevisions = new Map<string, number>()
+
+export function rememberAppliedRemoteRevision(id: string, revision?: number) {
+  if (typeof revision !== 'number' || !Number.isInteger(revision)) return
+  const current = appliedRemoteRevisions.get(id)
+  if (current === undefined || revision > current) appliedRemoteRevisions.set(id, revision)
+}
+
+export function appliedRemoteRevision(id: string) {
+  return appliedRemoteRevisions.get(id)
+}
+
+export function lastKnownRemoteRevision(id: string) {
+  return remoteRevisions.get(id)
+}
+
 type CollectionPatch<T extends { id: string }> = {
   upsert?: T[]
   remove?: string[]
@@ -428,7 +449,10 @@ export async function refreshCanvasDocumentFromRemote(id: string) {
     () => readRemoteCanvasDocument(id),
     persistLocalDocument,
   )
-  if (remote) remoteConflictRevisions.delete(id)
+  if (remote) {
+    remoteConflictRevisions.delete(id)
+    rememberAppliedRemoteRevision(id, remoteRevisions.get(id))
+  }
   return remote
 }
 
@@ -623,6 +647,8 @@ async function writeRemoteCanvasDocument(document: CanvasDocument) {
     ...response,
     document: stripAgentSessionMessages(response.document),
   })
+  // 写回执包含服务端合并后的权威文档；本地状态从这一刻起可按 revision 判新旧。
+  rememberAppliedRemoteRevision(document.id, response.revision)
   const retained = {
     ...response.document,
     agentSessions: reconcileAgentSessionsAfterDocumentSync(document.agentSessions, response.document.agentSessions),
@@ -643,6 +669,7 @@ export async function createCanvasProject(document: CanvasDocument) {
     body: JSON.stringify({ document: prepared }),
   })
   rememberRemoteDocument(document.id, response)
+  rememberAppliedRemoteRevision(document.id, response.revision)
   await persistLocalDocument(response.document)
   return response.document
 }
@@ -717,7 +744,10 @@ export async function readCanvasDocument(id: string, options: ReadCanvasDocument
   try {
     const remote = await readRemoteCanvasDocument(id)
     // 首次远端打开也先渲染；媒体写入 IndexedDB 可能较重，不能阻塞画布出现。
-    if (remote) void persistLocalDocument(remote).catch(() => undefined)
+    if (remote) {
+      rememberAppliedRemoteRevision(id, remoteRevisions.get(id))
+      void persistLocalDocument(remote).catch(() => undefined)
+    }
     return remote
   } catch (error) {
     if (error instanceof ProductApiError && (error.status === 0 || error.status === 404)) return undefined
@@ -737,7 +767,7 @@ export async function readLatestCanvasDocument(id: string) {
   const remote = await readRemoteCanvasDocument(id)
   if (!remote) return { document: undefined, hasPendingDraft: false }
   if (await readPendingSyncDocument(id)) return { document: undefined, hasPendingDraft: true }
-  return { document: remote, hasPendingDraft: false }
+  return { document: remote, hasPendingDraft: false, revision: remoteRevisions.get(id) }
 }
 
 export async function persistAcceptedRemoteCanvasDocument(document: CanvasDocument) {
@@ -745,8 +775,10 @@ export async function persistAcceptedRemoteCanvasDocument(document: CanvasDocume
 }
 
 /**
- * 接受同源 API 刚刚持久化的工作流增量。只推进远端版本并缓存当前合并视图；
- * 不把可能包含未同步编辑的本地文档误记成远端基线，也不反向 PATCH 服务端。
+ * 接受同源 API 刚刚持久化的工作流增量。推进远端版本与已应用 revision，
+ * 并缓存当前合并视图；不把可能包含未同步编辑的本地文档误记成远端基线，
+ * 也不反向 PATCH 服务端。已应用 revision 必须登记，否则同 revision 的
+ * 实时推送会再走整份刷新，冲掉补丁刚保住的本机呈现。
  */
 export async function persistAcknowledgedRemoteCanvasPatch(
   document: CanvasDocument,
@@ -754,6 +786,7 @@ export async function persistAcknowledgedRemoteCanvasPatch(
   graphRevision: number,
 ) {
   rememberRemoteRevisions(document.id, { revision, graphRevision })
+  rememberAppliedRemoteRevision(document.id, revision)
   await persistLocalDocument(document)
 }
 

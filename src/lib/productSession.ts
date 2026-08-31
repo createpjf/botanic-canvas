@@ -211,7 +211,33 @@ export async function productAuthorizationHeader() {
   return authorizationHeader()
 }
 
+const retryableProductResponseStatuses = new Set([502, 503, 504])
+const productRequestRetryDelaysMs = [300, 900]
+
+/**
+ * 幂等请求的瞬时故障自动重试：GET 无副作用，带 Idempotency-Key 的写请求服务端会去重。
+ * 只重试网络断连与网关 502/503/504；超时不重试（后端慢时重放只会更糟），调用方主动取消不重试。
+ */
 export async function productRequest<T>(path: string, init: ProductRequestInit = {}): Promise<T> {
+  const method = (init.method ?? 'GET').toUpperCase()
+  const idempotent = method === 'GET' || new Headers(init.headers).has('Idempotency-Key')
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await productRequestOnce<T>(path, init)
+    } catch (caught) {
+      const retryable = idempotent
+        && attempt < productRequestRetryDelaysMs.length
+        && !init.signal?.aborted
+        && caught instanceof ProductApiError
+        && (retryableProductResponseStatuses.has(caught.status)
+          || (caught.status === 0 && caught.code !== 'REQUEST_TIMEOUT'))
+      if (!retryable) throw caught
+      await new Promise<void>((resolve) => window.setTimeout(resolve, productRequestRetryDelaysMs[attempt]))
+    }
+  }
+}
+
+async function productRequestOnce<T>(path: string, init: ProductRequestInit = {}): Promise<T> {
   const { timeoutMs: requestedTimeoutMs, timeoutMessage, ...requestInit } = init
   const requestTimeoutMs = Number.isFinite(requestedTimeoutMs)
     ? Math.min(120_000, Math.max(1_000, requestedTimeoutMs!))

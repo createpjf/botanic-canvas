@@ -862,8 +862,15 @@ export async function createPersistentBotanicAgentRun(input: {
   /** 确认这次 Run 的回合。缺省表示这条计划不是由服务端回合提出的（本地回退路径）。 */
   turnId?: string
 }) {
-  const response = await productRequest<{ run: BotanicAgentRunSnapshot }>('/api/agent-runs', {
+  const response = await productRequest<{
+    run: BotanicAgentRunSnapshot
+    canvasPatch?: NonNullable<BotanicAgentActionResult['canvasPatch']>
+  }>('/api/agent-runs', {
     method: 'POST',
+    // 服务端要落 Run + 写工作流 + 建 N 个 Job 并入队，多分支时 15s 默认超时不够；
+    // 客户端过早放弃会走幂等重放，白多一轮往返。
+    timeoutMs: 30_000,
+    timeoutMessage: '生成提交响应超时，请稍后重试；任务可能仍在云端排队。',
     headers: { 'Content-Type': 'application/json', 'Idempotency-Key': input.idempotencyKey ?? idempotencyKey('agent-run') },
     body: JSON.stringify({
       projectId: input.projectId,
@@ -891,7 +898,7 @@ export async function createPersistentBotanicAgentRun(input: {
       branches: input.branches,
     }),
   })
-  return response.run
+  return { run: response.run, canvasPatch: response.canvasPatch }
 }
 
 function stableAgentRunKey(runId: string) {
@@ -899,6 +906,8 @@ function stableAgentRunKey(runId: string) {
 }
 
 const agentActionRequestTimeoutMs = 15_000
+/** 确认动作的执行 POST：服务端 MCP 调用最长 45s，客户端必须比它活得久，否则把成功误标成结果未知。 */
+const agentActionExecuteTimeoutMs = 60_000
 
 export async function preparePersistentBotanicAgentWorkflow(projectId: string, runId: string) {
   const stableRunId = stableAgentRunKey(runId)
@@ -1266,7 +1275,7 @@ export async function executeProjectAgentAction(input: {
         ...(approvalResponse ? { approval: approvalResponse.approval } : {}),
         ...(manualRetry ? { manualRetryAuthorization: { token: manualRetry.token } } : {}),
       }),
-      timeoutMs: agentActionRequestTimeoutMs,
+      timeoutMs: agentActionExecuteTimeoutMs,
       timeoutMessage: `${input.action.label}响应超时，请稍后重试。`,
     })
   } catch (caught) {

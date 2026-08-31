@@ -13,7 +13,8 @@ import { shouldRefreshFromRealtimeEvent, type ProjectRealtimeConnectionState } f
 import { pendingCanvasSyncOutcome } from '../../domain/remoteDocumentSync'
 import { executePersistentBotanicAgentRun, listPersistentBotanicAgentRuns, listPersistentBotanicAgentSessions, readPersistentBotanicAgentState } from '../../lib/agentApi'
 import { listProjectCollaborationActivities, updateProjectCollaborationActivityReceipt } from '../../lib/collaborationApi'
-import { flushPendingCanvasDocumentWrites, previewRemoteCanvasDocument, refreshCanvasDocumentFromRemote, syncPendingCanvasDrafts, type CanvasConflictRevision } from '../../lib/db'
+import { appliedRemoteRevision, flushPendingCanvasDocumentWrites, previewRemoteCanvasDocument, refreshCanvasDocumentFromRemote, syncPendingCanvasDrafts, type CanvasConflictRevision } from '../../lib/db'
+import { recordSentryBreadcrumb } from '../../lib/sentry'
 import { connectCanvasCollaboration, type CanvasCollaboration } from '../../lib/projectCollaboration'
 import { serverPersistenceEnabled } from '../../lib/productSession'
 import { localizeProductError, type ProductLocale } from '../../i18n/core'
@@ -452,7 +453,7 @@ export function useCanvasWorkspaceSynchronization({
         .then(() => recoverUnknownGenerationSubmission())
         .then(() => recoverPersistentAgentRuns())
         .then(() => loadCollaborationActivities())
-        .catch(() => undefined)
+        .catch(() => recordSentryBreadcrumb('canvas-sync', '草稿同步链中断，等待下一次 focus/online 重试。'))
     }
     syncDrafts()
     window.addEventListener('online', syncDrafts)
@@ -513,13 +514,18 @@ export function useCanvasWorkspaceSynchronization({
           event,
           currentProjectId: latest.id,
           currentUpdatedAt: latest.updatedAt,
+          appliedRevision: appliedRemoteRevision(latest.id),
         })) return
         const before = latest
         void refreshDocumentFromRemoteOnce()
           .then(() => {
             const after = useCanvasStore.getState().document
             if (after.id !== before.id) return
-            if (after.updatedAt < event.updatedAt) return refreshDocumentFromRemoteOnce().then(() => undefined)
+            const appliedNow = appliedRemoteRevision(after.id)
+            const stillBehind = typeof appliedNow === 'number'
+              ? appliedNow < event.revision
+              : after.updatedAt < event.updatedAt
+            if (stillBehind) return refreshDocumentFromRemoteOnce().then(() => undefined)
             return loadCollaborationActivities().catch(() => recordRemoteChange({
                 actorId: event.actorId,
                 actorName: event.actorName,

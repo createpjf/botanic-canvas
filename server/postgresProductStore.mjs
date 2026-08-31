@@ -1623,6 +1623,49 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
       return projectPermissionDecision(role, 'edit') === 'allow'
     },
 
+    /**
+     * 行锁事务内原子地「读最新文档 → mutate → 写回」：Worker 的任务状态回写不再与
+     * 用户保存做 CAS 竞速，全文档 5 连重试从根上消失。mutate 只碰生成投影
+     * （nodes/edges/generationJobs），agent 实体字段与存量一致，无需 syncAgentState。
+     */
+    async updateProjectDocument(userId, projectId, mutate) {
+      return sql.begin(async (tx) => {
+        const [existing] = await tx`
+          select p.id, p.revision, p.document, m.role
+          from projects p left join project_members m on m.project_id = p.id and m.user_id = ${userId}
+          where p.id = ${projectId}
+          for update of p
+        `
+        if (!existing) return undefined
+        assertProjectPermission(existing.role, 'edit', 'PROJECT_WRITE_FORBIDDEN')
+        await ensureCanvasGraph(tx, projectId)
+        const [currentGraphEntry] = await tx`
+          select graph, revision from canvas_graphs where project_id = ${projectId} for update
+        `
+        const currentGraph = asJson(currentGraphEntry.graph)
+        const next = mutate({ ...asJson(existing.document), ...clone(currentGraph) })
+        if (!next) return undefined
+        const timestamp = now()
+        const nextGraph = canvasGraph(next)
+        const graphChanged = !sameGraph(currentGraph, nextGraph)
+        const revision = Number(existing.revision) + 1
+        const persistedDocument = stripAgentMessagesFromDocument(next)
+        await tx`update projects set name = ${next.name}, document = ${tx.json(persistedDocument)}::jsonb, revision = ${revision}, updated_at = ${timestamp} where id = ${projectId}`
+        let graphRevision = Number(currentGraphEntry.revision)
+        if (graphChanged) {
+          const [savedGraph] = await tx`
+            update canvas_graphs
+            set graph = ${tx.json(nextGraph)}::jsonb, revision = revision + 1, updated_at = ${timestamp}
+            where project_id = ${projectId}
+            returning revision
+          `
+          graphRevision = Number(savedGraph.revision)
+        }
+        await insertAudit(tx, { actorId: userId, action: 'project.updated', projectId, detail: { revision } })
+        return { document: { ...stripAgentMessagesFromDocument(clone(next)), ...(graphChanged ? nextGraph : currentGraph) }, revision, graphRevision, created: false }
+      })
+    },
+
     async writeProject(userId, document, expectedRevision, expectedGraphRevision) {
       return sql.begin(async (tx) => {
         const [existing] = await tx`

@@ -1088,6 +1088,13 @@ export const productStoreCapabilities = Object.freeze({
   mediaObjects: Object.freeze(['createMediaObject', 'readMediaObject']),
   userProvisioning: Object.freeze(['ensureAuthenticatedUser', 'readUser']),
   lifecycle: Object.freeze(['close']),
+  /**
+   * 原子文档更新：`updateProjectDocument(userId, projectId, mutate)`。
+   * 契约：mutate 收到最新合并文档（含 graph），返回下一份文档或 undefined（无需写入）；
+   * Adapter 在自身锁/事务内应用，返回 writeProject 同形结果或 undefined（项目缺失/无变更）。
+   * Worker 任务状态回写用它替代「读-改-CAS 写」竞速；不支持的 Store 回退旧循环。
+   */
+  projectDocumentAtomicUpdate: Object.freeze(['updateProjectDocument']),
 })
 
 function missingMethods(store, methods) {

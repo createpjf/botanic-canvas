@@ -260,6 +260,14 @@ test('已知规划工具标题与服务端对齐；Run 投影只反映已持久�
     { kind: 'search', title: '检索项目记忆' },
   )
 
+  const previous = {
+    blocks: [
+      { id: 'thinking:0:0', type: 'thinking' as const, status: 'done' as const, startedAt: 500, endedAt: 900, text: '想清楚了' },
+      { id: 'thinking:0:1', type: 'thinking' as const, status: 'done' as const, startedAt: 900, endedAt: 950, text: '' },
+      { id: 'raw', type: 'raw_group' as const, summary: '', open: false, items: [toolCall('read-1', 'canvas_read', '读取画布上下文', 'succeeded')] },
+      { id: 'exec:submit', type: 'step' as const, status: 'running' as const, kind: 'write' as const, title: '提交生成任务', sourceToolIds: [] },
+    ],
+  }
   const timeline = projectBotanicAgentRunOntoTimeline({
     id: 'run-1',
     status: 'running',
@@ -267,14 +275,19 @@ test('已知规划工具标题与服务端对齐；Run 投影只反映已持久�
       { id: 'b1', label: '主图', status: 'succeeded', attempt: 1, jobIds: ['j1'], outputCount: 1, updatedAt: 2 },
       { id: 'b2', label: '变体', status: 'running', attempt: 0, jobIds: [], outputCount: 1, updatedAt: 3 },
     ],
-  }, undefined, 1_000)
+  }, previous, 1_000)
   const steps = timeline.blocks.filter((block) => block.type === 'step')
   assert.deepEqual(steps.map((block) => block.type === 'step' ? [block.title, block.status] : null), [
     ['提交生成任务', 'succeeded'],
     ['生成 · 主图', 'succeeded'],
     ['生成 · 变体', 'running'],
   ])
-  assert.equal(timeline.blocks.some((block) => block.type === 'thinking'), false)
+  // 规划期的 tool-call 明细与有正文的思考随投影保留；空思考与旧 exec 步被重建。
+  assert.equal(timeline.blocks.some((block) => block.type === 'raw_group'), true)
+  assert.deepEqual(
+    timeline.blocks.filter((block) => block.type === 'thinking').map((block) => block.id),
+    ['thinking:0:0'],
+  )
 
   const failedWithBranch = projectBotanicAgentRunOntoTimeline({
     id: 'run-2',
@@ -459,6 +472,15 @@ test('tool-call accordion：按到达顺序追加，进行中展开，耗时与�
   const conversation = presentAgentTimelineConversation(timeline)
   assert.equal(conversation.visible.some((block) => block.type === 'step' && block.id.startsWith('step:')), false)
   assert.equal(conversation.visible.some((block) => block.type === 'raw_group'), false)
+
+  // 思考先结束、工具继续跑：耗时不能冻在思考区间，要一直走到 now。
+  const mixed = presentAgentToolAccordion({
+    blocks: [
+      { id: 'thinking:0:0', type: 'thinking', status: 'done', startedAt: 1_000, endedAt: 2_000, text: '思考' },
+      { id: 'step:read', type: 'step', status: 'running', kind: 'read', title: '读取画布上下文', sourceToolIds: ['read-9'], startedAt: 2_100 },
+    ],
+  }, 'zh-CN', 9_000)
+  assert.equal(mixed?.elapsedMs, 8_000)
 })
 
 test('tool accordion 图标按类别固定映射', () => {

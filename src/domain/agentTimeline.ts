@@ -523,10 +523,11 @@ export function projectBotanicAgentRunOntoTimeline(
   _now: number,
   jobs?: readonly TimelineJobFailure[],
 ): AgentTimelineState {
+  // 规划期的思考正文与 tool-call 明细（raw_group）是用户已看到的过程，投影不抹历史；
+  // 只丢空思考与旧的 exec: 管道步（由本次权威状态重建）。
   const preserved = (previous?.blocks ?? []).filter((block) => {
-    if (block.type === 'thinking') return false
+    if (block.type === 'thinking') return Boolean(block.text.trim())
     if (block.type === 'step' && block.id.startsWith('exec:')) return false
-    if (block.type === 'raw_group') return false
     return true
   })
   const submitStatus = runSubmitStatus(run)
@@ -860,20 +861,34 @@ function accordionGroupTitle(step: TimelineStepBlock | undefined, rows: AgentToo
 }
 
 function timelineElapsedMs(timeline: AgentTimelineState, now: number) {
-  const thinking = timeline.blocks.find((block) => block.type === 'thinking')
-  if (thinking?.type === 'thinking') {
-    return Math.max(0, (thinking.endedAt ?? now) - thinking.startedAt)
+  // 一整段区间：最早的思考/步骤开始 → 全部结算后的最晚结束；仍有 running 就用 now，
+  // 不能在思考结束后冻住（后面的工具还在跑）。
+  let startedAt: number | undefined
+  let endedAt = 0
+  let running = false
+  for (const block of timeline.blocks) {
+    if (block.type === 'thinking') {
+      startedAt = startedAt === undefined ? block.startedAt : Math.min(startedAt, block.startedAt)
+      if (block.status === 'running') running = true
+      else endedAt = Math.max(endedAt, block.endedAt ?? block.startedAt)
+    } else if (block.type === 'step') {
+      if (block.status === 'running') running = true
+      if (block.startedAt === undefined) continue
+      startedAt = startedAt === undefined ? block.startedAt : Math.min(startedAt, block.startedAt)
+      if (block.status !== 'running') endedAt = Math.max(endedAt, block.endedAt ?? block.startedAt)
+    }
   }
-  const steps = timeline.blocks.filter((block): block is TimelineStepBlock => block.type === 'step' && Boolean(block.startedAt))
-  const startedAt = steps.reduce<number | undefined>((min, step) => {
-    if (step.startedAt === undefined) return min
-    return min === undefined ? step.startedAt : Math.min(min, step.startedAt)
-  }, undefined)
   if (startedAt === undefined) return 0
-  const endedAt = steps.every((step) => step.status !== 'running')
-    ? steps.reduce((max, step) => Math.max(max, step.endedAt ?? step.startedAt ?? 0), 0)
-    : now
-  return Math.max(0, endedAt - startedAt)
+  return Math.max(0, (running ? now : endedAt) - startedAt)
+}
+
+/** 时间线是否有能画出来的内容；空时间线时气泡仍要显示「正在规划」占位。 */
+export function agentTimelineHasRenderableContent(timeline: AgentTimelineState) {
+  return timeline.blocks.some((block) => {
+    if (block.type === 'thinking') return Boolean(block.text.trim())
+    if (block.type === 'raw_group') return block.items.length > 0
+    return true
+  })
 }
 
 /**
