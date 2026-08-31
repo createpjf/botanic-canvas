@@ -1897,19 +1897,31 @@ export function createAgentRouteHandler({
       const readyForAutoSubmit = (run) => run.status === 'queued'
         && run.branches.length > 0
         && run.branches.every((branch) => !branch.activeJobId && !(branch.jobIds?.length))
+      // 工作流增量随创建响应带回：客户端整份刷新会输给「本机时钟更新的文档」守卫，
+      // 增量走 applyAgentWorkflowPatch 追加通道才能让占位节点和连线立刻上画布。
+      const agentRunCanvasPatch = (execution) => {
+        if (!execution?.workflows?.length || !execution.saved) return undefined
+        return {
+          nodes: execution.workflows.flatMap((workflow) => [workflow.promptNode, workflow.generateNode, workflow.resultNode]),
+          edges: execution.workflows.flatMap((workflow) => workflow.edges),
+          updatedAt: execution.saved.document.updatedAt,
+          revision: execution.saved.revision,
+          graphRevision: execution.saved.graphRevision,
+        }
+      }
       const autoSubmitAgentRun = async (run) => {
-        if (!agentRunGeneration?.submitGeneration || !readyForAutoSubmit(run)) return run
+        if (!agentRunGeneration?.submitGeneration || !readyForAutoSubmit(run)) return { run }
         try {
           const execution = await agentRunGeneration.submitGeneration(user.id, run.projectId, run.id)
           observeRun({ type: 'auto_submitted', requestId, projectId: run.projectId, runId: run.id, status: execution.run.status, durationMs: Date.now() - startedAt })
-          return execution.run
+          return { run: execution.run, canvasPatch: agentRunCanvasPatch(execution) }
         } catch (caught) {
           // durable cancel fence 是业务冲突，不是「队列暂不可用」。吞掉它会把取消后的
           // linked Run 留在 queued，随后恢复器仍可能再次尝试提交。
           if (['AGENT_TURN_DELEGATION_CANCELLED', 'AGENT_TURN_DELEGATION_NOT_READY', 'AGENT_TURN_NOT_FOUND'].includes(caught?.code)) throw caught
           const latest = await productStore.readAgentRun(user.id, run.id)
           observeRun({ type: 'auto_submit_deferred', requestId, projectId: run.projectId, runId: run.id, status: latest?.status ?? run.status, durationMs: Date.now() - startedAt })
-          return latest ?? run
+          return { run: latest ?? run }
         }
       }
 
@@ -1926,8 +1938,11 @@ export function createAgentRouteHandler({
         // 幂等重放同样收敛到已执行状态：确认后页面立刻关闭时 Run 停在 queued，
         // 重放这条请求应把它送进执行，而不是原样返回。
         const resumed = await autoSubmitAgentRun(existing)
-        observeRun({ type: 'submission_reused', requestId, projectId: resumed.projectId, runId: resumed.id, status: resumed.status, durationMs: Date.now() - startedAt })
-        return json(response, 200, { run: publicAgentRun(resumed) })
+        observeRun({ type: 'submission_reused', requestId, projectId: resumed.run.projectId, runId: resumed.run.id, status: resumed.run.status, durationMs: Date.now() - startedAt })
+        return json(response, 200, {
+          run: publicAgentRun(resumed.run),
+          ...(resumed.canvasPatch ? { canvasPatch: resumed.canvasPatch } : {}),
+        })
       }
       const run = createPersistentAgentRun(authoritativeInput, { id, ownerId: user.id, idempotencyBinding })
       // 绑定知识与幂等读取可能经历多次存储往返；写入前再读一次 fence，尽量收窄
@@ -1953,8 +1968,11 @@ export function createAgentRouteHandler({
       })
       await publishAgentRunUpdated({ projectId: storedRun.projectId, run: publicAgentRun(storedRun) })
       observeRun({ type: 'created', requestId, projectId: storedRun.projectId, runId: storedRun.id, status: storedRun.status, durationMs: Date.now() - startedAt })
-      const submittedRun = await autoSubmitAgentRun(storedRun)
-      return json(response, 201, { run: publicAgentRun(submittedRun) })
+      const submitted = await autoSubmitAgentRun(storedRun)
+      return json(response, 201, {
+        run: publicAgentRun(submitted.run),
+        ...(submitted.canvasPatch ? { canvasPatch: submitted.canvasPatch } : {}),
+      })
     }
     if (projectAgentRunsMatch) {
       if (request.method !== 'GET') return methodNotAllowed(response, '项目 Agent Run 资源只支持读取。', 'GET')

@@ -232,7 +232,16 @@ test('导演模式：创建 Run 后服务端直接提交生成，浏览器拿到
             branches: [{ id: 'branch-1', label: '海边人像', status: 'queued', attempt: 0, jobIds: ['job-1'], activeJobId: 'job-1', outputCount: 0, updatedAt: 2 }],
           },
           jobs: [{ id: 'job-1' }],
-          workflows: [],
+          workflows: [{
+            promptNodeId: 'agent-prompt-1',
+            generateNodeId: 'agent-generate-1',
+            resultNodeId: 'agent-result-1',
+            promptNode: { id: 'agent-prompt-1', type: 'text' },
+            generateNode: { id: 'agent-generate-1', type: 'generate' },
+            resultNode: { id: 'agent-result-1', type: 'result' },
+            edges: [{ id: 'agent-output-edge-job-1', source: 'agent-generate-1', target: 'agent-result-1' }],
+          }],
+          saved: { document: { updatedAt: 9 }, revision: 3, graphRevision: 2 },
         }
       },
     },
@@ -254,6 +263,10 @@ test('导演模式：创建 Run 后服务端直接提交生成，浏览器拿到
   assert.equal(responses[0]?.status, 201)
   assert.equal(responses[0]?.body.run.status, 'executing')
   assert.equal(responses[0]?.body.run.branches[0].activeJobId, 'job-1')
+  // 工作流增量随创建响应带回：客户端走 applyAgentWorkflowPatch，占位节点和连线立刻上画布。
+  assert.deepEqual(responses[0]?.body.canvasPatch.nodes.map((node) => node.id), ['agent-prompt-1', 'agent-generate-1', 'agent-result-1'])
+  assert.deepEqual(responses[0]?.body.canvasPatch.edges.map((edge) => edge.id), ['agent-output-edge-job-1'])
+  assert.equal(responses[0]?.body.canvasPatch.revision, 3)
   assert.equal(submitted.length, 1)
   assert.equal(submitted[0].userId, 'user-1')
   assert.equal(submitted[0].projectId, runInput.projectId)

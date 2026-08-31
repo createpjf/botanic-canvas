@@ -567,7 +567,7 @@ export function useCanvasAgentExecutionBridge({
         if (useCanvasStore.getState().document.id !== projectId) throw new Error(copy.projectChanged)
         await replaceMediaSources(replacements)
         if (useCanvasStore.getState().document.id !== projectId) throw new Error(copy.projectChanged)
-        const snapshot = await createPersistentBotanicAgentRun({
+        const creation = await createPersistentBotanicAgentRun({
           projectId,
           plan,
           idempotencyKey: submissionKey,
@@ -580,6 +580,7 @@ export function useCanvasAgentExecutionBridge({
             ...(branch.item ? { item: branch.item } : {}),
           })),
         })
+        const snapshot = creation.run
         if (useCanvasStore.getState().document.id !== projectId) {
           const execution = await executePersistentBotanicAgentRun(projectId, snapshot.id)
           return { started: execution.jobIds.length > 0, runId: snapshot.id }
@@ -600,7 +601,10 @@ export function useCanvasAgentExecutionBridge({
           const started = snapshot.status !== 'failed'
             && snapshot.branches.some((branch) => branch.activeJobId || branch.jobIds.length > 0)
           if (useCanvasStore.getState().document.id === projectId) {
-            await refreshDocumentFromRemote().catch(() => false)
+            // 优先用响应里的工作流增量：整份刷新会被「本机时间戳更新/有待同步草稿」
+            // 守卫拒绝（确认时刚用本机时钟写过 Run 快照），占位节点和连线就上不了画布。
+            if (creation.canvasPatch) await applyAgentWorkflowPatch(creation.canvasPatch)
+            else await refreshDocumentFromRemote().catch(() => false)
             if (useCanvasStore.getState().document.id === projectId) {
               const visibleNodeIds = resolveRunNodes(runId)
               if (visibleNodeIds.length) {

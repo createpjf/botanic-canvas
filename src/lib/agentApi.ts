@@ -862,7 +862,10 @@ export async function createPersistentBotanicAgentRun(input: {
   /** 确认这次 Run 的回合。缺省表示这条计划不是由服务端回合提出的（本地回退路径）。 */
   turnId?: string
 }) {
-  const response = await productRequest<{ run: BotanicAgentRunSnapshot }>('/api/agent-runs', {
+  const response = await productRequest<{
+    run: BotanicAgentRunSnapshot
+    canvasPatch?: NonNullable<BotanicAgentActionResult['canvasPatch']>
+  }>('/api/agent-runs', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Idempotency-Key': input.idempotencyKey ?? idempotencyKey('agent-run') },
     body: JSON.stringify({
@@ -891,7 +894,7 @@ export async function createPersistentBotanicAgentRun(input: {
       branches: input.branches,
     }),
   })
-  return response.run
+  return { run: response.run, canvasPatch: response.canvasPatch }
 }
 
 function stableAgentRunKey(runId: string) {

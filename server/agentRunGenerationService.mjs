@@ -252,7 +252,7 @@ export function createAgentRunGenerationService({
       job.usage = usage
       if (budget.warning) job.budgetWarning = '生成额度接近上限。'
     }
-    await persistWorkflow(userId, project, prepared)
+    const saved = await persistWorkflow(userId, project, prepared)
     const queueFailures = []
     for (const job of pendingJobs) {
       // 每个 Job 写入前都重读 durable fence。至少首个提交必须被挡住；逐个检查还能
@@ -285,7 +285,7 @@ export function createAgentRunGenerationService({
     const latestRun = await productStore.readAgentRun(userId, run.id) ?? run
     await publishAgentRunUpdated({ projectId, run: publicAgentRun(latestRun) })
     if (queueFailures.length) throw new AgentToolRuntimeError('QUEUE_UNAVAILABLE', queueFailures[0].error, 503)
-    return { run: latestRun, jobs: prepared.jobs, workflows: prepared.workflows }
+    return { run: latestRun, jobs: prepared.jobs, workflows: prepared.workflows, saved }
   }
 
   async function submitGeneration(userId, projectId, runId) {
