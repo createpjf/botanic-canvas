@@ -17,6 +17,7 @@ import {
 } from '../domain/agent.ts'
 import type { BotanicAgentRunSnapshot, BotanicAgentSession } from '../domain/agent.ts'
 import type { CanvasDocument, ResultNodeData } from '../domain/canvas.ts'
+import { recordSentryBreadcrumb } from '../lib/sentry.ts'
 import type { CanvasStore } from './canvasStore.types.ts'
 
 type AgentStoreActions = Pick<CanvasStore,
@@ -124,6 +125,7 @@ export function createCanvasAgentActions({
       set({ document: nextDocument })
       void persistAcknowledgedRemotePatch(nextDocument, patch.revision, patch.graphRevision).catch(() => {
         // 服务端工作流已经落盘；本机缓存失败不能阻断真实生成任务。
+        recordSentryBreadcrumb('agent-canvas', 'Agent 工作流补丁本机缓存失败，刷新后将从远端重建。')
       })
       return true
     },

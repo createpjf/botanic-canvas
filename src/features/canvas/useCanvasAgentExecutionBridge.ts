@@ -42,6 +42,7 @@ import { serverPersistenceEnabled } from '../../lib/productSession'
 import { localizeProductError } from '../../i18n/core'
 import { useProductI18n } from '../../i18n/react'
 import { useCanvasStore } from '../../store/canvasStore'
+import { recordSentryBreadcrumb } from '../../lib/sentry'
 import { useAgentSessionMessages } from '../agent/useAgentSessionMessages'
 import type { AgentArtifactIndexState, AgentContextItem, AgentDockTarget } from '../agent/agentWorkspace.types'
 import {
@@ -604,7 +605,10 @@ export function useCanvasAgentExecutionBridge({
             // 优先用响应里的工作流增量：整份刷新会被「本机时间戳更新/有待同步草稿」
             // 守卫拒绝（确认时刚用本机时钟写过 Run 快照），占位节点和连线就上不了画布。
             if (creation.canvasPatch) await applyAgentWorkflowPatch(creation.canvasPatch)
-            else await refreshDocumentFromRemote().catch(() => false)
+            else await refreshDocumentFromRemote().catch(() => {
+              recordSentryBreadcrumb('agent-canvas', '确认后整份画布刷新失败，等待实时推送或恢复器兜底。')
+              return false
+            })
             if (useCanvasStore.getState().document.id === projectId) {
               const visibleNodeIds = resolveRunNodes(runId)
               if (visibleNodeIds.length) {

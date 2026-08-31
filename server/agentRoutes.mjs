@@ -1909,6 +1909,33 @@ export function createAgentRouteHandler({
           graphRevision: execution.saved.graphRevision,
         }
       }
+      // 幂等重放时分支多半已带 jobIds，不会再走 autoSubmit；从项目文档按 Job 记录
+      // 重建同一份增量，首个响应丢失后客户端重放仍能立即把工作流画上画布。
+      const agentRunCanvasPatchFromProject = async (run) => {
+        try {
+          const project = await productStore.readProject(user.id, run.projectId)
+          if (!project) return undefined
+          const nodeIds = new Set()
+          for (const record of project.document.generationJobs ?? []) {
+            if (record.agentRun?.runId !== run.id) continue
+            for (const nodeId of [record.promptNodeId, record.generateNodeId, record.resultNodeId]) {
+              if (nodeId) nodeIds.add(nodeId)
+            }
+          }
+          const nodes = (project.document.nodes ?? []).filter((node) => nodeIds.has(node.id))
+          if (!nodes.length) return undefined
+          const edges = (project.document.edges ?? []).filter((edge) => nodeIds.has(edge.source) || nodeIds.has(edge.target))
+          return {
+            nodes,
+            edges,
+            updatedAt: project.document.updatedAt,
+            revision: project.revision,
+            graphRevision: project.graphRevision,
+          }
+        } catch {
+          return undefined
+        }
+      }
       const autoSubmitAgentRun = async (run) => {
         if (!agentRunGeneration?.submitGeneration || !readyForAutoSubmit(run)) return { run }
         try {
@@ -1938,10 +1965,11 @@ export function createAgentRouteHandler({
         // 幂等重放同样收敛到已执行状态：确认后页面立刻关闭时 Run 停在 queued，
         // 重放这条请求应把它送进执行，而不是原样返回。
         const resumed = await autoSubmitAgentRun(existing)
+        const resumedPatch = resumed.canvasPatch ?? await agentRunCanvasPatchFromProject(resumed.run)
         observeRun({ type: 'submission_reused', requestId, projectId: resumed.run.projectId, runId: resumed.run.id, status: resumed.run.status, durationMs: Date.now() - startedAt })
         return json(response, 200, {
           run: publicAgentRun(resumed.run),
-          ...(resumed.canvasPatch ? { canvasPatch: resumed.canvasPatch } : {}),
+          ...(resumedPatch ? { canvasPatch: resumedPatch } : {}),
         })
       }
       const run = createPersistentAgentRun(authoritativeInput, { id, ownerId: user.id, idempotencyBinding })

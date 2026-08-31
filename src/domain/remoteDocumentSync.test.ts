@@ -84,6 +84,33 @@ test('服务器仍是同一版本时不重复替换当前画布', () => {
   assert.equal(resolved.document, current)
 })
 
+test('revision 已知时按服务端版本判新旧，本机挂钟不再拒收更新的服务端文档', () => {
+  // 确认计划后本机用挂钟写过文档（updatedAt 300 > 服务端 200），
+  // 但服务端 revision 7 > 已应用 5：Agent 工作流等服务端写入必须能刷进画布。
+  const current = document('project-1', 300, '本机挂钟更新')
+  const remote = document('project-1', 200, '服务端更新版本')
+  const accepted = resolveRemoteCanvasRefresh({
+    current,
+    remote,
+    baselineUpdatedAt: current.updatedAt,
+    hasPendingDraft: false,
+    remoteRevision: 7,
+    appliedRevision: 5,
+  })
+  assert.equal(accepted.applied, true)
+  assert.equal(accepted.document.name, '服务端更新版本')
+
+  // revision 不比已应用新：拒收，不回退。
+  assert.equal(resolveRemoteCanvasRefresh({
+    current,
+    remote,
+    baselineUpdatedAt: current.updatedAt,
+    hasPendingDraft: false,
+    remoteRevision: 5,
+    appliedRevision: 5,
+  }).applied, false)
+})
+
 test('服务器时间戳落后于本机缓存时不回退画布', () => {
   const current = document('project-1', 200, '较新的本机缓存')
   const remote = document('project-1', 100, '较旧的服务器版本')

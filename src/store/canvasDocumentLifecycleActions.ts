@@ -8,12 +8,15 @@ import { createLatestOperation } from '../domain/latestOperation'
 import { readProductLocale } from '../i18n/core'
 import { resolveRemoteCanvasRefresh } from '../domain/remoteDocumentSync'
 import {
+  appliedRemoteRevision,
   ensureGlobalAssetLibrary,
   flushPendingCanvasDocumentWrites,
+  lastKnownRemoteRevision,
   persistAcceptedRemoteCanvasDocument,
   readCanvasDocument,
   readGlobalWorkflowTemplateLibrary,
   readLatestCanvasDocument,
+  rememberAppliedRemoteRevision,
   renameCanvasProject,
   writeCanvasDocument,
 } from '../lib/db'
@@ -63,11 +66,20 @@ export function createCanvasDocumentLifecycleActions({
     remoteDocument: CanvasDocument,
     baselineUpdatedAt: number,
     hasPendingDraft = false,
+    remoteRevision?: number,
   ) => {
     const current = get().document
     const normalizedRemote = settleExpiredGenerationSubmissions(normalizeDocument(remoteDocument)).document
-    const resolved = resolveRemoteCanvasRefresh({ current, remote: normalizedRemote, baselineUpdatedAt, hasPendingDraft })
+    const resolved = resolveRemoteCanvasRefresh({
+      current,
+      remote: normalizedRemote,
+      baselineUpdatedAt,
+      hasPendingDraft,
+      remoteRevision,
+      appliedRevision: appliedRemoteRevision(current.id),
+    })
     if (!resolved.applied) return false
+    rememberAppliedRemoteRevision(current.id, remoteRevision)
     stopGenerationPolling()
     const document = resolved.document
     const selectedNode = [...document.nodes].reverse().find(
@@ -121,7 +133,7 @@ export function createCanvasDocumentLifecycleActions({
       if (!openDocumentOperations.isCurrent(operationToken)) return false
       const stored = await readCanvasDocument(documentId, {
         onRemoteDocument: ({ cachedDocument, remoteDocument }) => (
-          applyRemoteDocumentRefresh(remoteDocument, cachedDocument.updatedAt)
+          applyRemoteDocumentRefresh(remoteDocument, cachedDocument.updatedAt, false, lastKnownRemoteRevision(documentId))
         ),
       })
       if (!stored || !openDocumentOperations.isCurrent(operationToken)) return false
@@ -179,7 +191,7 @@ export function createCanvasDocumentLifecycleActions({
       const baseline = get().document
       const latest = await readLatestCanvasDocument(baseline.id)
       if (!latest.document) return false
-      const applied = applyRemoteDocumentRefresh(latest.document, baseline.updatedAt, latest.hasPendingDraft)
+      const applied = applyRemoteDocumentRefresh(latest.document, baseline.updatedAt, latest.hasPendingDraft, latest.revision)
       if (applied) await persistAcceptedRemoteCanvasDocument(latest.document)
       return applied
     },

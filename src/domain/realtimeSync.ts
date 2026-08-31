@@ -133,16 +133,21 @@ export function shouldRefreshFromRealtimeEvent({
   event,
   currentProjectId,
   currentUpdatedAt,
+  appliedRevision,
 }: {
   event: unknown
   currentProjectId: string
   currentUpdatedAt: number
+  /** 本地已反映的服务端 revision；已知时按单调版本判断，不再比本机挂钟。 */
+  appliedRevision?: number
 }) {
   if (!event || typeof event !== 'object') return false
   const candidate = event as Partial<ProjectUpdatedRealtimeEvent>
-  return candidate.type === 'project.updated'
-    && candidate.projectId === currentProjectId
-    && typeof candidate.revision === 'number'
-    && typeof candidate.updatedAt === 'number'
-    && candidate.updatedAt > currentUpdatedAt
+  if (candidate.type !== 'project.updated'
+    || candidate.projectId !== currentProjectId
+    || typeof candidate.revision !== 'number'
+    || typeof candidate.updatedAt !== 'number') return false
+  return typeof appliedRevision === 'number'
+    ? candidate.revision > appliedRevision
+    : candidate.updatedAt > currentUpdatedAt
 }
