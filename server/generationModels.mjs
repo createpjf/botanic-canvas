@@ -97,8 +97,8 @@ export function createGenerationModelCatalog({
     catalog.push(nanoBananaModelOption({
       available: false,
       unavailableReason: flockApiKey
-        ? '未在 FLOCK_IMAGE_MODELS 中显式启用。'
-        : 'Flock 图像服务尚未配置 API Key。',
+        ? '该模型上游暂不可用，已临时下线。'
+        : 'Flock 图像服务尚未配置，暂不可用。',
     }))
   }
   return catalog

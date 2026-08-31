@@ -97,7 +97,7 @@ test('Flock key 不能单独启用图片模型，健康目录会把未显式声�
   assert.equal(catalog.length, 1)
   assert.equal(catalog[0].id, 'gemini-3.1-flash-image-preview')
   assert.equal(catalog[0].available, false)
-  assert.match(catalog[0].unavailableReason, /FLOCK_IMAGE_MODELS/u)
+  assert.match(catalog[0].unavailableReason, /上游暂不可用|已临时下线/u)
   assert.equal(providerForModel(catalog, catalog[0].id), undefined)
 })
 
