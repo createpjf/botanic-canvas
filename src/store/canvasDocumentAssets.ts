@@ -95,12 +95,22 @@ export function findAvailableAsset(document: CanvasDocument, globalAssets: Asset
 }
 
 export function hydrateAssetNodeImages(nodes: CanvasNode[], document: CanvasDocument, globalAssets: AssetRecord[]) {
+  const documentNodes = new Map(document.nodes.map((node) => [node.id, node]))
   return nodes.map((node) => {
-    if (node.type !== 'asset') return node
-    const asset = findAvailableAsset(document, globalAssets, (node.data as AssetNodeData).assetId)
-    return asset && (node.data as AssetNodeData).image !== asset.image
-      ? { ...node, data: { ...node.data, image: asset.image } }
-      : node
+    if (node.type === 'asset') {
+      const asset = findAvailableAsset(document, globalAssets, (node.data as AssetNodeData).assetId)
+      return asset && (node.data as AssetNodeData).image !== asset.image
+        ? { ...node, data: { ...node.data, image: asset.image } }
+        : node
+    }
+    if (node.type === 'result') {
+      const remote = documentNodes.get(node.id)
+      const image = remote?.type === 'result' ? (remote.data as ResultNodeData).image : undefined
+      return image && (node.data as ResultNodeData).image !== image
+        ? { ...node, data: { ...node.data, image } }
+        : node
+    }
+    return node
   }) as CanvasNode[]
 }
 

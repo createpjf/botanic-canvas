@@ -450,10 +450,27 @@ test('客户端中断请求返回 499，不上报 5xx', async () => {
   }
   const application = createBotanicHttpServer(dependencies)
   const { response } = testResponse()
-  await application.handleRequest(testRequest({ method: 'GET', url: '/api/projects' }), response)
+  const request = testRequest({ method: 'GET', url: '/api/projects' })
+  request.aborted = true
+  await application.handleRequest(request, response)
   assert.equal(response.statusCode, 499)
   assert.equal(JSON.parse(response.body).error.code, 'CLIENT_CLOSED_REQUEST')
   assert.equal(reported.length, 0)
+})
+
+test('依赖连接重置仍返回 500 并上报，不伪装成客户端中断', async () => {
+  const dependencies = testDependencies()
+  const reported = []
+  dependencies.reportError = (...input) => reported.push(input)
+  dependencies.runtime.productStore = {
+    async authenticate() { throw Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' }) },
+  }
+  const application = createBotanicHttpServer(dependencies)
+  const { response } = testResponse()
+  await application.handleRequest(testRequest({ method: 'GET', url: '/api/projects' }), response)
+  assert.equal(response.statusCode, 500)
+  assert.equal(JSON.parse(response.body).error.code, 'INTERNAL_ERROR')
+  assert.equal(reported.length, 1)
 })
 
 test('Agent Run 目标漂移经过统一 HTTP 层保留 409，不降成可重试的 INTERNAL_ERROR', async () => {

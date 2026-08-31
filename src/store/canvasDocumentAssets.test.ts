@@ -41,12 +41,13 @@ test('撤销素材会清理后续引用但保留历史条目和视觉结果', ()
 
 test('媒体占位节点从权威项目素材元数据恢复图片', () => {
   const current = document()
-  const placeholder = current.nodes.map((node) => node.id === 'asset-node'
+  const placeholder = current.nodes.map((node) => node.id === 'asset-node' || node.id === 'result-node'
     ? { ...node, data: { ...node.data, image: undefined } }
     : node) as CanvasDocument['nodes']
   const hydrated = hydrateAssetNodeImages(placeholder, current, [])
 
   assert.equal(hydrated.find((node) => node.id === 'asset-node')?.data.image, '/a.webp')
+  assert.equal(hydrated.find((node) => node.id === 'result-node')?.data.image, '/result.webp')
 })
 
 test('共享工作流模板排除项目私有素材及其连线', () => {

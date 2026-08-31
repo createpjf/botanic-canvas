@@ -243,11 +243,8 @@ function shapedBusinessHttpError(caught) {
   return new HttpError(statusCode, caught.code, caught.message)
 }
 
-function clientDisconnectHttpError(caught) {
-  const code = caught?.code
-  const message = String(caught?.message ?? '')
-  if (caught?.name === 'AbortError' || code === 'ABORT_ERR' || code === 'ECONNRESET' || code === 'EPIPE'
-    || message === 'aborted' || message === 'request aborted') {
+function clientDisconnectHttpError(request, response) {
+  if (request.aborted || response.destroyed) {
     return new HttpError(499, 'CLIENT_CLOSED_REQUEST', '请求已中断。')
   }
   return undefined
@@ -577,7 +574,7 @@ const handleRequestCore = async (request, response) => {
     if (await handlePromptMediaRoute(request, response, url, routeMatches)) return
     return error(response, 404, 'NOT_FOUND', '接口不存在。')
   } catch (caught) {
-    const disconnectFailure = clientDisconnectHttpError(caught)
+    const disconnectFailure = clientDisconnectHttpError(request, response)
     const agentEntityFailure = agentEntityHttpError(caught)
     const failure = disconnectFailure
       || (caught instanceof HttpError || caught instanceof ProjectAuthorizationError || caught instanceof GenerationError || caught instanceof PromptRefinementError || caught instanceof BotanicAgentPlannerError || caught instanceof BotanicAgentChatError || caught instanceof BotanicAgentRunError || caught instanceof BotanicAgentSkillError || caught instanceof AgentToolRuntimeError || caught instanceof AgentActionExecutionError || caught instanceof AgentActionReconciliationError || caught instanceof McpClientError || caught instanceof AgentDelegationFenceError || caught instanceof AgentSubagentServiceError

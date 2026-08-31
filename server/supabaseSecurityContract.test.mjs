@@ -54,3 +54,16 @@ test('V1 历史增量使用内容哈希绑定幂等身份', () => {
     assert.doesNotMatch(source, /set mutation_id = 'legacy:' \|\| id/u)
   }
 })
+
+test('Supabase epoch 2 元数据写入不携带过期图谱 revision', () => {
+  const writeProject = supabaseStore.slice(
+    supabaseStore.indexOf('async writeProject'),
+    supabaseStore.indexOf('async deleteProject'),
+  )
+
+  assert.match(writeProject, /delete rpcDocument\.nodes[\s\S]*delete rpcDocument\.edges/u)
+  assert.match(writeProject, /p_document: rpcDocument/u)
+  assert.match(writeProject, /p_expected_graph_revision: syncProtocolEpoch >= 2\s*\? null/u)
+  assert.match(canvasSyncMigration, /if not \(p_document \? 'nodes'\)[\s\S]*jsonb_set\(v_document, '\{nodes\}'/u)
+  assert.match(canvasSyncMigration, /if not \(p_document \? 'edges'\)[\s\S]*jsonb_set\(v_document, '\{edges\}'/u)
+})

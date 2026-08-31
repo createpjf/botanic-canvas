@@ -151,23 +151,51 @@ function restoredRoomState(state) {
   if (state.snapshot) Y.applyUpdate(document, updateFromBase64(state.snapshot))
   for (const update of state.updates ?? []) Y.applyUpdate(document, updateFromBase64(update))
   const materialized = persistableGraph(state.graph)
-  const authoritative = collaborativeGraph(materialized)
-  const restored = {
-    nodes: valuesFromRecords(document.getMap('nodes')),
-    edges: valuesFromRecords(document.getMap('edges')),
-  }
   const hasYjsState = Boolean(state.snapshot || state.updates?.length)
-  const needsCompaction = !sameGraph(state.graph, materialized)
-    || (hasYjsState && !sameGraph(restored, authoritative))
-  if (!hasYjsState || needsCompaction) {
+  const logAuthoritative = hasYjsState && Number(state.syncProtocolEpoch ?? 1) >= 2
+  let graph = materialized
+  let needsCompaction = !sameGraph(state.graph, materialized)
+  if (!logAuthoritative) {
+    const collaborative = collaborativeGraph(materialized)
+    const restored = {
+      nodes: valuesFromRecords(document.getMap('nodes')),
+      edges: valuesFromRecords(document.getMap('edges')),
+    }
+    needsCompaction ||= hasYjsState && !sameGraph(restored, collaborative)
+    if (!hasYjsState || needsCompaction) {
+      document.transact(() => {
+        replaceRecords(document.getMap('nodes'), collaborative.nodes)
+        replaceRecords(document.getMap('edges'), collaborative.edges)
+      }, 'materialized-authoritative-graph')
+    }
+  } else {
+    let sanitized = false
     document.transact(() => {
-      replaceRecords(document.getMap('nodes'), authoritative.nodes)
-      replaceRecords(document.getMap('edges'), authoritative.edges)
-    }, 'materialized-authoritative-graph')
+      for (const [id, record] of document.getMap('nodes')) {
+        if (!record?.value) continue
+        const value = collaborativeNode(record.value)
+        if (!sameGraph(value, record.value)) {
+          document.getMap('nodes').set(id, { ...record, value })
+          sanitized = true
+        }
+      }
+      for (const [id, record] of document.getMap('edges')) {
+        if (!record?.value) continue
+        const value = collaborativeEdge(record.value)
+        if (!sameGraph(value, record.value)) {
+          document.getMap('edges').set(id, { ...record, value })
+          sanitized = true
+        }
+      }
+    }, 'sanitize-restored-log')
+    const nodeIds = new Set([...materialized.nodes.map((node) => node.id), ...document.getMap('nodes').keys()])
+    const edgeIds = new Set([...materialized.edges.map((edge) => edge.id), ...document.getMap('edges').keys()])
+    graph = materializeGraph(document, materialized, nodeIds, edgeIds)
+    needsCompaction ||= sanitized || !sameGraph(materialized, graph)
   }
   return {
     document,
-    graph: materialized,
+    graph,
     graphRevision: Number.isInteger(state.graphRevision) ? state.graphRevision : 1,
     needsCompaction,
   }

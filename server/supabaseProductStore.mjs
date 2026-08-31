@@ -814,7 +814,7 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
       await assertAgentDerivedFieldWriterAvailable(userId, document.id)
       const [{ data: previous, error: previousError }, { data: graphEntry, error: graphError }] = await Promise.all([
         supabaseRequest(() => supabase.from('projects').select('document').eq('id', document.id).maybeSingle()),
-        supabaseRequest(() => supabase.from('canvas_graphs').select('graph, revision, sync_protocol_epoch').eq('project_id', document.id).maybeSingle()),
+        supabaseRequest(() => supabase.from('canvas_graphs').select('graph, sync_protocol_epoch').eq('project_id', document.id).maybeSingle()),
       ])
       fail(previousError)
       fail(graphError)
@@ -822,14 +822,18 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
       if (syncProtocolEpoch >= 2 && !sameGraph(graphEntry?.graph ?? canvasGraph(previous?.document), canvasGraph(document))) {
         throw canvasSyncEpochStaleError(syncProtocolEpoch)
       }
-      const guardedGraphRevision = syncProtocolEpoch >= 2 && Number.isInteger(graphEntry?.revision)
-        ? Number(graphEntry.revision)
-        : Number.isInteger(expectedGraphRevision) ? expectedGraphRevision : null
+      const rpcDocument = { ...stripAgentMessagesFromDocument(document) }
+      if (syncProtocolEpoch >= 2) {
+        delete rpcDocument.nodes
+        delete rpcDocument.edges
+      }
       const { data, error } = await supabase.rpc('botanic_write_project_document', {
         p_actor: userId,
-        p_document: stripAgentMessagesFromDocument(document),
+        p_document: rpcDocument,
         p_expected_revision: Number.isInteger(expectedRevision) ? expectedRevision : null,
-        p_expected_graph_revision: guardedGraphRevision,
+        p_expected_graph_revision: syncProtocolEpoch >= 2
+          ? null
+          : Number.isInteger(expectedGraphRevision) ? expectedGraphRevision : null,
       }).single()
       if (error?.code === '40001') throw productError('项目已被其他成员更新，请刷新后再保存。', 'PROJECT_CONFLICT')
       if (error?.code === 'BG001') {
