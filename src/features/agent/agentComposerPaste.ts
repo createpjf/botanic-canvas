@@ -5,6 +5,10 @@ function pasteLabel(length: number, locale: 'zh-CN' | 'en') {
   return locale === 'en' ? `[Pasted Content ${length} chars]` : `[已粘贴 ${length} 字]`
 }
 
+function escapedRegExp(value: string) {
+  return value.replace(/[\^$.*+?()[\]{}|]/gu, '\\$&')
+}
+
 export function insertAgentComposerLargePaste(input: {
   instruction: string
   start: number
@@ -15,9 +19,13 @@ export function insertAgentComposerLargePaste(input: {
 }) {
   if (input.pasted.length < AGENT_COMPOSER_LARGE_PASTE_THRESHOLD) return undefined
   const base = pasteLabel(input.pasted.length, input.locale)
+  const occupied = new Set([
+    ...Object.keys(input.pendingPastes),
+    ...[...input.instruction.matchAll(new RegExp(escapedRegExp(base) + '(?: #\\d+)?', 'gu'))].map((match) => match[0]),
+  ])
   let placeholder = base
   let suffix = 2
-  while (Object.hasOwn(input.pendingPastes, placeholder) || input.instruction.includes(placeholder)) {
+  while (occupied.has(placeholder)) {
     placeholder = `${base} #${suffix}`; suffix += 1
   }
   const start = Math.max(0, Math.min(input.instruction.length, input.start))
