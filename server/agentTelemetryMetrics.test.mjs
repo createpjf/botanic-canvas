@@ -27,6 +27,10 @@ test('语义事件旁路成低基数指标:标识字段被丢弃,duration/genera
       projectId: 'project-secret',
       turnId: 'turn-secret',
     })
+    recordAgentSemanticMetric({
+      event: 'botanic.agent.harness.lifecycle', kind: 'provider', outcome: 'stream_completed',
+      durationMs: 2_000, chunkCount: 8, maxChunkGapMs: 80,
+    })
     const counter = records.find((entry) => entry.instrument === 'counter')
     assert.equal(counter.attributes.kind, 'cancel')
     assert.equal(counter.attributes.outcome, 'cancel_observed')
@@ -34,6 +38,8 @@ test('语义事件旁路成低基数指标:标识字段被丢弃,duration/genera
     assert.equal(JSON.stringify(records).includes('secret'), false)
     assert.ok(records.some((entry) => entry.instrument === 'botanic.agent.event.duration' && entry.value === 1500))
     assert.ok(records.some((entry) => entry.instrument === 'botanic.agent.turn.generation' && entry.value === 2))
+    assert.ok(records.some((entry) => entry.instrument === 'botanic.agent.provider.chunk_count' && entry.value === 8))
+    assert.ok(records.some((entry) => entry.instrument === 'botanic.agent.provider.max_chunk_gap' && entry.value === 80))
   } finally {
     resetAgentTelemetryMetrics()
   }

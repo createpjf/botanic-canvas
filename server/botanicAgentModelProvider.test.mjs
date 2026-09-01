@@ -17,7 +17,9 @@ const runtimeConfig = {
 
 test('sample 归一化 stream 与 non-stream 到同一 completion 形状,header 与请求体稳定', async () => {
   const requests = []
+  const semanticEvents = []
   const provider = createBotanicAgentModelProvider(runtimeConfig, {
+    writeSemanticEvent: (_name, event) => { semanticEvents.push(event) },
     fetchImpl: async (url, init) => {
       requests.push({ url, init })
       const body = JSON.parse(init.body)
@@ -47,6 +49,9 @@ test('sample 归一化 stream 与 non-stream 到同一 completion 形状,header 
   })
   assert.equal(streamed.choices[0].message.content, '流式回答')
   assert.deepEqual(deltas, ['流式', '回答'])
+  assert.deepEqual(semanticEvents.map((event) => event.outcome), ['first_token', 'stream_completed'])
+  assert.equal(semanticEvents[1].chunkCount, 2)
+  assert.ok(semanticEvents[1].maxChunkGapMs >= 0)
 
   // 传输细节由 Provider 拥有:URL 收敛、双头鉴权、temperature 目录规则。
   assert.equal(requests[0].url, 'https://provider.test/v1/chat/completions')
@@ -115,13 +120,16 @@ test('错误归类稳定:根取消优先于 timeout,HTTP 状态映射保留,over
     (caught) => caught.code === 'AGENT_CONTEXT_OVERFLOW',
   )
 
+  const streamFailures = []
   const truncated = createBotanicAgentModelProvider(runtimeConfig, {
+    writeSemanticEvent: (_name, event) => { streamFailures.push(event) },
     fetchImpl: async () => new Response('data: {"choices":[{"delta":{"content":"half"}}]}\n\n', { status: 200 }),
   })
   await assert.rejects(
     truncated.sample({ model: 'deepseek-v4-pro', messages: [{ role: 'user', content: 'x' }], stream: true }),
     (caught) => caught.code === 'PROVIDER_STREAM_CLOSED' && caught.statusCode === 502,
   )
+  assert.deepEqual(streamFailures.map((event) => event.outcome), ['first_token', 'stream_closed'])
 })
 
 test('config 目录校验与静态映射保持既有语义', () => {

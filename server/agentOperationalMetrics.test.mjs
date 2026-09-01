@@ -128,6 +128,12 @@ test('harness 口径从 lifecycle 语义事件聚合,零容忍计数与 null 语
     harness('recovery', 'unknown'),
     harness('provider', 'deadline_exceeded'),
     harness('provider', 'resume_limit', { generation: 4 }),
+    harness('provider', 'first_token', { durationMs: 120 }),
+    harness('provider', 'first_token', { durationMs: 300 }),
+    harness('provider', 'stream_completed', { durationMs: 1_000, chunkCount: 4, maxChunkGapMs: 50 }),
+    harness('provider', 'stream_completed', { durationMs: 2_000, chunkCount: 8, maxChunkGapMs: 80 }),
+    harness('provider', 'stream_closed', { durationMs: 500, chunkCount: 1, maxChunkGapMs: 0 }),
+    harness('provider', 'stream_malformed', { durationMs: 20, chunkCount: 0, maxChunkGapMs: 0 }),
   ], { minimumPercentileSamples: 1 })
   assert.equal(metrics.harness.toolSettledCount, 3)
   assert.equal(metrics.harness.toolSuccessRate, 1 / 3)
@@ -141,6 +147,13 @@ test('harness 口径从 lifecycle 语义事件聚合,零容忍计数与 null 语
   assert.equal(metrics.harness.recoveryUnknownCount, 1)
   assert.equal(metrics.harness.deadlineExceededCount, 1)
   assert.equal(metrics.harness.resumeLimitCount, 1)
+  assert.equal(metrics.harness.providerFirstTokenP50Ms, 120)
+  assert.equal(metrics.harness.providerFirstTokenP95Ms, 300)
+  assert.equal(metrics.harness.providerStreamP95DurationMs, 2_000)
+  assert.equal(metrics.harness.providerChunkP95Count, 8)
+  assert.equal(metrics.harness.providerMaxChunkGapP95Ms, 80)
+  assert.equal(metrics.harness.providerStreamClosedCount, 1)
+  assert.equal(metrics.harness.providerStreamMalformedCount, 1)
   // 零容忍不变量默认 0;取消延迟没有样本时是 null 而不是 0。
   assert.equal(metrics.harness.startedAfterCancelCount, 0)
   assert.equal(metrics.harness.completedAfterCancelCount, 0)

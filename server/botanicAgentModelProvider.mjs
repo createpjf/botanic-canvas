@@ -98,12 +98,19 @@ export function agentModelProviderConfig(runtimeConfig, requestedModel) {
  * dependencies.fetchImpl 是唯一测试 seam;不注入时用全局 fetch。
  * provider 无状态、可并发,配置在构造时冻结。
  */
-export function createBotanicAgentModelProvider(runtimeConfig, { fetchImpl = fetch, now = Date.now } = {}) {
+export function createBotanicAgentModelProvider(runtimeConfig, {
+  fetchImpl = fetch,
+  now = Date.now,
+  writeSemanticEvent = writeAgentSemanticEvent,
+} = {}) {
   const baseUrl = typeof runtimeConfig?.flockApiBaseUrl === 'string' && runtimeConfig.flockApiBaseUrl.trim()
     ? runtimeConfig.flockApiBaseUrl.trim().replace(/\/+$/, '')
     : 'https://api.flock.io/v1'
   const apiKey = typeof runtimeConfig?.flockApiKey === 'string' ? runtimeConfig.flockApiKey.trim() : ''
   const defaultTimeoutMs = boundedTimeoutMs(runtimeConfig?.agentPlannerTimeoutMs)
+  const emitProviderMetric = (input) => {
+    try { writeSemanticEvent(AGENT_SEMANTIC_EVENT_NAMES.HARNESS_LIFECYCLE, input) } catch { /* metrics旁路fail-open */ }
+  }
 
   /**
    * 单次采样。stream=true 时把 SSE 归一化回非流式 completion 形状,
@@ -141,6 +148,21 @@ export function createBotanicAgentModelProvider(runtimeConfig, { fetchImpl = fet
     const callTimeout = timeoutController.signal
     const signal = request.signal ? AbortSignal.any([request.signal, callTimeout]) : callTimeout
     const startedAt = now()
+    let streamChunkCount = 0
+    let lastStreamChunkAt
+    let maxStreamChunkGapMs = 0
+    let firstTokenRecorded = false
+    const recordStreamChunk = (event) => {
+      const observedAt = now()
+      streamChunkCount += 1
+      if (lastStreamChunkAt !== undefined) maxStreamChunkGapMs = Math.max(maxStreamChunkGapMs, observedAt - lastStreamChunkAt)
+      lastStreamChunkAt = observedAt
+      if (!firstTokenRecorded) {
+        firstTokenRecorded = true
+        emitProviderMetric({ kind: 'provider', outcome: 'first_token', durationMs: Math.max(0, observedAt - startedAt) })
+      }
+      try { request.onEvent?.(event) } catch { /* 展示层异常不得影响指标与模型读取。 */ }
+    }
     try {
       let response
       try {
@@ -185,13 +207,23 @@ export function createBotanicAgentModelProvider(runtimeConfig, { fetchImpl = fet
           }
           return parsed
         }
-        return await readStreamedChatCompletion(response.body, {
-          onEvent: typeof request.onEvent === 'function' ? request.onEvent : undefined,
+        const completion = await readStreamedChatCompletion(response.body, {
+          onEvent: recordStreamChunk,
           onActivity: armTimeout,
         })
+        emitProviderMetric({
+          kind: 'provider', outcome: 'stream_completed', durationMs: Math.max(0, now() - startedAt),
+          chunkCount: streamChunkCount, maxChunkGapMs: maxStreamChunkGapMs,
+        })
+        return completion
       } catch (caught) {
         if (caught instanceof BotanicAgentModelProviderError) throw caught
         if (caught instanceof BotanicAgentStreamError) {
+          emitProviderMetric({
+            kind: 'provider',
+            outcome: caught.code === 'PROVIDER_STREAM_MALFORMED' ? 'stream_malformed' : 'stream_closed',
+            durationMs: Math.max(0, now() - startedAt), chunkCount: streamChunkCount, maxChunkGapMs: maxStreamChunkGapMs,
+          })
           throw new BotanicAgentModelProviderError(caught.statusCode, caught.code, caught.message)
         }
         if (caught && typeof caught === 'object' && 'code' in caught && caught.code === 'AGENT_CONTEXT_OVERFLOW') throw caught
@@ -208,7 +240,7 @@ export function createBotanicAgentModelProvider(runtimeConfig, { fetchImpl = fet
       return new BotanicAgentModelProviderError(499, 'REQUEST_CANCELLED', 'Agent 请求已取消。')
     }
     if (callTimeout.aborted) {
-      writeAgentSemanticEvent(AGENT_SEMANTIC_EVENT_NAMES.HARNESS_LIFECYCLE, {
+      emitProviderMetric({
         kind: 'provider',
         outcome: 'call_timeout',
         durationMs: Math.max(0, now() - startedAt),

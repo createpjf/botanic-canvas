@@ -56,7 +56,7 @@ const harnessOutcomes = new Set([
   'requested', 'loaded', 'rejected', 'snapshot_mismatch',
   'cancel_observed', 'started_after_cancel', 'completed_after_cancel',
   'reused', 'reexecuted', 'duplicate_dispatch',
-  'retry', 'call_timeout', 'deadline_exceeded', 'resume_limit',
+  'retry', 'call_timeout', 'first_token', 'stream_completed', 'stream_closed', 'stream_malformed', 'deadline_exceeded', 'resume_limit',
 ])
 
 const ID_LIMIT = 200
@@ -257,6 +257,8 @@ function harnessLifecycleEvent(target, source) {
   }
   addOptionalInteger(target, source, 'step', 64)
   addOptionalInteger(target, source, 'durationMs', MAX_DURATION_MS)
+  addOptionalInteger(target, source, 'chunkCount', MAX_COUNT)
+  addOptionalInteger(target, source, 'maxChunkGapMs', MAX_DURATION_MS)
   addOptionalInteger(target, source, 'generation', 16)
   addError(target, source)
 }
