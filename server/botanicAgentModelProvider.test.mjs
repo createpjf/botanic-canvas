@@ -114,6 +114,14 @@ test('错误归类稳定:根取消优先于 timeout,HTTP 状态映射保留,over
     overflow.sample({ model: 'deepseek-v4-pro', messages: [{ role: 'user', content: 'x' }] }),
     (caught) => caught.code === 'AGENT_CONTEXT_OVERFLOW',
   )
+
+  const truncated = createBotanicAgentModelProvider(runtimeConfig, {
+    fetchImpl: async () => new Response('data: {"choices":[{"delta":{"content":"half"}}]}\n\n', { status: 200 }),
+  })
+  await assert.rejects(
+    truncated.sample({ model: 'deepseek-v4-pro', messages: [{ role: 'user', content: 'x' }], stream: true }),
+    (caught) => caught.code === 'PROVIDER_STREAM_CLOSED' && caught.statusCode === 502,
+  )
 })
 
 test('config 目录校验与静态映射保持既有语义', () => {

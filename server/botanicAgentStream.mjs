@@ -8,6 +8,15 @@
 
 const DONE = '[DONE]'
 
+export class BotanicAgentStreamError extends Error {
+  constructor(code, message) {
+    super(message)
+    this.name = 'BotanicAgentStreamError'
+    this.code = code
+    this.statusCode = 502
+  }
+}
+
 function usageToken(value) {
   return Number.isSafeInteger(value) && value >= 0 ? value : undefined
 }
@@ -146,7 +155,7 @@ function toAsyncIterable(body) {
 
 /**
  * 逐事件读取 SSE 响应体。按 SSE 规范处理跨网络块切断的行、注释行与多行 data，
- * 遇到 [DONE] 结束。解析不出 JSON 的事件被跳过而不是让整轮失败。
+ * 只有 [DONE] 才是正常终止。坏 JSON、未闭合 tail 或 EOF 前缺 [DONE] 都是截断失败。
  */
 export async function* readServerSentEvents(body) {
   const stream = toAsyncIterable(body)
@@ -154,16 +163,17 @@ export async function* readServerSentEvents(body) {
   const decoder = new TextDecoder()
   let buffer = ''
   let dataLines = []
+  let doneSeen = false
 
   const flush = function* flushEvent() {
     if (!dataLines.length) return
     const payload = dataLines.join('\n')
     dataLines = []
-    if (payload === DONE) return
+    if (payload === DONE) { doneSeen = true; return }
     try {
       yield JSON.parse(payload)
     } catch {
-      // 心跳、注释或截断片段不应中断整轮读取。
+      throw new BotanicAgentStreamError('PROVIDER_STREAM_MALFORMED', 'Agent 模型返回了损坏的流式事件。')
     }
   }
 
@@ -179,6 +189,7 @@ export async function* readServerSentEvents(body) {
         const value = line.slice(5).trimStart()
         if (value === DONE) {
           yield* flush()
+          doneSeen = true
           return
         }
         dataLines.push(value)
@@ -187,12 +198,10 @@ export async function* readServerSentEvents(body) {
       newlineIndex = buffer.indexOf('\n')
     }
   }
-  const tail = buffer.replace(/\r$/, '')
-  if (tail.startsWith('data:')) {
-    const value = tail.slice(5).trimStart()
-    if (value !== DONE) dataLines.push(value)
+  // EOF 时任何未闭合 tail/data 都不能补成合法事件;缺 [DONE] 同样是截断。
+  if (buffer || dataLines.length || !doneSeen) {
+    throw new BotanicAgentStreamError('PROVIDER_STREAM_CLOSED', 'Agent 模型流式响应提前结束。')
   }
-  yield* flush()
 }
 
 /** 读完一次流式模型调用，返回与非流式完全一致的响应形状。 */

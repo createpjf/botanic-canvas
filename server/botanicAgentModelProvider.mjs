@@ -19,7 +19,7 @@
  */
 import { outboundAgentTraceHeaders } from './agentTraceContext.mjs'
 import { throwIfAgentProviderContextOverflow } from './agentProviderContextOverflow.mjs'
-import { readStreamedChatCompletion } from './botanicAgentStream.mjs'
+import { BotanicAgentStreamError, readStreamedChatCompletion } from './botanicAgentStream.mjs'
 import { AGENT_SEMANTIC_EVENT_NAMES, writeAgentSemanticEvent } from './agentSemanticEvent.mjs'
 
 /** 与既有 Planner 目录一致的缺省 Agent 模型。 */
@@ -185,6 +185,9 @@ export function createBotanicAgentModelProvider(runtimeConfig, { fetchImpl = fet
         })
       } catch (caught) {
         if (caught instanceof BotanicAgentModelProviderError) throw caught
+        if (caught instanceof BotanicAgentStreamError) {
+          throw new BotanicAgentModelProviderError(caught.statusCode, caught.code, caught.message)
+        }
         if (caught && typeof caught === 'object' && 'code' in caught && caught.code === 'AGENT_CONTEXT_OVERFLOW') throw caught
         throw classifyTransportFailure(caught, { rootSignal: request.signal, callTimeout, startedAt })
       }
