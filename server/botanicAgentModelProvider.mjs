@@ -130,9 +130,14 @@ export function createBotanicAgentModelProvider(runtimeConfig, { fetchImpl = fet
     if (!apiKey) throw new BotanicAgentModelProviderError(503, 'PROVIDER_NOT_CONFIGURED', 'Agent 模型服务尚未配置。')
     const stream = request.stream === true
     const timeoutMs = boundedRequestTimeoutMs(request.timeoutMs, defaultTimeoutMs)
-    // per-call timeout 每次采样重建;根 signal 只组合,不被覆盖。
+    // 非流式是总timeout;流式是idle timeout,每个SSE网络chunk续命。Turn deadline仍管总时长。
     const timeoutController = new AbortController()
-    const timeoutId = setTimeout(() => timeoutController.abort(), timeoutMs)
+    let timeoutId
+    const armTimeout = () => {
+      clearTimeout(timeoutId)
+      timeoutId = setTimeout(() => timeoutController.abort(), timeoutMs)
+    }
+    armTimeout()
     const callTimeout = timeoutController.signal
     const signal = request.signal ? AbortSignal.any([request.signal, callTimeout]) : callTimeout
     const startedAt = now()
@@ -182,6 +187,7 @@ export function createBotanicAgentModelProvider(runtimeConfig, { fetchImpl = fet
         }
         return await readStreamedChatCompletion(response.body, {
           onEvent: typeof request.onEvent === 'function' ? request.onEvent : undefined,
+          onActivity: armTimeout,
         })
       } catch (caught) {
         if (caught instanceof BotanicAgentModelProviderError) throw caught
@@ -196,7 +202,7 @@ export function createBotanicAgentModelProvider(runtimeConfig, { fetchImpl = fet
     }
   }
 
-  /** 传输失败归类:根取消 > per-call timeout > 网络不可用。timeout 才 emit call_timeout。 */
+  /** 传输失败归类:根取消 > Provider timeout > 网络不可用。stream时timeout指idle。 */
   function classifyTransportFailure(caught, { rootSignal, callTimeout, startedAt }) {
     if (rootSignal?.aborted) {
       return new BotanicAgentModelProviderError(499, 'REQUEST_CANCELLED', 'Agent 请求已取消。')

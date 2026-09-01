@@ -157,7 +157,7 @@ function toAsyncIterable(body) {
  * 逐事件读取 SSE 响应体。按 SSE 规范处理跨网络块切断的行、注释行与多行 data，
  * 只有 [DONE] 才是正常终止。坏 JSON、未闭合 tail 或 EOF 前缺 [DONE] 都是截断失败。
  */
-export async function* readServerSentEvents(body) {
+export async function* readServerSentEvents(body, { onActivity } = {}) {
   const stream = toAsyncIterable(body)
   if (!stream) return
   const decoder = new TextDecoder()
@@ -178,6 +178,7 @@ export async function* readServerSentEvents(body) {
   }
 
   for await (const chunk of stream) {
+    try { onActivity?.() } catch { /* transport activity observer 不能中断模型读取。 */ }
     buffer += typeof chunk === 'string' ? chunk : decoder.decode(chunk, { stream: true })
     let newlineIndex = buffer.indexOf('\n')
     while (newlineIndex !== -1) {
@@ -205,8 +206,8 @@ export async function* readServerSentEvents(body) {
 }
 
 /** 读完一次流式模型调用，返回与非流式完全一致的响应形状。 */
-export async function readStreamedChatCompletion(body, { onEvent } = {}) {
+export async function readStreamedChatCompletion(body, { onEvent, onActivity } = {}) {
   const accumulator = createChatCompletionAccumulator({ onEvent })
-  for await (const chunk of readServerSentEvents(body)) accumulator.push(chunk)
+  for await (const chunk of readServerSentEvents(body, { onActivity })) accumulator.push(chunk)
   return accumulator.result()
 }

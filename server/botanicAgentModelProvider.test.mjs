@@ -133,3 +133,26 @@ test('config 目录校验与静态映射保持既有语义', () => {
   assert.equal(agentModelProviderTemperature('kimi-k3'), 1)
   assert.equal(agentModelProviderResponseError(429).statusCode, 429)
 })
+
+test('流式timeout按idle续命:总时长超过预算但持续有chunk仍完成', async () => {
+  const encoder = new TextEncoder()
+  const provider = createBotanicAgentModelProvider(runtimeConfig, {
+    fetchImpl: async () => new Response(new ReadableStream({
+      async start(controller) {
+        const push = async (text) => { controller.enqueue(encoder.encode(text)); await new Promise((resolve) => setTimeout(resolve, 25)) }
+        await push('data: ' + JSON.stringify({ choices: [{ delta: { content: '活' } }] }) + '\n\n')
+        await push(': keep-alive\n\n')
+        await push('data: ' + JSON.stringify({ choices: [{ delta: { content: '跃' } }] }) + '\n\n')
+        await push('data: ' + JSON.stringify({ choices: [{ delta: {}, finish_reason: 'stop' }] }) + '\n\n')
+        controller.enqueue(encoder.encode('data: [DONE]\n\n'))
+        controller.close()
+      },
+    }), { status: 200 }),
+  })
+  const startedAt = Date.now()
+  const result = await provider.sample({
+    model: 'deepseek-v4-pro', messages: [{ role: 'user', content: 'x' }], stream: true, timeoutMs: 80,
+  })
+  assert.equal(result.choices[0].message.content, '活跃')
+  assert.ok(Date.now() - startedAt >= 80, '总时长必须超过idle预算才能证明续命生效')
+})
