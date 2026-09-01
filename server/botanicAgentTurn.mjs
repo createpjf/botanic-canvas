@@ -903,6 +903,8 @@ async function executeTurnAttempt({ config, model, system, messages, registry, o
       recoverToolCall: options.recoverToolCall,
       modelContext: options.modelContext,
       maxOutputTokens: 3000,
+      signal: options.signal,
+      deadlineAt: options.deadlineAt,
       callModel: async ({ messages: turnMessages, tools, tool_choice, step }) => {
         const requestProvider = (requestMessages) => fetchImpl(`${config.baseUrl}/chat/completions`, {
             method: 'POST',

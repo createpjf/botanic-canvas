@@ -478,6 +478,8 @@ export async function runAgentToolLoop({
   maxOutputTokens = undefined,
   trigger = 'pre_step',
   genAiTelemetry = false,
+  signal = undefined,
+  deadlineAt = undefined,
 }) {
   if (!Number.isInteger(maximumToolCalls) || maximumToolCalls < 1 || maximumToolCalls > MODEL_TOOL_CALL_TOTAL_LIMIT) {
     throw new TypeError(`Agent 工具调用上限必须是 1 到 ${MODEL_TOOL_CALL_TOTAL_LIMIT} 之间的整数。`)
@@ -490,6 +492,17 @@ export async function runAgentToolLoop({
     throw new TypeError('Agent Model Context 必须实现 prepare 与 observe。')
   }
   const conversation = [...messages]
+  // 冻结的取消/期限边界（H2）：根 signal 与 Turn deadline 贯穿模型调用、preflight、
+  // 每个 tool.execute 与写终态。取消在派发前发现时是 terminal-known，不是 Provider 错。
+  const assertExecutionAlive = () => {
+    if (signal?.aborted) {
+      throw knownPreEffectFailure(new AgentToolRuntimeError('REQUEST_CANCELLED', 'Agent 请求已取消。', 499))
+    }
+    if (typeof deadlineAt === 'number' && Date.now() >= deadlineAt) {
+      throw knownPreEffectFailure(new AgentToolRuntimeError('AGENT_TURN_DEADLINE_EXCEEDED', 'Agent Turn 已超过本轮时限。', 504))
+    }
+  }
+  assertExecutionAlive()
   // 工具定义在循环开始前定格一次，之后每一步都用同一份。
   const frozenTools = registry.openAITools()
   const frozenSnapshot = snapshot ?? freezeAgentStepSnapshot({ registry })
@@ -802,6 +815,8 @@ export async function runAgentToolLoop({
     let terminalOutput
     let terminalSucceeded = false
     for (const entry of entries) {
+      // 下一个 call 启动前的取消边界：第一项运行中取消后，第二项不得启动。
+      assertExecutionAlive()
       const { tool, trace } = entry
       entry.completedDescriptor = entry.descriptor
       entry.progressStep = step
@@ -835,9 +850,20 @@ export async function runAgentToolLoop({
               context,
             })
           }
-          return tool.execute(entry.validatedInput, { ...context, toolCallId: trace.id })
+          return tool.execute(entry.validatedInput, {
+            ...context,
+            toolCallId: trace.id,
+            // 根 signal 直达工具；子任务等自带 timeout 的 context 已在各自 seam 组合过。
+            ...(signal && context?.signal === undefined ? { signal } : {}),
+            ...(typeof deadlineAt === 'number' ? { deadlineAt } : {}),
+          })
         })
       } catch (caught) {
+        // 根取消优先归因为取消：工具因中止抛出的任何错误（含自身 timeout）不再伪装成工具失败。
+        // 该 call 已 dispatched，不标记 outcomeKnown —— 不能假设「取消 = 没执行」。
+        if (signal?.aborted) {
+          throw new AgentToolRuntimeError('REQUEST_CANCELLED', 'Agent 请求已取消。', 499)
+        }
         const error = caught instanceof Error ? caught.message : '工具执行失败。'
         const failed = { ...trace, status: 'failed', error }
         if (emitEvents) {
@@ -965,6 +991,8 @@ export async function runAgentToolLoop({
 
   const startStep = checkpoint?.completedSteps.length ?? 0
   for (let step = startStep; step < maximumSteps; step += 1) {
+    // 模型调用前的取消/期限边界：取消后不再启动下一次 sampling。
+    assertExecutionAlive()
     steps.push({ step, snapshot: frozenSnapshot })
     let response
     if (modelContext === undefined) {
@@ -1045,6 +1073,8 @@ export async function runAgentToolLoop({
     }
     plannedToolCallCount += calls.length
 
+    // 模型响应落地后、整批 preflight 前的取消边界：取消后不进入副作用准备。
+    assertExecutionAlive()
     // 必须先完成这一步全部 call 的存在性、参数、确认与回执身份校验。
     // 不能执行完第一个工具后，才发现第二个 call 是坏的。
     const planned = preflightModelCalls(calls, step)

@@ -791,6 +791,8 @@ export async function planBotanicGeneration(input, runtimeConfig, options = {}) 
       recoverToolCall: options.recoverToolCall,
       modelContext: contextBinding.modelContext,
       maxOutputTokens: 3000,
+      signal: options.signal,
+      deadlineAt: options.deadlineAt,
       callModel: async ({ messages, tools, tool_choice, step }) => {
         const response = await fetchImpl(`${config.baseUrl}/chat/completions`, {
           method: 'POST',

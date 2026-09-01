@@ -208,6 +208,8 @@ async function executeChatAttempt({ input, config, model, system, messages, regi
       recoverToolCall: options.recoverToolCall,
       modelContext: contextBinding.modelContext,
       maxOutputTokens: input.mode === 'prompt' ? 2200 : 3000,
+      signal: options.signal,
+      deadlineAt: options.deadlineAt,
       callModel: async ({ messages: turnMessages, tools, tool_choice, step }) => {
         const response = await fetchImpl(`${config.baseUrl}/chat/completions`, {
           method: 'POST',

@@ -1289,3 +1289,68 @@ test('无进展计数在参数变化后重置', async () => {
   assert.equal(events.filter((event) => event.presentation?.kind === 'no_progress').length, 2)
   assert.equal(result.toolCalls.filter((call) => call.status === 'succeeded').length, 6)
 })
+
+test('根 signal 贯穿:hanging tool 收到取消后有界退出且第二个 call 不启动', async () => {
+  const controller = new AbortController()
+  let hangingSawAbort = false
+  let secondStarted = false
+  const registry = createAgentToolRegistry([
+    {
+      name: 'hanging_read', label: '挂起读取', risk: 'read',
+      description: '测试用挂起工具。',
+      parameters: { type: 'object', properties: {}, additionalProperties: false },
+      validate: () => ({}),
+      execute: (_input, context) => new Promise((_resolve, reject) => {
+        // 协作式消费根 signal:这就是 H2 的验收边界。
+        assert.equal(typeof context.signal?.addEventListener, 'function')
+        context.signal.addEventListener('abort', () => {
+          hangingSawAbort = true
+          reject(new Error('tool aborted'))
+        }, { once: true })
+      }),
+    },
+    {
+      name: 'second_read', label: '第二读取', risk: 'read',
+      description: '测试用第二工具。',
+      parameters: { type: 'object', properties: {}, additionalProperties: false },
+      validate: () => ({}),
+      execute: async () => { secondStarted = true; return { ok: true } },
+    },
+  ])
+  const loop = runAgentToolLoop({
+    registry,
+    messages: [],
+    maximumSteps: 3,
+    signal: controller.signal,
+    callModel: async () => ({
+      choices: [{ message: { tool_calls: [
+        { id: 'call-hang', type: 'function', function: { name: 'hanging_read', arguments: '{}' } },
+        { id: 'call-second', type: 'function', function: { name: 'second_read', arguments: '{}' } },
+      ] } }],
+    }),
+  })
+  setTimeout(() => controller.abort(), 20)
+  await assert.rejects(loop, (caught) => caught.code === 'REQUEST_CANCELLED' && caught.statusCode === 499)
+  assert.equal(hangingSawAbort, true, 'hanging tool 必须收到根 signal')
+  assert.equal(secondStarted, false, '取消后第二个 call 不得启动')
+})
+
+test('取消发生在模型调用前:归因为取消而非 Provider 错,模型不再被调用', async () => {
+  const controller = new AbortController()
+  controller.abort()
+  let modelCalls = 0
+  const registry = createAgentToolRegistry([{
+    name: 'noop_read', label: '空读取', risk: 'read',
+    description: '测试工具。',
+    parameters: { type: 'object', properties: {}, additionalProperties: false },
+    validate: () => ({}), execute: async () => ({ ok: true }),
+  }])
+  await assert.rejects(
+    runAgentToolLoop({
+      registry, messages: [], signal: controller.signal,
+      callModel: async () => { modelCalls += 1; return { choices: [{ message: { content: 'x' } }] } },
+    }),
+    (caught) => caught.code === 'REQUEST_CANCELLED' && caught.outcomeKnown === true,
+  )
+  assert.equal(modelCalls, 0)
+})
