@@ -143,6 +143,15 @@ compaction 当可靠性边界、平台 sandbox/Guardian。Botanic 的 durable Tu
 同阶段收口的 Core 事实:web 工具 journal 语义贯穿根 Turn/Subagent(不再按入口分叉为 never);
 `cancel_observed`/`duplicate_dispatch` 有生产 emit;Turn/Chat/Planner 透传 `AGENT_TOOL_*` 具名错误。
 
+### Agent 对话界面控制面(Codex UI 对照升级)
+
+- `useAgentComposerState` 按 project/session 隔离完整 transient state;sessionStorage 只保存展开后的文本+caret,切tab失效,pagehide在debounce前flush。Context/Skill/错误/恢复快照不进浏览器草稿。
+- `agentComposerQueue` + `useAgentInstructionQueue` 拥有最多3条 queue-after-turn:FIFO只在Turn completed发送,failed/idle空输入弹回,waiting confirmation保持;入队不提前创建Message,并冻结model/mode/context/Skill/target/group/生成覆盖。
+- `AgentComposer` 的 `/` 同时提供本地导航命令与Skill,`@`引用画布;popup支持dismissed token、fuzzy、disabled-skip键盘语义;空输入Up/Down从当前Session用户消息召回且不劫持多行编辑。
+- 大粘贴只在展示层折为placeholder,发送/入队/session草稿前恢复原文;浏览器不实现Terminal PasteBurst。
+- Timeline用稳定toolCall ID更新;快速本地read采用300ms reveal/600ms linger并折成可展开摘要;Subagent进度复用同一tool事件durable投影;截断轨迹只经GET+nextAfter继续加载,不进入observer执行路径。
+- Transcript始终是安全presentation/状态/耗时/错误/source/Receipt引用;raw args/result/reasoning/Provider body不进入UI协议。
+
 ## Agent Turn Runtime 与恢复
 
 `server/botanicAgentTurnRuntime.mjs` 是回合控制权的唯一入口。Turn 先以 `queued` 持久化，再由 ProductStore 原子
