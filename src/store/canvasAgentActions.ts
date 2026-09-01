@@ -58,6 +58,8 @@ type PersistentAgentRunApi = {
 
 type PersistAgentSession = (projectId: string, session: BotanicAgentSession) => Promise<BotanicAgentSession | undefined>
 
+type PersistLocalDocumentMirror = (document: CanvasDocument) => Promise<void>
+
 /**
  * CanvasStore 内的 Agent 实体命令模块。
  * Session、Message、Memory 与 Run 的兼容双写都经同一个提交端口完成。
@@ -70,6 +72,7 @@ export function createCanvasAgentActions({
   persistAcknowledgedRemotePatch,
   invalidateDocumentPersistence = () => undefined,
   persistAgentSession = async () => undefined,
+  persistLocalDocumentMirror = async () => undefined,
 }: {
   set: (next: Partial<CanvasStore>) => void
   get: () => CanvasStore
@@ -78,6 +81,7 @@ export function createCanvasAgentActions({
   persistAcknowledgedRemotePatch: (document: CanvasDocument, revision: number, graphRevision: number) => Promise<void>
   invalidateDocumentPersistence?: () => void
   persistAgentSession?: PersistAgentSession
+  persistLocalDocumentMirror?: PersistLocalDocumentMirror
 }): AgentStoreActions {
   const commitAgentSessionDocument = (document: CanvasDocument, options: { persistSession?: boolean } = {}) => {
     // Session 创建后的首条消息/上下文可能与持久化同一帧发生；
@@ -115,7 +119,14 @@ export function createCanvasAgentActions({
       const rootRecipe = sourceData?.rootRecipe ?? sourceData?.generationRecipe
       const agentRuns = upsertBotanicAgentRunSnapshot(document.agentRuns, snapshot, rootRecipe)
       if (agentRuns === document.agentRuns) return
-      void commitDocument({ ...document, agentRuns }, {}, { immediate: true })
+      // Run 快照是服务端权威状态：只更新内存视图并镜像到本机缓存。走 commitDocument
+      // 会把它反向 PATCH 回 /document 并用本机挂钟推高 updatedAt——4 秒恢复轮询因此
+      // 变成持续写风暴，多端互踩 409 后 pendingSync 草稿常驻，远端刷新从此全被拒收。
+      const nextDocument = { ...document, agentRuns }
+      set({ document: nextDocument })
+      void persistLocalDocumentMirror(nextDocument).catch(() => {
+        recordSentryBreadcrumb('agent-run', 'Agent Run 快照本机缓存失败，刷新后从服务端恢复。')
+      })
     },
 
     applyAgentWorkflowPatch: async (patch) => {

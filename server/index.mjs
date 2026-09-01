@@ -7,7 +7,7 @@ import { installDatabaseResilience } from './databaseResilience.mjs'
 import { createSecurityControls } from './securityControls.mjs'
 import { createBotanicHttpServer } from './httpServer.mjs'
 import { initializeBotanicTelemetry } from './botanicTelemetry.mjs'
-import { flushSentry } from './sentry.mjs'
+import { captureException, flushSentry } from './sentry.mjs'
 
 loadLocalEnv()
 // 数据库连接层的抖动不属于任何一次请求，因此没有 5xx 可返回，只会变成未捕获异常并
@@ -26,7 +26,10 @@ const agentSubagentQueue = createAgentSubagentQueue(config.redisUrl)
 const agentRunEvents = createAgentRunEventPublisher(config.redisUrl)
 const securityControls = createSecurityControls({
   redisUrl: config.redisUrl,
-  onFallback: (caught) => console.error(`[security] Redis limiter fallback: ${caught instanceof Error ? caught.message : String(caught)}`),
+  onFallback: (caught) => {
+    captureException(caught, { level: 'warning', tags: { component: 'security', operation: 'redis_fallback' } })
+    console.error(`[security] Redis limiter fallback: ${caught instanceof Error ? caught.message : String(caught)}`)
+  },
 })
 
 const application = createBotanicHttpServer({

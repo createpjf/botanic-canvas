@@ -36,7 +36,7 @@ import { createDurableAgentSubagentRunner } from './agentSubagentBroker.mjs'
 import { initializeBotanicTelemetry } from './botanicTelemetry.mjs'
 import { createAgentContextObserver } from './agentContextObservability.mjs'
 import { activeBotanicTraceFields } from './executionTelemetry.mjs'
-import { captureException, flushSentry } from './sentry.mjs'
+import { captureException, captureMessage, flushSentry } from './sentry.mjs'
 
 loadLocalEnv()
 // 与 API 同一处理：Worker 崩掉的后果更隐蔽 —— 队列还在，任务永远停在 running。
@@ -61,6 +61,10 @@ const subagentQueue = createAgentSubagentQueue(config.redisUrl)
 const agentRunEvents = createAgentRunEventPublisher(config.redisUrl)
 const canvasRealtimeEvents = createCanvasRealtimeEventPublisher(config.redisUrl, { eventSecret: config.realtimeEventSecret })
 const canvasSourceInstanceId = randomUUID()
+const reportWorkerOperationalFailure = (caught, tags) => captureException(caught, {
+  level: 'warning',
+  tags: { component: 'worker', ...tags },
+})
 async function publishSavedProjectUpdated(saved, actorId, graphCommit) {
   if (graphCommit?.changed && graphCommit.update) {
     try {
@@ -72,6 +76,7 @@ async function publishSavedProjectUpdated(saved, actorId, graphCommit) {
         ...(graphCommit.duplicate ? { duplicate: true } : {}),
       })
     } catch (caught) {
+      reportWorkerOperationalFailure(caught, { subsystem: 'realtime', operation: 'canvas_update' })
       console.error(`[realtime] worker canvas update deferred: ${caught instanceof Error ? caught.message : String(caught)}`)
     }
   }
@@ -87,6 +92,7 @@ async function publishSavedProjectUpdated(saved, actorId, graphCommit) {
         : {}),
     })
   } catch (caught) {
+    reportWorkerOperationalFailure(caught, { subsystem: 'realtime', operation: 'project_update' })
     console.error(`[realtime] worker project update deferred: ${caught instanceof Error ? caught.message : String(caught)}`)
   }
 }
@@ -94,7 +100,10 @@ const providerHealth = createProviderHealthMonitor({
   redisUrl: config.redisUrl,
   failureThreshold: config.providerFailureThreshold,
   cooldownMs: config.providerCircuitCooldownMs,
-  onFallback: (caught) => console.error(`[provider-health] Redis unavailable: ${caught instanceof Error ? caught.message : String(caught)}`),
+  onFallback: (caught) => {
+    reportWorkerOperationalFailure(caught, { subsystem: 'provider-health', operation: 'redis_fallback' })
+    console.error(`[provider-health] Redis unavailable: ${caught instanceof Error ? caught.message : String(caught)}`)
+  },
 })
 // Worker 与 API 是两个进程：API 写下 cancelled 时本进程不会知道，只能等 Provider
 // 跑完再丢弃结果。订阅取消频道后就地 abort，Provider 调用真正停下、槽位立刻释放。
@@ -133,6 +142,7 @@ const cancelSubscriber = await createAgentRunEventSubscriber(config.redisUrl, ()
     }).then((aborted) => {
       if (aborted) logAbort()
     }).catch((caught) => {
+      reportWorkerOperationalFailure(caught, { subsystem: 'cancellation', operation: 'verify_signal' })
       console.error(`[generation] cancel signal verification deferred: ${caught instanceof Error ? caught.message : String(caught)}`)
     })
   },
@@ -141,7 +151,10 @@ const cancelSubscriber = await createAgentRunEventSubscriber(config.redisUrl, ()
 const derivedQueue = createDerivedTaskQueue(config.redisUrl)
 const securityControls = createSecurityControls({
   redisUrl: config.redisUrl,
-  onFallback: (caught) => console.error(`[security] Redis unavailable: ${caught instanceof Error ? caught.message : String(caught)}`),
+  onFallback: (caught) => {
+    reportWorkerOperationalFailure(caught, { subsystem: 'security', operation: 'redis_fallback' })
+    console.error(`[security] Redis unavailable: ${caught instanceof Error ? caught.message : String(caught)}`)
+  },
 })
 const consumeWebResearchQuota = async (userId) => {
   const result = await securityControls.consume({
@@ -194,6 +207,10 @@ const worker = createGenerationWorker({
     enqueueDerivedTask: (kind, dedupeId, payload) => derivedQueue?.enqueue(kind, dedupeId, payload),
     // 业务终态失败在 Worker 内部被捕获落库，不会触发 BullMQ failed 事件；这里显式上报。
     reportWorkerFailure: (failure, context) => captureException(failure, context),
+    reportWorkerOutcome: (failure, context) => captureMessage(`generation_provider_${failure.code ?? 'unknown'}`, {
+      ...context,
+      level: 'warning',
+    }),
   }),
 })
 
@@ -416,6 +433,7 @@ async function recoverQueuedJobs() {
     await sweepRecoverableGenerationJobs()
   } catch (caught) {
     // Worker 后续会周期性重试；短暂的恢复查询失败不能造成进程反复重启或遗留队列任务。
+    reportWorkerOperationalFailure(caught, { subsystem: 'generation', operation: 'recovery' })
     console.error(`[generation] worker recovery deferred: ${caught instanceof Error ? caught.message : String(caught)}`)
   }
 }
@@ -432,6 +450,7 @@ async function reclaimInterruptedJobs() {
       if (await queue.reclaimStaleActive(job.id)) console.warn(`[generation] ${job.id} reclaimed after interrupted worker`)
     }
   } catch (caught) {
+    reportWorkerOperationalFailure(caught, { subsystem: 'generation', operation: 'stale_recovery' })
     console.error(`[generation] stale recovery deferred: ${caught instanceof Error ? caught.message : String(caught)}`)
   }
 }
@@ -453,6 +472,7 @@ async function recoverQueuedAgentSubagents() {
   try {
     await recoverAgentSubagents()
   } catch (caught) {
+    reportWorkerOperationalFailure(caught, { subsystem: 'agent-subagent', operation: 'recovery' })
     console.error(`[agent-subagent] worker recovery deferred: ${caught instanceof Error ? caught.message : String(caught)}`)
   }
 }

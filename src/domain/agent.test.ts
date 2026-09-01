@@ -999,6 +999,25 @@ test('AgentRun 保存待确认计划并通过显式状态转换追踪执行', ()
   })
 })
 
+test('本机挂钟领先时终态快照仍能收下，Run 不再永远显示活跃', () => {
+  const plan = buildBotanicAgentPlan({
+    instruction: '调整动作', intent: 'change_pose', selectedResultNodeId: 'result-v03', rootRecipe,
+  })
+  // 本地曾用本机挂钟写过 updatedAt（500 > 服务端 300）；服务端已终态。
+  const local = { ...createBotanicAgentRun(plan, { id: 'agent-run-1', now: 100 }), status: 'running' as const, updatedAt: 500 }
+  const merged = mergeBotanicAgentRunSnapshot(local, {
+    id: 'agent-run-1', projectId: 'project-a', status: 'completed', completedBranchCount: 1, failedBranchCount: 0,
+    branches: [{ id: 'branch-a', label: '海边', status: 'succeeded', attempt: 0, jobIds: ['job-a'], activeJobId: 'job-a', outputCount: 1, updatedAt: 300 }],
+    createdAt: 100, updatedAt: 300,
+  })
+  assert.equal(merged.status, 'completed')
+  // 同为终态或旧快照仍旧丢弃，不回退进度。
+  assert.equal(mergeBotanicAgentRunSnapshot(merged, {
+    id: 'agent-run-1', projectId: 'project-a', status: 'completed', completedBranchCount: 1, failedBranchCount: 0,
+    branches: [], createdAt: 100, updatedAt: 200,
+  }), merged)
+})
+
 test('服务端 Run 快照只更新进度，不覆盖浏览器中的完整可执行计划', () => {
   const plan = buildBotanicAgentPlan({
     instruction: '调整动作', intent: 'change_pose', selectedResultNodeId: 'result-v03', rootRecipe,

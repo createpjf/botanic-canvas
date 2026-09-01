@@ -11,6 +11,7 @@ import { productAuthorizationHeader } from './productSession'
 import { invalidateProductSessionIfRequired } from './productSessionInvalidation'
 import { readProductLocale } from '../i18n/core'
 import type { GenerationCancelOutcome } from '../domain/generationCancelCopy'
+import { captureSentryApiFailure } from './sentry.ts'
 
 type MediaReferencePayload = {
   nodeId: string
@@ -138,9 +139,13 @@ async function requestJson<T>(path: string, init?: RequestInit, timeoutMs = gene
     })
   } catch {
     if (timedOut) {
-      throw new GenerationApiError(generationCopy('任务等待超过 5 分钟，已停止等待。请重试。', 'The task timed out after 5 minutes. Try again.'), { code: 'REQUEST_TIMEOUT', status: 0 })
+      const error = new GenerationApiError(generationCopy('任务等待超过 5 分钟，已停止等待。请重试。', 'The task timed out after 5 minutes. Try again.'), { code: 'REQUEST_TIMEOUT', status: 0 })
+      captureSentryApiFailure(error, { path, method: init?.method, aborted: Boolean(init?.signal?.aborted) })
+      throw error
     }
-    throw new GenerationApiError(generationCopy('生成服务不可用，请稍后重试。', 'The generation service is unavailable. Try again shortly.'), { status: 0 })
+    const error = new GenerationApiError(generationCopy('生成服务不可用，请稍后重试。', 'The generation service is unavailable. Try again shortly.'), { status: 0 })
+    captureSentryApiFailure(error, { path, method: init?.method, aborted: Boolean(init?.signal?.aborted) })
+    throw error
   } finally {
     window.clearTimeout(timeoutId)
     init?.signal?.removeEventListener('abort', onCallerAbort)
@@ -150,10 +155,12 @@ async function requestJson<T>(path: string, init?: RequestInit, timeoutMs = gene
   if (!response.ok) {
     const error = payload as ApiErrorPayload | null
     invalidateProductSessionIfRequired({ status: response.status, code: error?.error?.code })
-    throw new GenerationApiError(readableApiError(error, generationCopy('生成服务返回异常，请稍后重试。', 'The generation service returned an error. Try again shortly.')), {
+    const apiError = new GenerationApiError(readableApiError(error, generationCopy('生成服务返回异常，请稍后重试。', 'The generation service returned an error. Try again shortly.')), {
       code: error?.error?.code,
       status: response.status,
     })
+    captureSentryApiFailure(apiError, { path, method: init?.method })
+    throw apiError
   }
 
   return payload as T

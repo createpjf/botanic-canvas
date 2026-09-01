@@ -1,6 +1,6 @@
 # Botanic Canvas 同步协议 V2：竞品研究与重做方案
 
-> 状态：代码已实现，数据库 migration 与 epoch 切换待发布
+> 状态：协议代码与单项目 Canary 工具已就绪；生产状态以逐项目 Canary 的运行报告为准
 >
 > 日期：2026-08-31
 >
@@ -365,6 +365,26 @@ Agent、Generation Worker 和浏览器必须经过同一 `Canvas Graph Commit Se
 2. 连续无 drift 后按 5% → 25% → 100% 项目切换。
 3. 每个项目记录 `syncProtocolEpoch`，确保任一时刻只有一条写路径。
 4. 数据库迁移和生产 backfill 属于数据变更，实施前需维护者明确授权。
+
+### 单项目 Canary 操作
+
+切换工具只接受一个项目，不提供 `--all`。默认是数据库强制只读的 dry-run；只有预检返回
+`eligible: true` 后，才使用同一报告里的 `graphRevision` 执行切换。
+
+```bash
+npm run canvas:epoch2 -- --project <project-id> --dry-run
+npm run canvas:epoch2 -- --project <project-id> --apply --expected-revision <graphRevision>
+npm run canvas:epoch2 -- --project <project-id> --verify
+```
+
+dry-run 同时检查 V2 唯一索引、历史 mutation 身份回填、活动 Generation/Agent 写入者、Yjs
+可恢复性，以及 epoch 2 日志重建与当前物化图谱是否一致。apply 在 `SERIALIZABLE` 事务内锁定
+项目图谱行，重新执行全部预检，再原子写入重建快照、切换 epoch 并压缩已合入快照的增量；
+revision 或 epoch 变化时整笔回滚。提交后工具自动执行一次 verify，独立 `--verify` 用于后续复核。
+
+任一命令非零退出、`eligible/verified` 为 `false`、线上出现图谱 drift、Outbox 无法排空或 V2
+项目 HTTP 409 时，立即停止扩大范围。epoch 2 项目不得把数值改回 1；事故处理是暂停 rollout，
+保留 V2 日志权威，并回滚到仍能读取 epoch 2 的应用版本。
 
 ### 回滚
 

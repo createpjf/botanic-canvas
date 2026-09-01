@@ -140,11 +140,30 @@ function rememberRemoteRevisions(id: string, response: { revision: number; graph
   return true
 }
 
+const syncProtocolEpochStoragePrefix = 'botanic-canvas-sync-epoch:v1:'
+
+function readPersistedSyncProtocolEpoch(id: string) {
+  try {
+    const value = Number(globalThis.localStorage?.getItem(`${syncProtocolEpochStoragePrefix}${id}`))
+    return Number.isInteger(value) && value >= 1 ? value : undefined
+  } catch {
+    return undefined
+  }
+}
+
 export function rememberRemoteSyncProtocolEpoch(id: string, epoch?: number) {
   const value = Number(epoch)
   if (!Number.isInteger(value) || value < 1) return
-  const current = remoteSyncProtocolEpochs.get(id)
-  if (current === undefined || value > current) remoteSyncProtocolEpochs.set(id, value)
+  const current = lastKnownCanvasSyncProtocolEpoch(id)
+  if (current !== undefined && value <= current) return
+  remoteSyncProtocolEpochs.set(id, value)
+  // epoch 记忆必须跨刷新存活：只活在内存时，刷新后的首次 Outbox 重放
+  // 识别不出旧 epoch 条目，正是 Canary 布局漂移的重放窗口。
+  try {
+    globalThis.localStorage?.setItem(`${syncProtocolEpochStoragePrefix}${id}`, String(value))
+  } catch {
+    // 私有窗口等场景不可写；内存记忆仍在，当前会话不受影响。
+  }
 }
 
 function rememberRemoteDocument(id: string, response: { document: CanvasDocument; revision: number; graphRevision?: number; syncProtocolEpoch?: number }) {
@@ -182,7 +201,7 @@ export function lastKnownRemoteRevision(id: string) {
 }
 
 export function lastKnownCanvasSyncProtocolEpoch(id: string) {
-  return remoteSyncProtocolEpochs.get(id)
+  return remoteSyncProtocolEpochs.get(id) ?? readPersistedSyncProtocolEpoch(id)
 }
 
 type CollectionPatch<T extends { id: string }> = {

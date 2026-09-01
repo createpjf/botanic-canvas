@@ -1313,7 +1313,10 @@ export function AgentConversationMessage({
         />
         const recipe = <>
           {planSubmitted ? promptReview : null}
-          {plan.toolCalls?.length && !timeline ? (() => {
+          {plan.toolCalls?.length ? (() => {
+            // Run 投影产出的时间线常常只有 exec: 管道步、画不出工具 accordion；
+            // 只有 timeline 真能渲染 accordion 时才让它接管，否则计划卡自己兜底。
+            if (timeline && presentAgentToolAccordion(timeline, locale)) return null
             const view = presentAgentToolAccordionFromCalls(plan.toolCalls, locale)
             return view ? <AgentToolCallAccordion view={view} /> : null
           })() : null}

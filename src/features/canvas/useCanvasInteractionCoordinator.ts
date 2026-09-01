@@ -369,8 +369,10 @@ export function useCanvasInteractionCoordinator({
       ...edge,
       source: ends.source,
       target: ends.target,
+      // result 的 context 端口只在出图后渲染；生成中的 Agent 占位结果改挂恒在的
+      // input 端口，参考连线在出图前也可见。
       targetHandle: remappedTarget && (targetNode?.type === 'asset' || targetNode?.type === 'result')
-        ? 'context'
+        ? targetNode.type === 'result' && !(targetNode.data as ResultNodeData).image ? 'input' : 'context'
         : edge.targetHandle,
       hidden: Boolean(edge.hidden || ends.hidden || hiddenResultNodeIds.has(ends.source) || hiddenResultNodeIds.has(ends.target)),
       className: [

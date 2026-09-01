@@ -1,9 +1,13 @@
+import { captureSentryMessage } from './sentry.ts'
+
 export type CanvasSyncMutation = {
   id: string
   projectId: string
   mutationId: string
   update: string
   createdAt: number
+  /** 入队时会话已知的同步协议 epoch；缺省表示旧版本条目或入队时 epoch 未知。 */
+  syncProtocolEpoch?: number
   blocked?: CanvasSyncBlockedState
 }
 
@@ -32,6 +36,10 @@ export function createCanvasSyncOutbox(options: {
   createMutationId?: () => string
   now?: () => number
   onPendingChanged?: (count: number, blocked?: CanvasSyncBlockedState) => void
+  /** 当前会话已知的同步协议 epoch；入队时盖章，重放时用于隔离旧 epoch 队列。 */
+  expectedEpoch?: () => number | undefined
+  /** 返回 false 时 flush 不发包（如权威快照握手未完成），条目原样保留。 */
+  sendReady?: () => boolean
 }) {
   const { projectId, storage, publish, fallback } = options
   if (!projectId) throw new TypeError('Canvas Sync Outbox 缺少项目标识。')
@@ -68,14 +76,32 @@ export function createCanvasSyncOutbox(options: {
 
   const blockMutation = async (mutation: CanvasSyncMutation, failure: CanvasSyncFailure) => {
     await storage.put({ ...mutation, blocked: { ...failure, at: now() } })
+    captureSentryMessage('canvas_sync_mutation_blocked', {
+      component: 'canvas-sync',
+      level: 'error',
+      tags: { error_code: failure.code, http_status: failure.status ?? 'unknown' },
+    })
     await listPending()
   }
 
   const flush = async () => {
+    // 权威快照握手完成前不发包：本地 Y.Doc 里的旧几何在此时重放会
+    // 覆盖服务端权威布局（Epoch 2 Canary 布局漂移事故的重放源）。
+    if (options.sendReady && !options.sendReady()) return { sent: 0, pending: (await listPending()).length }
     const pending = await listPending()
+    const epoch = options.expectedEpoch?.()
     let sent = 0
     for (const mutation of pending) {
       if (!validMutation(mutation)) continue
+      // 旧 epoch 时代排队的条目对重建后的图谱已无意义，重放只会污染布局
+      // （Epoch 2 Canary 漂移事故）；切换有活动写入门禁，残留条目直接丢弃。
+      // 无 epoch 戳的条目按 epoch 1 对待：只可能是本修复上线前排队的遗留。
+      // 不能走 blocked 隔离：retryBlocked 会把旧几何盖上新 epoch 原样重发。
+      if (epoch !== undefined && (mutation.syncProtocolEpoch ?? 1) < epoch) {
+        await storage.delete(mutation.id)
+        await listPending()
+        continue
+      }
       if (mutation.blocked) break
       const event = {
         type: 'canvas.crdt.update' as const,
@@ -115,7 +141,15 @@ export function createCanvasSyncOutbox(options: {
         }
         const mutationId = createMutationId()
         if (!/^[A-Za-z0-9._:-]{1,200}$/.test(mutationId)) throw new TypeError('Canvas Sync mutationId 无效。')
-        const mutation = { id: `${projectId}:${mutationId}`, projectId, mutationId, update, createdAt: now() }
+        const epoch = options.expectedEpoch?.()
+        const mutation = {
+          id: `${projectId}:${mutationId}`,
+          projectId,
+          mutationId,
+          update,
+          createdAt: now(),
+          ...(epoch !== undefined ? { syncProtocolEpoch: epoch } : {}),
+        }
         await storage.put(mutation)
         return structuredClone(mutation)
       })
@@ -124,9 +158,14 @@ export function createCanvasSyncOutbox(options: {
         return mutation
       })
     },
-    pendingUpdates: () => serializePersistence(async () => (await listPending())
-      .filter(validMutation)
-      .map((mutation) => mutation.update)),
+    pendingUpdates: () => serializePersistence(async () => {
+      const epoch = options.expectedEpoch?.()
+      return (await listPending())
+        .filter(validMutation)
+        // 旧 epoch 条目不再进本地 Y.Doc：应用后 diff 会把旧几何再生成新增量。
+        .filter((mutation) => !(epoch !== undefined && (mutation.syncProtocolEpoch ?? 1) < epoch))
+        .map((mutation) => mutation.update)
+    }),
     flush: () => serializeFlush(flush),
     ack(mutationId: string) {
       if (!/^[A-Za-z0-9._:-]{1,200}$/.test(mutationId)) return Promise.resolve()

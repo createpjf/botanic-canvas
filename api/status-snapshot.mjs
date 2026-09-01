@@ -35,7 +35,7 @@ export async function GET() {
   } catch (error) {
     captureException(error, { tags: { component: 'status-snapshot' } })
     await flushSentry(2_000).catch(() => undefined)
-    console.error(error)
+    console.error(JSON.stringify({ event: 'status_snapshot_failed', error: error instanceof Error ? error.name : 'unknown' }))
     return json(503, { error: 'unavailable' })
   }
 }

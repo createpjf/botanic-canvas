@@ -29,7 +29,7 @@ test('画布文档规范化统一版本、清理旧演示文案并保护系统�
   assert.deepEqual(outputEdge?.data, { system: true, role: 'output' })
 })
 
-test('画布文档规范化保留无父结果和根配方的首次生成 Run', () => {
+test('画布文档规范化兼容缺少参考的首次生成 Run', () => {
   const stored: CanvasDocument = {
     id: 'initial-generation-project',
     name: '首次生成',
@@ -49,10 +49,12 @@ test('画布文档规范化保留无父结果和根配方的首次生成 Run', (
       },
     }],
   }
+  delete (stored.agentRuns[0].plan as Partial<typeof stored.agentRuns[0]['plan']>).references
 
   const normalized = normalizeCanvasDocumentBase(stored, stored)
 
   assert.equal(normalized.agentRuns[0].plan.intent, 'initial_generation')
+  assert.deepEqual(normalized.agentRuns[0].plan.references, [])
   assert.equal(normalized.agentRuns[0].plan.rootRecipe, undefined)
   assert.equal(normalized.agentRuns[0].plan.selectedResultNodeId, undefined)
 })

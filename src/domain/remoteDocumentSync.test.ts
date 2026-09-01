@@ -112,6 +112,22 @@ test('revision 已知时按服务端版本判新旧，本机挂钟不再拒收�
   }).applied, false)
 })
 
+test('本地已应用 revision 未知时以服务端 revision 为权威，不再被本机挂钟死锁', () => {
+  // 刷新页面后 appliedRevision（内存态）丢失；本机之前写过的 updatedAt 领先服务端。
+  // 此时服务端 revision 已知就必须接受，否则每次拉取都成功、每次都被拒收。
+  const current = document('project-1', 300, '本机挂钟领先')
+  const remote = document('project-1', 200, '服务端权威版本')
+  const resolved = resolveRemoteCanvasRefresh({
+    current,
+    remote,
+    baselineUpdatedAt: current.updatedAt,
+    hasPendingDraft: false,
+    remoteRevision: 7,
+  })
+  assert.equal(resolved.applied, true)
+  assert.equal(resolved.document.name, '服务端权威版本')
+})
+
 test('服务器时间戳落后于本机缓存时不回退画布', () => {
   const current = document('project-1', 200, '较新的本机缓存')
   const remote = document('project-1', 100, '较旧的服务器版本')

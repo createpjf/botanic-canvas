@@ -116,7 +116,9 @@ test('未预期的 API 5xx 会把原始异常和安全请求上下文交给错�
   assert.equal(reported[0][0], original)
   assert.equal(reported[0][1].tags.component, 'api')
   assert.equal(reported[0][1].tags.error_code, 'INTERNAL_ERROR')
+  assert.equal(reported[0][1].tags.route, '/api/projects')
   assert.equal(typeof reported[0][1].contexts.request.id, 'string')
+  assert.equal(reported[0][1].contexts.request.route, '/api/projects')
 })
 
 test('HTTP 启动恢复使用有界 Generation keyset sweep，单个 poison Job 不阻塞同页任务', async () => {
@@ -333,6 +335,22 @@ test('Project 文档写入区分 5xx、权限、校验与冲突', async (context
     const { response } = await run({ failure })
     assert.equal(response.statusCode, 409)
     assert.equal(JSON.parse(response.body).error.code, 'PROJECT_CONFLICT')
+  })
+
+  await context.test('数据库事务冲突是可重试的 503', async () => {
+    const failure = Object.assign(new Error('serialization failure'), { code: '40001' })
+    const { response, reported } = await run({ failure })
+    assert.equal(response.statusCode, 503)
+    assert.equal(JSON.parse(response.body).error.code, 'DATABASE_RETRYABLE')
+    assert.equal(reported[0]?.[1]?.tags?.caught_code, '40001')
+  })
+
+  await context.test('数据库事务状态错误保留可定位的 500', async () => {
+    const failure = Object.assign(new Error('transaction already in progress'), { code: '25001' })
+    const { response, reported } = await run({ failure })
+    assert.equal(response.statusCode, 500)
+    assert.equal(JSON.parse(response.body).error.code, 'DATABASE_TRANSACTION_ERROR')
+    assert.equal(reported[0]?.[1]?.tags?.caught_code, '25001')
   })
 })
 

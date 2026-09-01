@@ -6,6 +6,8 @@ test('服务端 Sentry 事件不携带身份、请求凭据、请求体或 conso
   const event = scrubSentryEvent({
     user: { id: 'user-1', ip_address: '127.0.0.1' },
     extra: { prompt: 'private prompt' },
+    message: 'provider https://provider.example/private?token=secret Bearer abcdefghijklmnopqrst',
+    exception: { values: [{ type: 'Error', value: 'data:image/png;base64,privatecontent' }] },
     request: {
       method: 'POST',
       url: 'https://api.example.com/api/agent-turns?token=secret',
@@ -21,6 +23,8 @@ test('服务端 Sentry 事件不携带身份、请求凭据、请求体或 conso
 
   assert.equal(event.user, undefined)
   assert.equal(event.extra, undefined)
+  assert.equal(event.message, 'provider [redacted-url] [redacted-token]')
+  assert.equal(event.exception.values[0].value, '[redacted-inline-media]')
   assert.deepEqual(event.request, { method: 'POST', url: 'https://api.example.com/api/agent-turns' })
   assert.deepEqual(event.breadcrumbs, [{
     category: 'http',

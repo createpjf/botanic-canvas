@@ -26,5 +26,7 @@
 | SYNC-20 | V1 历史增量以行 ID 回填幂等身份，无法命中按内容哈希重试 | 已修复，migration 未应用 |
 | SYNC-21 | duplicate 已持久化但权威重载失败时，房间仍可基于候选状态继续读写 | 已修复 |
 | SYNC-22 | 同一服务端 mutation 在不同 Y.Doc 中产生不同字节，合法并发重放被误判为身份冲突 | 已修复 |
+| SYNC-23 | React Flow 拖拽帧的 `dragging` 瞬态字段争用节点配置记录，并发时仍可能覆盖文案或参数编辑 | 已修复 |
+| SYNC-24 | epoch 2 缺少可重建历史 Y.Doc、阻断活动写入并原子切换单项目的发布工具 | 已修复，生产仅允许逐项目 Canary |
 
-发布边界：代码纳入本次 Release Candidate；不部署、不应用数据库 migration、不切换 epoch。`.cursor/settings.json` 与既有无关文档不纳入。
+发布边界：只允许通过 dry-run 门禁逐项目切换，禁止批量切换或把 epoch 降回 1。`.cursor/settings.json` 与既有无关文档不纳入。

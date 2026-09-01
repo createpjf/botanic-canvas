@@ -703,7 +703,7 @@ export function normalizeCanvasDocumentBase(stored: CanvasDocument | undefined, 
       failedBranchCount: run.failedBranchCount ?? 0,
       plan: {
         ...run.plan,
-        references: run.plan.references.map((reference) => ({ ...reference })),
+        references: Array.isArray(run.plan.references) ? run.plan.references.map((reference) => ({ ...reference })) : [],
         constraints: run.plan.constraints.map((constraint) => ({ ...constraint })),
         settings: cloneGenerationSettings(run.plan.settings),
         ...(run.plan.rootRecipe ? { rootRecipe: cloneGenerationRecipe(run.plan.rootRecipe) } : {}),

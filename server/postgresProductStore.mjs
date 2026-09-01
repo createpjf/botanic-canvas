@@ -983,15 +983,16 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
     const includeMessages = options.includeMessages !== false
     const includeSubagents = options.includeSubagents === true
     try {
-    const [sessionRows, messageRows, memoryRows, runRows, receiptRows] = await Promise.all([
-      query`
+      // 一个项目读请求会同时补读多张 Agent 表；并发占用连接会把 max=4 的池瞬间打满。
+      // 顺序读取仍复用同一个 query/事务，并把活跃连接压力限制在每个请求一条。
+      const sessionRows = await query`
         select payload from agent_sessions
         where project_id = ${projectId}
           and (${includeSubagents} or coalesce(payload->>'kind', 'primary') <> 'subagent')
         order by updated_at desc limit 80
-      `,
-      includeMessages
-        ? query`
+      `
+      const messageRows = includeMessages
+        ? await query`
             select session_id as "sessionId", updated_at as "updatedAt", payload from (
               select session_id, updated_at, payload,
                 row_number() over (partition by session_id order by updated_at desc) as recency
@@ -1005,34 +1006,33 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
             where recency <= ${agentEntityLimits.messagesPerSession}
             order by updated_at asc
           `
-        : [],
-      query`select id, deleted_at as "deletedAt", payload from agent_memory_items where project_id = ${projectId} order by updated_at desc limit 200`,
-      query`select payload from agent_runs where project_id = ${projectId} order by updated_at desc limit 60`,
-      userId
-        ? query`select session_id as "sessionId", message_id as "messageId", updated_at as "updatedAt" from agent_session_read_receipts where project_id = ${projectId} and user_id = ${userId}`
-        : [],
-    ])
-    const result = {
-      sessions: applyAgentSessionReadReceipts(sessionRows.map(asPayload), receiptRows.map((row) => ({
-        sessionId: row.sessionId,
-        messageId: row.messageId,
-        updatedAt: Number(row.updatedAt),
-      }))),
-      messages: messageRows.map((row) => ({ sessionId: row.sessionId, updatedAt: Number(row.updatedAt), message: asPayload(row) })),
-      memory: memoryRows.filter((row) => row.deletedAt === null).map(asPayload),
-      deletedMemoryIds: memoryRows.filter((row) => row.deletedAt !== null).map((row) => row.id),
-      runs: runRows.map(asPayload),
-    }
-    observeProductStoreRead('readAgentStateRows', {
-      projectId,
-      userId,
-      includeMessages,
-      durationMs: Date.now() - startedAt,
-      ok: true,
-      sessionCount: result.sessions.length,
-      messageRowCount: result.messages.length,
-    })
-    return result
+        : []
+      const memoryRows = await query`select id, deleted_at as "deletedAt", payload from agent_memory_items where project_id = ${projectId} order by updated_at desc limit 200`
+      const runRows = await query`select payload from agent_runs where project_id = ${projectId} order by updated_at desc limit 60`
+      const receiptRows = userId
+        ? await query`select session_id as "sessionId", message_id as "messageId", updated_at as "updatedAt" from agent_session_read_receipts where project_id = ${projectId} and user_id = ${userId}`
+        : []
+      const result = {
+        sessions: applyAgentSessionReadReceipts(sessionRows.map(asPayload), receiptRows.map((row) => ({
+          sessionId: row.sessionId,
+          messageId: row.messageId,
+          updatedAt: Number(row.updatedAt),
+        }))),
+        messages: messageRows.map((row) => ({ sessionId: row.sessionId, updatedAt: Number(row.updatedAt), message: asPayload(row) })),
+        memory: memoryRows.filter((row) => row.deletedAt === null).map(asPayload),
+        deletedMemoryIds: memoryRows.filter((row) => row.deletedAt !== null).map((row) => row.id),
+        runs: runRows.map(asPayload),
+      }
+      observeProductStoreRead('readAgentStateRows', {
+        projectId,
+        userId,
+        includeMessages,
+        durationMs: Date.now() - startedAt,
+        ok: true,
+        sessionCount: result.sessions.length,
+        messageRowCount: result.messages.length,
+      })
+      return result
     } catch (error) {
       observeProductStoreRead('readAgentStateRows', {
         projectId,
@@ -1616,8 +1616,8 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
     },
 
     async readProject(userId, projectId) {
-      return timedProductStoreRead('readProject', { projectId, userId }, async () => {
-        const [row] = await sql`
+      return timedProductStoreRead('readProject', { projectId, userId }, () => sql.begin(async (tx) => {
+        const [row] = await tx`
           select p.document, p.revision, p.updated_at as "projectUpdatedAt", c.graph,
             c.revision as "graphRevision", c.sync_protocol_epoch as "syncProtocolEpoch",
             c.updated_at as "graphUpdatedAt"
@@ -1628,7 +1628,7 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
         if (!row) return undefined
         const document = asJson(row.document)
         const graph = row.graph ? asJson(row.graph) : canvasGraph(document)
-        const agentState = await readAgentStateRows(sql, projectId, userId, { includeMessages: false })
+        const agentState = await readAgentStateRows(tx, projectId, userId, { includeMessages: false })
         const updatedAt = Math.max(
           Number(document.updatedAt ?? 0),
           Number(row.projectUpdatedAt ?? 0),
@@ -1644,7 +1644,7 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
             sessionCount: agentState.sessions?.length ?? 0,
           },
         }
-      })
+      }))
     },
 
     async projectAccess(userId, projectId) {

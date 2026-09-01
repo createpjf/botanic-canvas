@@ -52,6 +52,50 @@ test('CRDT update 先持久化；丢 ACK 后新实例重放同一 mutation，ACK
   assert.equal(pendingCounts.at(-1), 0)
 })
 
+test('权威快照握手前不发包；握手后旧 epoch 条目被丢弃而不是重放', async () => {
+  const actions: string[] = []
+  const { storage, records } = memoryStorage(actions)
+  const delivered: string[] = []
+  let ready = false
+  let epoch: number | undefined
+  let mutationIndex = 0
+  const outbox = createCanvasSyncOutbox({
+    projectId: 'project-1',
+    storage,
+    sendReady: () => ready,
+    expectedEpoch: () => epoch,
+    publish: (event) => {
+      delivered.push(event.mutationId)
+      return true
+    },
+    fallback: async (event) => {
+      delivered.push(`http:${event.mutationId}`)
+      return { mutationId: event.mutationId }
+    },
+    createMutationId: () => `mutation-${++mutationIndex}`,
+    now: () => 100,
+  })
+
+  // Epoch 1 时代入队；握手未完成，publish 与 HTTP fallback 都不得触发。
+  epoch = 1
+  await outbox.enqueue('AQID')
+  assert.deepEqual(delivered, [], '握手完成前不发包')
+  assert.equal(records.get('project-1:mutation-1')?.syncProtocolEpoch, 1, '入队时盖 epoch 戳')
+
+  // 握手完成且项目已切到 Epoch 2：旧条目被丢弃，本地 Y.Doc 也不再回放它。
+  ready = true
+  epoch = 2
+  assert.deepEqual(await outbox.pendingUpdates(), [], '旧 epoch 条目不进本地 Y.Doc')
+  await outbox.flush()
+  assert.deepEqual(delivered, [], '旧 epoch 条目不得盖新 epoch 重放')
+  assert.equal(records.size, 0, '旧 epoch 条目被清除')
+
+  // 新 epoch 下的新条目正常发送。
+  await outbox.enqueue('BAUG')
+  assert.deepEqual(delivered, ['mutation-2'])
+  assert.equal(records.get('project-1:mutation-2')?.syncProtocolEpoch, 2)
+})
+
 test('WebSocket 不可用时走 HTTP fallback；网络失败保留原 mutation 供恢复重放', async () => {
   const actions: string[] = []
   const { storage, records } = memoryStorage(actions)
