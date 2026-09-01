@@ -71,6 +71,8 @@ export function createChatCompletionAccumulator({ onEvent } = {}) {
   let reasoning = ''
   let finishReason
   let usage
+  let answerChunkIndex = 0
+  let reasoningChunkIndex = 0
   const toolCalls = new Map()
   const namedToolCalls = new Set()
   const emit = (event) => {
@@ -87,14 +89,14 @@ export function createChatCompletionAccumulator({ onEvent } = {}) {
       const delta = choice.delta ?? {}
       if (typeof delta.content === 'string' && delta.content) {
         content += delta.content
-        emit({ type: 'answer', delta: delta.content })
+        emit({ type: 'answer', delta: delta.content, chunkIndex: answerChunkIndex++ })
       }
       const reasoningDelta = typeof delta.reasoning_content === 'string'
         ? delta.reasoning_content
         : typeof delta.reasoning === 'string' ? delta.reasoning : ''
       if (reasoningDelta) {
         reasoning += reasoningDelta
-        emit({ type: 'reasoning', delta: reasoningDelta })
+        emit({ type: 'reasoning', delta: reasoningDelta, chunkIndex: reasoningChunkIndex++ })
       }
       if (Array.isArray(delta.tool_calls)) {
         for (const toolCallDelta of delta.tool_calls) {

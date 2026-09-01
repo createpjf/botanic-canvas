@@ -892,8 +892,9 @@ async function executeTurnAttempt({ config, model, system, messages, registry, o
   const streaming = typeof options.onEvent === 'function'
   const emitEvent = (event) => {
     if (!streaming) return
-    try { options.onEvent(event) } catch { /* 展示层异常不得中断本轮回合。 */ }
+    try { options.onEvent({ ...event, attemptId: attempt.id }) } catch { /* 展示层异常不得中断本轮回合。 */ }
   }
+  emitEvent({ type: 'attempt', action: 'start' })
   try {
     const result = await runAgentToolLoop({
       registry,
@@ -930,10 +931,10 @@ async function executeTurnAttempt({ config, model, system, messages, registry, o
           onEvent: streaming
             ? (event) => {
                 if (event.type === 'reasoning') {
-                  if (allowRawReasoning) emitEvent({ type: 'reasoning', step, delta: event.delta })
+                  if (allowRawReasoning) emitEvent({ type: 'reasoning', step, delta: event.delta, chunkIndex: event.chunkIndex })
                   return
                 }
-                if (event.type === 'answer') emitEvent({ type: 'answer', step, delta: event.delta })
+                if (event.type === 'answer') emitEvent({ type: 'answer', step, delta: event.delta, chunkIndex: event.chunkIndex })
               }
             : undefined,
         })

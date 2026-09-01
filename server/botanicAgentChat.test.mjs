@@ -363,13 +363,16 @@ test('流式旁白在对应工具事件前到达，工具完成后可继续追�
     },
   })
 
-  assert.deepEqual(events.map((event) => event.type === 'answer'
-    ? `answer:${event.delta}`
-    : `tool:${event.toolCall.id}:${event.toolCall.status}`), [
-    'answer:我先核对项目素材。',
-    'tool:call-search:running',
-    'tool:call-search:succeeded',
-    'answer:找到一个夏日场景素材组。',
+  assert.deepEqual(events.map((event) => event.type === 'attempt'
+    ? `attempt:${event.attemptId}`
+    : event.type === 'answer'
+      ? `answer:${event.attemptId}:${event.chunkIndex}:${event.delta}`
+      : `tool:${event.attemptId}:${event.toolCall.id}:${event.toolCall.status}`), [
+    'attempt:chat_text',
+    'answer:chat_text:0:我先核对项目素材。',
+    'tool:chat_text:call-search:running',
+    'tool:chat_text:call-search:succeeded',
+    'answer:chat_text:0:找到一个夏日场景素材组。',
   ])
   assert.equal(result.answer, '找到一个夏日场景素材组。')
 })

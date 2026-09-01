@@ -20,6 +20,7 @@
     "AgentStreamEventType": {
       "type": "string",
       "enum": [
+        "attempt",
         "accepted",
         "handoff",
         "reasoning",

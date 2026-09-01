@@ -738,3 +738,17 @@ test('本地 read 延迟300ms显示、可见后稳定600ms,快速成功折叠但
   }], 'zh-CN')
   assert.equal(external?.groups[0]?.rows[0]?.toolName, 'web_fetch')
 })
+
+test('流式attempt切换清除失败前缀,重复/迟到chunk不污染当前答案', () => {
+  let state = { content: '', timeline: createAgentTimeline(1_000) }
+  state = applyAgentConversationStreamEvent(state, { type: 'attempt', action: 'start', attemptId: 'vision', receivedAt: 1_000 })
+  state = applyAgentConversationStreamEvent(state, { type: 'answer', attemptId: 'vision', step: 0, chunkIndex: 0, delta: '废弃前缀', receivedAt: 1_010 })
+  state = applyAgentConversationStreamEvent(state, { type: 'answer', attemptId: 'vision', step: 0, chunkIndex: 0, delta: '重复', receivedAt: 1_011 })
+  assert.equal(state.content, '废弃前缀')
+  state = applyAgentConversationStreamEvent(state, { type: 'attempt', action: 'start', attemptId: 'text', receivedAt: 1_020 })
+  assert.equal(state.content, '')
+  state = applyAgentConversationStreamEvent(state, { type: 'answer', attemptId: 'vision', step: 0, chunkIndex: 1, delta: '迟到', receivedAt: 1_021 })
+  state = applyAgentConversationStreamEvent(state, { type: 'answer', attemptId: 'text', step: 0, chunkIndex: 0, delta: '最终答案', receivedAt: 1_030 })
+  assert.equal(state.content, '最终答案')
+  assert.equal(state.timeline.stream?.attemptId, 'text')
+})

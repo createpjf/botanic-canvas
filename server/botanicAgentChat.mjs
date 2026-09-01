@@ -179,6 +179,8 @@ async function executeChatAttempt({ input, config, model, system, messages, regi
     model,
     snapshotHash: canonicalHash(snapshot),
   }
+  const emitAttemptEvent = (event) => emitEvent({ ...event, attemptId })
+  if (streaming) emitAttemptEvent({ type: 'attempt', action: 'start' })
   try {
     const result = await runAgentToolLoop({
       registry,
@@ -192,7 +194,7 @@ async function executeChatAttempt({ input, config, model, system, messages, regi
       toolChoice: 'auto',
       maximumSteps: hasWebSearch || hasWebFetch ? 8 : 5,
       allowRawReasoning: allowRawReasoning,
-      onEvent: emitEvent,
+      onEvent: emitAttemptEvent,
       resumeCheckpoint: options.resumeCheckpoint,
       saveCheckpoint: options.saveCheckpoint,
       recoverToolCall: options.recoverToolCall,
@@ -213,10 +215,10 @@ async function executeChatAttempt({ input, config, model, system, messages, regi
         onEvent: streaming
           ? (event) => {
               if (event.type === 'reasoning') {
-                if (allowRawReasoning) emitEvent({ type: 'reasoning', step, delta: event.delta })
+                if (allowRawReasoning) emitAttemptEvent({ type: 'reasoning', step, delta: event.delta, chunkIndex: event.chunkIndex })
                 return
               }
-              if (event.type === 'answer') emitEvent({ type: 'answer', step, delta: event.delta })
+              if (event.type === 'answer') emitAttemptEvent({ type: 'answer', step, delta: event.delta, chunkIndex: event.chunkIndex })
             }
           : undefined,
       }),

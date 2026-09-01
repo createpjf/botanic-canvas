@@ -1,4 +1,5 @@
 import { isBotanicAgentProcessLabel, type AgentToolCallTrace, type BotanicAgentRun, type BotanicAgentRunBranch } from './agent.ts'
+import type { BotanicAgentChatStreamEvent } from './agentChatStream.ts'
 import {
   isCollapsedWebSearchToolName,
   isWebSourceToolName,
@@ -62,13 +63,16 @@ export type TimelineBlock =
 
 export type AgentTimelineState = {
   blocks: TimelineBlock[]
+  /** Live-only attempt/chunk cursor;不进入durable Turn Event。 */
+  stream?: { attemptId?: string; answerChunkIndex?: number; reasoningChunkIndex?: number }
   truncation?: { loadedCount: number; nextAfter: number }
 }
 
 export type AgentTimelineEvent =
-  | { type: 'reasoning'; step: number; delta: string; receivedAt: number }
-  | { type: 'answer'; step: number; delta: string; receivedAt: number }
-  | { type: 'tool'; step: number; toolCall: AgentToolCallTrace; presentation?: TimelineToolPresentation; receivedAt: number }
+  | { type: 'attempt'; action: 'start'; attemptId: string; receivedAt: number }
+  | { type: 'reasoning'; step: number; delta: string; attemptId?: string; chunkIndex?: number; receivedAt: number }
+  | { type: 'answer'; step: number; delta: string; attemptId?: string; chunkIndex?: number; receivedAt: number }
+  | { type: 'tool'; step: number; toolCall: AgentToolCallTrace; presentation?: TimelineToolPresentation; attemptId?: string; receivedAt: number }
   | { type: 'handoff'; receivedAt: number }
   | { type: 'done'; receivedAt: number }
   | { type: 'error'; message?: string; receivedAt: number }
@@ -430,19 +434,69 @@ export function persistAgentLiveTimeline(
  * 把一轮对话的实时事件拆到两处：回答增量追加到正文，思考/工具进入时间线。
  * 正文只出现一次；时间线不再复制旁白。
  */
+export function agentTimelineEventFromStream(
+  event: BotanicAgentChatStreamEvent,
+  receivedAt: number,
+): AgentTimelineEvent {
+  if (event.type === 'attempt') return { type: 'attempt', action: 'start', attemptId: event.attemptId, receivedAt }
+  if (event.type === 'handoff') return { type: 'handoff', receivedAt }
+  if (event.type === 'reasoning' || event.type === 'answer') return {
+    type: event.type, step: event.step, delta: event.delta,
+    ...(event.attemptId ? { attemptId: event.attemptId } : {}),
+    ...(event.chunkIndex === undefined ? {} : { chunkIndex: event.chunkIndex }), receivedAt,
+  }
+  if (event.type === 'tool') return {
+    type: event.type, step: event.step, toolCall: event.toolCall,
+    ...(event.attemptId ? { attemptId: event.attemptId } : {}),
+    ...(event.presentation ? { presentation: event.presentation } : {}), receivedAt,
+  }
+  if (event.type === 'error') return { type: 'error', ...(event.message ? { message: event.message } : {}), receivedAt }
+  return { type: 'done', receivedAt }
+}
+
 export function applyAgentConversationStreamEvent(
   state: { content: string; timeline: AgentTimelineState },
   event: AgentTimelineEvent,
 ): { content: string; timeline: AgentTimelineState } {
+  if (event.type === 'attempt') {
+    if (state.timeline.stream?.attemptId === event.attemptId) return state
+    return { content: '', timeline: { ...createAgentTimeline(event.receivedAt), stream: { attemptId: event.attemptId } } }
+  }
+  const cursor = state.timeline.stream
+  const eventAttemptId = 'attemptId' in event ? event.attemptId : undefined
+  if (eventAttemptId && cursor?.attemptId && eventAttemptId !== cursor.attemptId) return state
+  const attemptId = eventAttemptId ?? cursor?.attemptId
   if (event.type === 'answer') {
     if (!event.delta) return state
-    return { content: `${state.content}${event.delta}`, timeline: state.timeline }
+    if (event.chunkIndex !== undefined && cursor?.answerChunkIndex !== undefined && event.chunkIndex <= cursor.answerChunkIndex) return state
+    return {
+      content: `${state.content}${event.delta}`,
+      timeline: {
+        ...state.timeline,
+        stream: { ...cursor, ...(attemptId ? { attemptId } : {}), ...(event.chunkIndex === undefined ? {} : { answerChunkIndex: event.chunkIndex }) },
+      },
+    }
   }
-  return { content: state.content, timeline: reduceAgentTimeline(state.timeline, event) }
+  if (event.type === 'reasoning' && event.chunkIndex !== undefined
+    && cursor?.reasoningChunkIndex !== undefined && event.chunkIndex <= cursor.reasoningChunkIndex) return state
+  const timeline = reduceAgentTimeline(state.timeline, event)
+  return {
+    content: state.content,
+    timeline: {
+      ...timeline,
+      ...(cursor || attemptId ? {
+        stream: {
+          ...cursor,
+          ...(attemptId ? { attemptId } : {}),
+          ...(event.type === 'reasoning' && event.chunkIndex !== undefined ? { reasoningChunkIndex: event.chunkIndex } : {}),
+        },
+      } : {}),
+    },
+  }
 }
 
 export function reduceAgentTimeline(prev: AgentTimelineState, event: AgentTimelineEvent): AgentTimelineState {
-  if (event.type === 'handoff') return prev
+  if (event.type === 'attempt' || event.type === 'handoff') return prev
   if (event.type === 'reasoning') {
     const rawGroup = timelineRawGroup(prev.blocks)
     const blocks = semanticBlocks(prev.blocks)
