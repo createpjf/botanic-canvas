@@ -135,7 +135,7 @@ compaction 当可靠性边界、平台 sandbox/Guardian。Botanic 的 durable Tu
 
 | 层 | 模块 | 对应 Codex | 语义 |
 | --- | --- | --- | --- |
-| Model Provider | `botanicAgentModelProvider.mjs` | `model-provider` | 唯一 Agent 采样传输 seam:`sample()` 隐藏 URL/鉴权/trace header/per-call timeout/SSE 归一化/错误分类/overflow 识别/call_timeout 事件;不做 transport retry(H3C Gate);architectureBoundaries 禁止 10 个 caller 再持有 `/chat/completions` |
+| Model Provider | `botanicAgentModelProvider.mjs` | `model-provider` | 唯一 Agent 采样传输 seam:`sample()` 隐藏 URL/鉴权/trace header/非流总 timeout + 流 idle watchdog/SSE 严格 `[DONE]`/错误分类/overflow 识别；输出安全 chunk identity 与 content-free TTFT/stream health 指标；不做 transport retry(H3C Gate)；architectureBoundaries 禁止 10 个 caller 再持有 `/chat/completions` |
 | Protocol v1 | `agentProtocol.mjs` + `scripts/generateAgentProtocol.mjs` | `app-server-protocol` | 公共 Turn 状态/SSE 事件/ToolCall 状态/错误码单一 catalog;生成前端类型与 JSON Schema,build 前 `--check` 防漂移;缺版本按 v1 兼容,显式未知版本 fail closed |
 | Metrics/Diagnostics | `agentTelemetryMetrics.mjs` + `agentRuntimeDiagnostics.mjs` | `otel`/`diagnostics` | 语义事件旁路成低基数 OTel 指标(标识一律丢弃),content-free gauges(active turns/pending cancel acks/内存);exporter 故障 fail-open |
 | Connector Gate | ADR 0011(未采纳) | `connectors`/`secrets` | 只冻结未来 seam 与四个进入门槛;Gate 前继续 operator MCP env 配置 |
@@ -178,6 +178,8 @@ ID 相同，只要 request binding 不同就明确冲突；Message 已绑定但 
 Message 的 `turnId` 重挂 GET observer，以 `after` 游标与单调去重补齐丢帧，排空事件页后才按 Turn 终态用稳定结果
 Message ID 投影。accepted 前断网时，持久化的 pending Message 只用同一稳定键退避重提；原始 reasoning/answer 只属于
 当次实时连接，无序号且不持久化。
+
+Provider SSE 只有 `[DONE]` 才正常结束；坏 JSON、未闭合 tail 或提前 EOF 以 `PROVIDER_STREAM_MALFORMED/CLOSED` 具名失败。非流采样使用总 timeout，流采样按每个网络 chunk/心跳重置 idle watchdog，总预算仍由 Turn deadline 拥有。每个 vision/text/chat/plan attempt 先发 `attempt-start`，answer/reasoning 带 attemptId + chunkIndex；客户端 domain PartialAccumulator 在新 attempt 清除废弃临时前缀，并拒绝重复或旧 attempt 迟到 chunk。Tool 状态仍只来自 execute 前后事件；attempt/chunk cursor 是 live-only，不改变 answer/reasoning 不持久化的隐私边界。
 
 兼容 Plan/Chat 客户端收到 SSE `accepted` 后也切换到同一 GET observer；流断开不会再发起第二次模型调用。非流客户端可用
 `Prefer: respond-async` 获得 `202 + runtimeTurn + observer`。Planner 子 Turn 的稳定键由来源根 Turn 派生，刷新后重新进入生成
