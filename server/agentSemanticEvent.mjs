@@ -19,6 +19,7 @@ export const AGENT_SEMANTIC_EVENT_NAMES = Object.freeze({
   CONTEXT_COMPACTION_RESULT: 'botanic.agent.context.compaction.result',
   CONTEXT_OVERFLOW_RESULT: 'botanic.agent.context.overflow.result',
   CONTEXT_USAGE_ANCHOR_RESULT: 'botanic.agent.context.usage_anchor.result',
+  HARNESS_LIFECYCLE: 'botanic.agent.harness.lifecycle',
 })
 
 // Telemetry 自身也必须能灰度；在 featureFlags 的同一 Flag 正式声明前保持显式枚举，
@@ -45,6 +46,16 @@ const shadowOutcomes = new Set(['would_compact', 'no_change', 'failed'])
 const compactionOutcomes = new Set(['compacted', 'reused', 'no_change', 'cas_conflict', 'failed'])
 const overflowOutcomes = new Set(['recovered', 'failed', 'not_retried'])
 const usageAnchorOutcomes = new Set(['persisted', 'reused', 'cas_conflict', 'not_found', 'failed'])
+/** Harness 控制面事件（H7）。label 只有低基数枚举与安全 code,不含用户文本/URL/Skill ID/参数。 */
+const harnessKinds = new Set(['tool', 'skill', 'cancel', 'recovery', 'provider', 'loop'])
+const harnessOutcomes = new Set([
+  'started', 'succeeded', 'failed', 'aborted', 'unknown',
+  'repair', 'loop_stop', 'final_synthesis',
+  'requested', 'loaded', 'rejected', 'snapshot_mismatch',
+  'cancel_observed', 'started_after_cancel', 'completed_after_cancel',
+  'reused', 'reexecuted', 'duplicate_dispatch',
+  'retry', 'call_timeout', 'deadline_exceeded', 'resume_limit',
+])
 
 const ID_LIMIT = 200
 const ERROR_CODE_LIMIT = 120
@@ -231,6 +242,23 @@ function contextOverflowEvent(target, source) {
   addError(target, source)
 }
 
+function harnessLifecycleEvent(target, source) {
+  target.kind = enumValue(source.kind, harnessKinds, 'Agent semantic harness kind')
+  target.outcome = enumValue(source.outcome, harnessOutcomes, 'Agent semantic harness outcome')
+  addContextIdentity(target, source)
+  // reason 复用 error code 词法:稳定大写枚举,禁止用户文本。
+  if (source.reason !== undefined) {
+    if (typeof source.reason !== 'string' || !SAFE_ERROR_CODE.test(source.reason) || source.reason.length > ERROR_CODE_LIMIT) {
+      invalid('Agent semantic harness reason')
+    }
+    target.reason = source.reason
+  }
+  addOptionalInteger(target, source, 'step', 64)
+  addOptionalInteger(target, source, 'durationMs', MAX_DURATION_MS)
+  addOptionalInteger(target, source, 'generation', 16)
+  addError(target, source)
+}
+
 function contextUsageAnchorEvent(target, source) {
   target.outcome = enumValue(source.outcome, usageAnchorOutcomes, 'Agent semantic usage anchor outcome')
   addContextIdentity(target, source)
@@ -282,6 +310,9 @@ export function createAgentSemanticEvent(name, input, timestamp) {
       break
     case AGENT_SEMANTIC_EVENT_NAMES.CONTEXT_USAGE_ANCHOR_RESULT:
       contextUsageAnchorEvent(target, source)
+      break
+    case AGENT_SEMANTIC_EVENT_NAMES.HARNESS_LIFECYCLE:
+      harnessLifecycleEvent(target, source)
       break
     default:
       invalid('Agent semantic event name')

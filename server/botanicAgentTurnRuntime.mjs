@@ -8,6 +8,7 @@ import {
 import { validateAgentEntityReferences, validateAgentToolEntityReferences } from './agentEntityReferences.mjs'
 import { presentationWebSources } from './agentWebResearch.mjs'
 import { withBotanicSpan } from './executionTelemetry.mjs'
+import { AGENT_SEMANTIC_EVENT_NAMES, writeAgentSemanticEvent } from './agentSemanticEvent.mjs'
 
 // completed Turn 仍可能拥有后续创建的 linked Run / Job；显式深取消必须能从
 // completed 进入 cancelling，才能撤销这些已授权但尚未完成的下游任务。
@@ -392,6 +393,9 @@ export function createBotanicAgentTurnRuntime({
       // 不得再调用 Provider/tool；旧 generation Worker 已无权收口的 Turn 由它终结。
       // 任何 generation > 4 都不该出现——上一代已终态化;若出现同样只做终态。
       if (executionGeneration > MAX_AGENT_TURN_BUSINESS_GENERATION) {
+        writeAgentSemanticEvent(AGENT_SEMANTIC_EVENT_NAMES.HARNESS_LIFECYCLE, {
+          kind: 'provider', outcome: 'resume_limit', projectId, turnId: id, generation: executionGeneration,
+        })
         const resumeError = {
           code: 'AGENT_TURN_RESUME_LIMIT_REACHED',
           message: 'Agent 回合恢复次数已达上限，已停止执行。',
@@ -405,6 +409,9 @@ export function createBotanicAgentTurnRuntime({
       }
       // 业务期限（H3A）：deadline 已过时不再启动 resolver;具名失败,不伪装 Provider 错。
       if (typeof deadlineAt === 'number' && now() >= deadlineAt) {
+        writeAgentSemanticEvent(AGENT_SEMANTIC_EVENT_NAMES.HARNESS_LIFECYCLE, {
+          kind: 'provider', outcome: 'deadline_exceeded', projectId, turnId: id, generation: executionGeneration,
+        })
         const deadlineError = {
           code: 'AGENT_TURN_DEADLINE_EXCEEDED',
           message: 'Agent 回合已超过本轮时限，已停止执行。',
