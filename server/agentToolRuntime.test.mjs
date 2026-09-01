@@ -472,6 +472,24 @@ test('WEB_ 工具失败回传给模型，不中断整轮对话', async () => {
   assert.equal(result.toolCalls[0].status, 'failed')
   assert.equal(result.toolCalls[0].error, '不能抓取内网或本机地址。')
   assert.deepEqual(events.map((event) => event.toolCall.status), ['running', 'failed'])
+
+  let quotaModelCalls = 0
+  const quotaRegistry = createAgentToolRegistry([{
+    name: 'web_search', label: '网页搜索', description: '搜索公开网页。', risk: 'external',
+    parameters: { type: 'object', properties: {} }, validate: (value) => value,
+    execute: async () => { throw new AgentToolRuntimeError('WEB_QUOTA_EXCEEDED', '联网额度已用完。', 429) },
+  }])
+  await assert.rejects(runAgentToolLoop({
+    registry: quotaRegistry,
+    messages: [],
+    callModel: async () => {
+      quotaModelCalls += 1
+      return { choices: [{ message: { tool_calls: [{
+        id: 'call-quota', type: 'function', function: { name: 'web_search', arguments: '{}' },
+      }] } }] }
+    },
+  }), (caught) => caught.code === 'WEB_QUOTA_EXCEEDED')
+  assert.equal(quotaModelCalls, 1, '配额错误不得回给模型继续重试')
 })
 
 test('web_search 从 hits 对象下发去重站点，字符串 sources 只用于计数', () => {
@@ -1333,6 +1351,41 @@ test('根 signal 贯穿:hanging tool 收到取消后有界退出且第二个 cal
   await assert.rejects(loop, (caught) => caught.code === 'REQUEST_CANCELLED' && caught.statusCode === 499)
   assert.equal(hangingSawAbort, true, 'hanging tool 必须收到根 signal')
   assert.equal(secondStarted, false, '取消后第二个 call 不得启动')
+
+  let modelSawDeadline = false
+  await assert.rejects(runAgentToolLoop({
+    registry,
+    messages: [],
+    deadlineAt: Date.now() + 20,
+    callModel: (_input, runtime) => new Promise((_resolve, reject) => {
+      runtime.signal.addEventListener('abort', () => {
+        modelSawDeadline = true
+        reject(new Error('model aborted'))
+      }, { once: true })
+    }),
+  }), (caught) => caught.code === 'AGENT_TURN_DEADLINE_EXCEEDED' && caught.statusCode === 504)
+  assert.equal(modelSawDeadline, true, 'deadline 必须主动中止 Provider')
+
+  let toolSawDeadline = false
+  const deadlineRegistry = createAgentToolRegistry([{
+    name: 'deadline_read', label: '期限读取', risk: 'read', description: '测试期限工具。',
+    parameters: { type: 'object', properties: {}, additionalProperties: false }, validate: () => ({}),
+    execute: (_input, runtime) => new Promise((_resolve, reject) => {
+      runtime.signal.addEventListener('abort', () => {
+        toolSawDeadline = true
+        reject(new Error('tool deadline'))
+      }, { once: true })
+    }),
+  }])
+  await assert.rejects(runAgentToolLoop({
+    registry: deadlineRegistry,
+    messages: [],
+    deadlineAt: Date.now() + 20,
+    callModel: async () => ({ choices: [{ message: { tool_calls: [{
+      id: 'call-deadline', type: 'function', function: { name: 'deadline_read', arguments: '{}' },
+    }] } }] }),
+  }), (caught) => caught.code === 'AGENT_TURN_DEADLINE_EXCEEDED')
+  assert.equal(toolSawDeadline, true, 'deadline 必须主动中止工具')
 })
 
 test('取消发生在模型调用前:归因为取消而非 Provider 错,模型不再被调用', async () => {

@@ -545,6 +545,14 @@ export function resolveAgentSkillDependencyClosure(rootSkills, catalog = [], { m
   const distinctNodes = new Set(roots.map((entry) => entry.id))
   const pushUnique = (list, value) => { if (!list.includes(value)) list.push(value) }
 
+  // Root 也是同一 closure 的版本约束；否则 A -> B@v1 与显式挂载 B@v2 会把依赖静默丢掉。
+  for (const root of roots) {
+    const versionKey = positiveInteger(root.version) ?? positiveInteger(byId.get(root.id)?.version) ?? 'current'
+    const previousVersion = resolvedVersionById.get(root.id)
+    if (previousVersion !== undefined && previousVersion !== versionKey) pushUnique(conflicts, root.id)
+    else resolvedVersionById.set(root.id, versionKey)
+  }
+
   const visit = (dependency, stack, depth) => {
     if (limitExceeded) return
     const dependencyId = dependency?.skillId

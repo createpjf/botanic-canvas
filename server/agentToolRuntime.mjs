@@ -218,6 +218,7 @@ function knownPreEffectFailure(error) {
 /** terminal-known 错误码（H4）：policy/approval、配额、取消、deadline、lease/checkpoint 边界,不得伪装成可修复。 */
 const TERMINAL_KNOWN_TOOL_CODES = new Set([
   'TOOL_CONFIRMATION_REQUIRED',
+  'WEB_QUOTA_EXCEEDED',
   'REQUEST_CANCELLED',
   'AGENT_TURN_DEADLINE_EXCEEDED',
 ])
@@ -546,8 +547,8 @@ export async function runAgentToolLoop({
   maxOutputTokens = undefined,
   trigger = 'pre_step',
   genAiTelemetry = false,
-  signal = undefined,
-  deadlineAt = undefined,
+  signal = /** @type {AbortSignal | undefined} */ (undefined),
+  deadlineAt = /** @type {number | undefined} */ (undefined),
 }) {
   if (!Number.isInteger(maximumToolCalls) || maximumToolCalls < 1 || maximumToolCalls > MODEL_TOOL_CALL_TOTAL_LIMIT) {
     throw new TypeError(`Agent 工具调用上限必须是 1 到 ${MODEL_TOOL_CALL_TOTAL_LIMIT} 之间的整数。`)
@@ -570,11 +571,43 @@ export async function runAgentToolLoop({
       throw knownPreEffectFailure(new AgentToolRuntimeError('AGENT_TURN_DEADLINE_EXCEEDED', 'Agent Turn 已超过本轮时限。', 504))
     }
   }
+  const withinExecutionBoundary = async (operation) => {
+    assertExecutionAlive()
+    const deadlineController = typeof deadlineAt === 'number' ? new AbortController() : undefined
+    const deadlineTimer = deadlineController
+      ? setTimeout(() => deadlineController.abort(), Math.max(1, deadlineAt - Date.now()))
+      : undefined
+    const signals = [signal, deadlineController?.signal].filter(Boolean)
+    const activeSignal = signals.length > 1 ? AbortSignal.any(signals) : signals[0]
+    let onAbort
+    const aborted = activeSignal && new Promise((_, reject) => {
+      onAbort = () => reject(signal?.aborted
+        ? new AgentToolRuntimeError('REQUEST_CANCELLED', 'Agent 请求已取消。', 499)
+        : new AgentToolRuntimeError('AGENT_TURN_DEADLINE_EXCEEDED', 'Agent Turn 已超过本轮时限。', 504))
+      if (activeSignal.aborted) onAbort()
+      else activeSignal.addEventListener('abort', onAbort, { once: true })
+    })
+    try {
+      const pending = Promise.resolve().then(() => operation(activeSignal))
+      const result = await (aborted ? Promise.race([pending, aborted]) : pending)
+      assertExecutionAlive()
+      return result
+    } catch (caught) {
+      if (signal?.aborted) throw new AgentToolRuntimeError('REQUEST_CANCELLED', 'Agent 请求已取消。', 499)
+      if (deadlineController?.signal.aborted || (typeof deadlineAt === 'number' && Date.now() >= deadlineAt)) {
+        throw new AgentToolRuntimeError('AGENT_TURN_DEADLINE_EXCEEDED', 'Agent Turn 已超过本轮时限。', 504)
+      }
+      throw caught
+    } finally {
+      if (deadlineTimer) clearTimeout(deadlineTimer)
+      if (onAbort) activeSignal.removeEventListener('abort', onAbort)
+    }
+  }
   assertExecutionAlive()
   // 工具定义在循环开始前定格一次，之后每一步都用同一份。
   const frozenTools = registry.openAITools()
   const frozenSnapshot = snapshot ?? freezeAgentStepSnapshot({ registry })
-  const invokeModel = (request) => withBotanicSpan(
+  const invokeModel = (request) => withinExecutionBoundary((activeSignal) => withBotanicSpan(
     genAiTelemetry ? `chat ${frozenSnapshot.model ?? 'unknown-model'}` : 'botanic.provider.request',
     {
       kind: 'client',
@@ -589,7 +622,7 @@ export async function runAgentToolLoop({
       },
     },
     async (span) => {
-      const response = await callModel(request)
+      const response = await callModel(request, { signal: activeSignal, deadlineAt })
       if (genAiTelemetry && span) {
         try {
           const usage = normalizeProviderUsage(response?.usage)
@@ -599,7 +632,7 @@ export async function runAgentToolLoop({
       }
       return response
     },
-  )
+  ))
   const steps = []
   const toolCalls = []
   let reasoning = []
@@ -649,7 +682,7 @@ export async function runAgentToolLoop({
 
   const persistCheckpoint = async (next) => {
     if (!checkpointing) return
-    await saveCheckpoint(next)
+    await withinExecutionBoundary(() => saveCheckpoint(next))
     checkpoint = next
   }
 
@@ -955,7 +988,7 @@ export async function runAgentToolLoop({
       }
       let output
       try {
-        output = await withBotanicSpan(`execute_tool ${trace.name}`, {
+        output = await withinExecutionBoundary((activeSignal) => withBotanicSpan(`execute_tool ${trace.name}`, {
           kind: 'internal',
           attributes: {
             ...(genAiTelemetry ? {
@@ -978,10 +1011,10 @@ export async function runAgentToolLoop({
             ...context,
             toolCallId: trace.id,
             // 根 signal 直达工具；子任务等自带 timeout 的 context 已在各自 seam 组合过。
-            ...(signal && context?.signal === undefined ? { signal } : {}),
+            ...(activeSignal ? { signal: activeSignal } : {}),
             ...(typeof deadlineAt === 'number' ? { deadlineAt } : {}),
           })
-        })
+        }))
       } catch (caught) {
         // 根取消优先归因为取消：工具因中止抛出的任何错误（含自身 timeout）不再伪装成工具失败。
         // 该 call 已 dispatched，不标记 outcomeKnown —— 不能假设「取消 = 没执行」。
@@ -1093,7 +1126,7 @@ export async function runAgentToolLoop({
   }
 
   const prepareModelCall = async (step, prepareTrigger, force = false) => {
-    const preparation = await modelContext.prepare({
+    const preparation = await withinExecutionBoundary(() => modelContext.prepare({
       attempt,
       step,
       messages: conversation,
@@ -1101,7 +1134,7 @@ export async function runAgentToolLoop({
       maxOutputTokens,
       trigger: prepareTrigger,
       ...(force ? { force: true } : {}),
-    })
+    }))
     if (preparation !== undefined && (
       !preparation
       || typeof preparation !== 'object'
@@ -1173,12 +1206,12 @@ export async function runAgentToolLoop({
           throw retryCaught
         }
       }
-      await modelContext.observe({
+      await withinExecutionBoundary(() => modelContext.observe({
         attempt,
         step,
         prepared: preparedCall.preparation?.prepared,
         responseUsage: normalizeProviderUsage(response?.usage),
-      })
+      }))
     }
     const message = response?.choices?.[0]?.message
     reasoning = appendAgentReasoning(reasoning, {
@@ -1263,12 +1296,12 @@ export async function runAgentToolLoop({
     } else {
       const preparedCall = await prepareModelCall(maximumSteps, 'final_synthesis')
       response = await invokeModel({ ...preparedCall.request, tools: [], tool_choice: 'none' })
-      await modelContext.observe({
+      await withinExecutionBoundary(() => modelContext.observe({
         attempt,
         step: maximumSteps,
         prepared: preparedCall.preparation?.prepared,
         responseUsage: normalizeProviderUsage(response?.usage),
-      })
+      }))
     }
     const message = response?.choices?.[0]?.message
     const content = typeof message?.content === 'string' ? message.content : undefined

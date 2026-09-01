@@ -872,9 +872,9 @@ async function executeTurnAttempt({ config, model, system, messages, registry, o
   // 30s 整轮预算，被整体掐死后用户只看到「响应超时」。单步卡死仍在 timeoutMs 内中止；
   // 步数由 maximumSteps 封顶，工具各有自己的超时。
   let activeCallTimeout
-  const providerCallSignal = () => {
+  const providerCallSignal = (runtimeSignal = options.signal) => {
     activeCallTimeout = AbortSignal.timeout(config.timeoutMs)
-    return options.signal ? AbortSignal.any([options.signal, activeCallTimeout]) : activeCallTimeout
+    return runtimeSignal ? AbortSignal.any([runtimeSignal, activeCallTimeout]) : activeCallTimeout
   }
   const fetchImpl = options.fetchImpl ?? fetch
   // 有实时通道时才向提供方请求流式；工具步仍以 loop emit 为准，禁止客户端预插成功。
@@ -905,7 +905,7 @@ async function executeTurnAttempt({ config, model, system, messages, registry, o
       maxOutputTokens: 3000,
       signal: options.signal,
       deadlineAt: options.deadlineAt,
-      callModel: async ({ messages: turnMessages, tools, tool_choice, step }) => {
+      callModel: async ({ messages: turnMessages, tools, tool_choice, step }, { signal: runtimeSignal } = {}) => {
         const requestProvider = (requestMessages) => fetchImpl(`${config.baseUrl}/chat/completions`, {
             method: 'POST',
             headers: {
@@ -924,7 +924,7 @@ async function executeTurnAttempt({ config, model, system, messages, registry, o
               temperature: botanicAgentProviderTemperature(model),
               stream: streaming,
             }),
-            signal: providerCallSignal(),
+            signal: providerCallSignal(runtimeSignal),
           })
         let response = await requestProvider(turnMessages)
         if (!response.ok) {
@@ -1037,6 +1037,7 @@ async function executeTurnAttempt({ config, model, system, messages, registry, o
     if (typeof caught?.code === 'string'
       && (caught.code.startsWith('TOOL_')
         || caught.code.startsWith('AGENT_SKILL_')
+        || caught.code === 'WEB_QUOTA_EXCEEDED'
         || caught.code === 'REQUEST_CANCELLED'
         || caught.code === 'AGENT_TURN_DEADLINE_EXCEEDED')) {
       throw new BotanicAgentChatError(caught.statusCode ?? 422, caught.code, caught.message, { cause: caught })

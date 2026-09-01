@@ -501,6 +501,26 @@ test('挂载 Skill fail-closed：坏依赖具名拒绝，好依赖完整注入�
   assert.equal(wide.length, 16)
   assert.match(botanicAgentMountedSkillBriefing(wide), /SENTINEL_AFTER_2000/u)
 
+  const thirtyOne = Array.from({ length: 31 }, (_, index) => ({
+    id: `catalog-${index + 1}`, name: `目录技能${index + 1}`, instructions: '规则', status: 'active', capabilities: ['read'],
+  }))
+  assert.equal(resolveBotanicAgentMountedSkills(['catalog-31'], thirtyOne)[0].id, 'catalog-31')
+
+  const versionConflict = [
+    {
+      id: 'root-a', name: '主技能 A', instructions: 'A', status: 'active', version: 1, contentHash: 'hash-a', capabilities: ['read'],
+      manifest: { version: 1, toolAllowlist: [], dependencies: [{ skillId: 'root-b', version: 1, contentHash: 'hash-b-v1' }] },
+    },
+    {
+      id: 'root-b', name: '主技能 B', instructions: 'B v2', status: 'active', version: 2, contentHash: 'hash-b-v2', capabilities: ['read'],
+      versions: [{ version: 1, name: '主技能 B', instructions: 'B v1', capabilities: ['read'], contentHash: 'hash-b-v1' }],
+    },
+  ]
+  assert.throws(
+    () => resolveBotanicAgentMountedSkills(['root-a', 'root-b'], versionConflict),
+    (caught) => caught.code === 'AGENT_SKILL_DEPENDENCY_CONFLICT' && /root-b/u.test(caught.message),
+  )
+
   // 超过聚合预算：具名失败而不是裁剪正文。
   assert.throws(
     () => resolveBotanicAgentMountedSkills(sixteen.map((skill) => skill.id), sixteen, { contextPolicy: { maxInputTokens: 2000 } }),

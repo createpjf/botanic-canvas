@@ -704,9 +704,9 @@ export async function planBotanicGeneration(input, runtimeConfig, options = {}) 
   // 超时按单次模型调用计，不罩整轮 tool loop：与 Turn/Chat 同一语义（H3A）。
   // timeout signal 不跨工具执行复用，每次 sampling 重新创建。
   let activeCallTimeout
-  const providerCallSignal = () => {
+  const providerCallSignal = (runtimeSignal = options.signal) => {
     activeCallTimeout = AbortSignal.timeout(config.timeoutMs)
-    return options.signal ? AbortSignal.any([options.signal, activeCallTimeout]) : activeCallTimeout
+    return runtimeSignal ? AbortSignal.any([runtimeSignal, activeCallTimeout]) : activeCallTimeout
   }
   const fetchImpl = options.fetchImpl ?? fetch
   const proposedActions = []
@@ -799,7 +799,7 @@ export async function planBotanicGeneration(input, runtimeConfig, options = {}) 
       maxOutputTokens: 3000,
       signal: options.signal,
       deadlineAt: options.deadlineAt,
-      callModel: async ({ messages, tools, tool_choice, step }) => {
+      callModel: async ({ messages, tools, tool_choice, step }, { signal: runtimeSignal } = {}) => {
         const response = await fetchImpl(`${config.baseUrl}/chat/completions`, {
           method: 'POST',
           headers: {
@@ -818,7 +818,7 @@ export async function planBotanicGeneration(input, runtimeConfig, options = {}) 
             temperature: botanicAgentProviderTemperature(config.model),
             stream: streaming,
           }),
-          signal: providerCallSignal(),
+          signal: providerCallSignal(runtimeSignal),
         })
         if (!response.ok) {
           const failureBody = await response.text().catch(() => '')
@@ -886,6 +886,7 @@ export async function planBotanicGeneration(input, runtimeConfig, options = {}) 
     if (typeof caught?.code === 'string'
       && (caught.code.startsWith('TOOL_')
         || caught.code.startsWith('AGENT_SKILL_')
+        || caught.code === 'WEB_QUOTA_EXCEEDED'
         || caught.code === 'REQUEST_CANCELLED'
         || caught.code === 'AGENT_TURN_DEADLINE_EXCEEDED')) {
       throw new BotanicAgentPlannerError(caught.statusCode ?? 422, caught.code, caught.message)

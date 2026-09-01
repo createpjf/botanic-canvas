@@ -117,7 +117,6 @@ function projectSkillEntries(projectSkills = []) {
   return (Array.isArray(projectSkills) ? projectSkills : [])
     .filter((skill) => skill?.status === 'active' && typeof skill.id === 'string' && typeof skill.name === 'string' && typeof skill.instructions === 'string')
     .filter((skill) => !skillCatalog[skill.id])
-    .slice(0, 30)
     .map((skill) => [skill.id, {
       label: skill.name,
       instructions: skill.instructions,
