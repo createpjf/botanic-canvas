@@ -48,15 +48,29 @@
 | 浏览器刷新恢复 UAT | **未执行**(需人工浏览器验证) |
 | 生产灰度零容忍指标 | **未执行**(需部署) |
 
-## 证据分层(§9.3)
+## 证据分层(§9.3,2026-09-01 更新)
 
 1. 本地单元/契约测试:**绿**(756 pass)
-2. 分支与 commit:`harness-reliability-20260901` @ 6645d2c(基线 a05e564)
+2. 分支与 commit:`harness-reliability-20260901`(基线 a05e564)
 3. 数据库/迁移:**无迁移**;`deadlineAt`/`skillCatalogSnapshot`/Checkpoint V2 全部走既有 JSON payload,三 Adapter 契约测试证明 round-trip
-4. staging 多实例故障注入:未执行——需要维护者提供 staging 环境
-5. 真实 Provider 小流量:未执行——需要授权与凭据
-6. 浏览器 UAT:未执行
-7. 生产 cohort:未执行
+4. 本地双实例故障注入(staging 的本地等价):**绿,8/8**——两个 `createBotanicAgentTurnRuntime` 实例共享真实 Postgres(smokeLocalStack 55432),fake Provider/tool:
+   - A1/A2:Provider stream 注入中断后 journal completed 已 durable;终态 Turn 重复提交是 replay 不重执行
+   - B:crash-before-dispatch(prepared)按策略重执行,fetch=1
+   - C:crash-after-dispatch(dispatched)收口 `AGENT_TOOL_OUTCOME_UNKNOWN`,fetch=0,不重复联网
+   - D2:crash-after-result 由实例 B takeover 复用 durable envelope,fetch=0
+   - E:跨实例 cancel:根 signal 到达挂起工具(toolSawAbort=true),Turn 收口取消
+   - F:lease fence:generation 3 takeover 后,旧 lease 迟到 commit 返回 stale
+   - G:Turn 运行中 Skill 发 V2,恢复 pin 回 V1 正文与 hash
+   注:一次性 probe 脚本按 H0 规范不提交;真正的 staging 多实例部署验证仍待执行
+5. 浏览器 UAT(自动化):**绿,2/2**——`e2e/uat-turn-recovery.spec.ts`(真实 Chromium + Vite + API/Worker + Postgres + fake Provider):
+   - 刷新恢复:回合完成后 reload,回答从 durable Turn/observer 恢复,Provider 调用数不增长
+   - 执行中 Stop:慢 Provider 窗口内取消,不产出最终回答
+   另经 HTTP 直接验证:GET observer 续读 completed、同幂等键重提命中原 Turn 不重跑、cancel 后 `turn.started→turn.cancelling→turn.cancelled` 事件序列完整
+   运行方式:`./scripts/smokeLocalStack.sh up` → PORT=8787 起 API/Worker(FLOCK_API_BASE_URL 指向 fake Provider)→ `UAT_ACCESS_TOKEN=<token> npx playwright test e2e/uat-turn-recovery.spec.ts`;无 token 时自动 skip
+6. 真实 Provider 小流量:未执行——需要维护者授权
+7. 生产 cohort:未执行——需要部署
+
+**某一层绿色不能替代下一层。当前可宣称:本地代码验证 + 本地多实例故障注入 + 自动化浏览器 UAT 完成;真实 Provider 与生产灰度仍未交付。**
 
 **某一层绿色不能替代下一层。当前只能宣称本地验证完成,不能宣称生产可靠性已交付。**
 
@@ -72,6 +86,7 @@
 3. 真实 Provider 的流式/重试行为只被 fake 覆盖;H3C 待生产失败样本再决定启用
 4. `skillCatalogSnapshot` 使 durable request 略增大(内置 snapshot ≈4.4KB);监控 Turn payload 尺寸
 5. 零容忍指标(started_after_cancel 等)目前只有本地口径;staging/生产窗口未建立 baseline
+6. UAT spec 依赖手动起 UAT 栈(见证据层 5 的运行方式);常规 `npm run test:e2e` 下自动 skip,不污染现有绿灯
 
 ## 下一阶段建议
 
