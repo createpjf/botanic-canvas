@@ -5,7 +5,7 @@ import type { AssetGroup } from '../../domain/canvas'
 import { imageUploadAccept } from '../../domain/mediaFormats'
 import { AgentPlannerProviderIcon } from '../../components/AgentPlannerProviderIcon'
 import { BotanicSelect } from '../../components/BotanicSelect'
-import { AutoRunIcon, ChecklistIcon, ChevronDownIcon, CloseIcon, PlusIcon, SparkleIcon, UploadIcon } from '../../components/BotanicIcons'
+import { AutoRunIcon, ChecklistIcon, ChevronDownIcon, CloseIcon, ListTodoIcon, PlusIcon, SparkleIcon, UploadIcon } from '../../components/BotanicIcons'
 import {
   botanicMotion,
   Flip,
@@ -17,6 +17,7 @@ import {
 } from '../../components/gsapMotion'
 import { agentPlannerModelLabel, agentPlannerModelShortLabel } from '../../components/generationModelPresentation'
 import type { AgentContextItem, AgentSkillOption } from './agentWorkspace.types'
+import { AGENT_COMPOSER_QUEUE_LIMIT, agentQueuedInstructionPreview, type AgentQueuedInstruction } from './agentComposerQueue'
 import { initialAgentComposerHistoryState, navigateAgentComposerHistory, nextAgentSuggestionIndex } from './agentComposerState'
 import { BOTANIC_AGENT_MOUNTED_SKILL_LIMIT } from './agentSkillForm'
 import { useProductI18n, useProductMessages } from '../../i18n/react'
@@ -28,6 +29,7 @@ type AgentComposerProps = {
   mentionOptions: AgentContextItem[]
   skillOptions: AgentSkillOption[]
   mountedSkills: AgentSkillOption[]
+  queuedInstructions: AgentQueuedInstruction[]
   instruction: string
   intentHint?: string
   error: string
@@ -66,6 +68,9 @@ type AgentComposerProps = {
   onShowRawReasoningChange: (show: boolean) => void
   onGroupChange: (groupId: string) => void
   onSend: () => void
+  onQueue: () => void
+  onRemoveQueuedInstruction: (id: string) => void
+  onRestoreQueuedInstruction: (item: AgentQueuedInstruction) => void
   onCancelPlanning: () => void
   onToggleImageContext: (itemId: string, selected: boolean) => void
   onExecutionModeChange: (mode: 'manual' | 'auto') => void
@@ -78,6 +83,7 @@ export function AgentComposer({
   mentionOptions,
   skillOptions,
   mountedSkills,
+  queuedInstructions,
   instruction,
   intentHint,
   error,
@@ -116,6 +122,9 @@ export function AgentComposer({
   onShowRawReasoningChange,
   onGroupChange,
   onSend,
+  onQueue,
+  onRemoveQueuedInstruction,
+  onRestoreQueuedInstruction,
   onCancelPlanning,
   onToggleImageContext,
   onExecutionModeChange,
@@ -123,10 +132,10 @@ export function AgentComposer({
   const { locale } = useProductI18n()
   const copy = useProductMessages({
     'zh-CN': {
-      input: 'Agent 输入', referenced: '已引用', remove: '移除', mounted: '已挂载', callSkill: '挂载 Skill', systemSkill: '系统 Skill', projectSkill: '项目 Skill', createSkill: '创建项目 Skill', saveRules: '保存一组可复用规则', referenceCanvas: '引用画布节点或图片视频', description: '补充描述', asset: '素材', result: '结果', video: '视频', noMatch: '没有匹配项，按 Esc 关闭', noSkillMatch: '没有匹配的 Skill，按 Esc 关闭', placeholder: '例如：更冷的晨光，服装和商品保持', message: 'Agent 消息', promptField: '提示词', retry: '重试', addImages: '添加图像素材', executionMode: '执行模式', manual: '计划模式', auto: '自动模式', manualTitle: '计划模式：出图先给计划，确认后再提交', autoTitle: '自动模式：单张设置完整后直接提交，多张或外部行动仍需确认', model: 'Agent 模型', assetGroup: '素材组', single: '单张', group: '组', send: '发送给 Agent', stop: '停止', closeImages: '关闭添加图像素材', chooseImages: '从电脑选择图片', dragHint: '也可以直接拖入 Agent 面板', noImages: '暂无图像素材，可从电脑选择或直接拖入。', manualHelp: '出图需确认后再提交', autoHelp: '单张可直接提交；多张仍需确认', rawReasoning: '模型推理原文（实验）', rawReasoningHelp: '当前会话 · 不保存 · 取决于模型支持', textKind: '文字',
+      input: 'Agent 输入', referenced: '已引用', remove: '移除', mounted: '已挂载', callSkill: '挂载 Skill', systemSkill: '系统 Skill', projectSkill: '项目 Skill', createSkill: '创建项目 Skill', saveRules: '保存一组可复用规则', referenceCanvas: '引用画布节点或图片视频', description: '补充描述', asset: '素材', result: '结果', video: '视频', noMatch: '没有匹配项，按 Esc 关闭', noSkillMatch: '没有匹配的 Skill，按 Esc 关闭', placeholder: '例如：更冷的晨光，服装和商品保持', message: 'Agent 消息', promptField: '提示词', retry: '重试', addImages: '添加图像素材', executionMode: '执行模式', manual: '计划模式', auto: '自动模式', manualTitle: '计划模式：出图先给计划，确认后再提交', autoTitle: '自动模式：单张设置完整后直接提交，多张或外部行动仍需确认', model: 'Agent 模型', assetGroup: '素材组', single: '单张', group: '组', send: '发送给 Agent', stop: '停止', queue: '加入队列', queued: '已排队', editQueued: '编辑排队消息', removeQueued: '移除排队消息', closeImages: '关闭添加图像素材', chooseImages: '从电脑选择图片', dragHint: '也可以直接拖入 Agent 面板', noImages: '暂无图像素材，可从电脑选择或直接拖入。', manualHelp: '出图需确认后再提交', autoHelp: '单张可直接提交；多张仍需确认', rawReasoning: '模型推理原文（实验）', rawReasoningHelp: '当前会话 · 不保存 · 取决于模型支持', textKind: '文字',
     },
     en: {
-      input: 'Agent input', referenced: 'Referenced', remove: 'Remove', mounted: 'Mounted', callSkill: 'Mount Skill', systemSkill: 'System Skill', projectSkill: 'Project Skill', createSkill: 'Create project Skill', saveRules: 'Save a reusable set of rules', referenceCanvas: 'Reference canvas nodes or media', description: 'Description', asset: 'Asset', result: 'Result', video: 'Video', noMatch: 'No matches. Press Esc to close.', noSkillMatch: 'No matching Skill. Press Esc to close.', placeholder: 'e.g. Cooler morning light — keep clothes and product', message: 'Agent message', promptField: 'Prompt', retry: 'Retry', addImages: 'Add images', executionMode: 'Execution mode', manual: 'Plan mode', auto: 'Auto mode', manualTitle: 'Plan mode: review image plans before generating', autoTitle: 'Auto mode: submit one complete image job directly; batches and external actions still need confirmation', model: 'Agent model', assetGroup: 'Asset group', single: 'Single', group: 'Group', send: 'Send to Agent', stop: 'Stop', closeImages: 'Close image picker', chooseImages: 'Choose images', dragHint: 'Or drop images into the Agent panel', noImages: 'No images yet. Choose files or drop them here.', manualHelp: 'Confirm image plans before submit', autoHelp: 'Single images submit directly; batches still need confirmation', rawReasoning: 'Model reasoning text (experimental)', rawReasoningHelp: 'Current session · not saved · model dependent', textKind: 'Text',
+      input: 'Agent input', referenced: 'Referenced', remove: 'Remove', mounted: 'Mounted', callSkill: 'Mount Skill', systemSkill: 'System Skill', projectSkill: 'Project Skill', createSkill: 'Create project Skill', saveRules: 'Save a reusable set of rules', referenceCanvas: 'Reference canvas nodes or media', description: 'Description', asset: 'Asset', result: 'Result', video: 'Video', noMatch: 'No matches. Press Esc to close.', noSkillMatch: 'No matching Skill. Press Esc to close.', placeholder: 'e.g. Cooler morning light — keep clothes and product', message: 'Agent message', promptField: 'Prompt', retry: 'Retry', addImages: 'Add images', executionMode: 'Execution mode', manual: 'Plan mode', auto: 'Auto mode', manualTitle: 'Plan mode: review image plans before generating', autoTitle: 'Auto mode: submit one complete image job directly; batches and external actions still need confirmation', model: 'Agent model', assetGroup: 'Asset group', single: 'Single', group: 'Group', send: 'Send to Agent', stop: 'Stop', queue: 'Queue', queued: 'Queued', editQueued: 'Edit queued message', removeQueued: 'Remove queued message', closeImages: 'Close image picker', chooseImages: 'Choose images', dragHint: 'Or drop images into the Agent panel', noImages: 'No images yet. Choose files or drop them here.', manualHelp: 'Confirm image plans before submit', autoHelp: 'Single images submit directly; batches still need confirmation', rawReasoning: 'Model reasoning text (experimental)', rawReasoningHelp: 'Current session · not saved · model dependent', textKind: 'Text',
     },
   })
   const composerErrorId = useId()
@@ -225,8 +234,8 @@ export function AgentComposer({
     }
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault()
-      if (planning) return
-      onSend()
+      if (planning) onQueue()
+      else onSend()
     }
   }
   const handleFiles = (event: ChangeEvent<HTMLInputElement>) => {
@@ -238,7 +247,7 @@ export function AgentComposer({
   const canSend = Boolean(instruction.trim() || contextItems.length || mountedSkills.length)
   const composerRef = useRef<HTMLDivElement>(null)
   const chipFlipState = useRef<Flip.FlipState | undefined>(undefined)
-  const chipSignature = [...contextItems.map((item) => item.id), ...mountedSkills.map((skill) => skill.id)].join('|')
+  const chipSignature = [...queuedInstructions.map((item) => item.id), ...contextItems.map((item) => item.id), ...mountedSkills.map((skill) => skill.id)].join('|')
   const mentionMenuKey = mentionQuery?.trigger ?? ''
 
   useEffect(() => setActiveSuggestionIndex(0), [mentionQuery?.query, mentionQuery?.trigger])
@@ -284,6 +293,13 @@ export function AgentComposer({
   }, { scope: composerRef, dependencies: [mentionMenuKey] })
 
   return <div ref={composerRef} className="agent-composer" role="group" aria-label={copy.input} aria-busy={planning}>
+    {queuedInstructions.length ? <div className="agent-composer__queue" aria-label={`${copy.queued} ${queuedInstructions.length}/${AGENT_COMPOSER_QUEUE_LIMIT}`}>
+      <span className="agent-composer__attach-label">{`${copy.queued} ${queuedInstructions.length}/${AGENT_COMPOSER_QUEUE_LIMIT}`}</span>
+      <div className="agent-composer__queue-list">{queuedInstructions.map((item) => <div key={item.id} data-flip-id={item.id} className="agent-composer__queue-chip">
+        <button type="button" className="agent-composer__queue-edit" aria-label={`${copy.editQueued}: ${agentQueuedInstructionPreview(item)}`} title={copy.editQueued} onClick={() => onRestoreQueuedInstruction(item)}><ListTodoIcon /><span>{agentQueuedInstructionPreview(item)}</span></button>
+        <button type="button" className="agent-composer__queue-remove" aria-label={`${copy.removeQueued}: ${agentQueuedInstructionPreview(item)}`} title={copy.removeQueued} onClick={() => onRemoveQueuedInstruction(item.id)}><CloseIcon /></button>
+      </div>)}</div>
+    </div> : null}
     {contextItems.length || mountedSkills.length ? <div className="agent-composer__attachments">
       {contextItems.length ? <div className="agent-composer__attach-row" aria-label={`${copy.referenced} ${contextItems.length}`}>
         <span className="agent-composer__attach-label">{copy.referenced}</span>
@@ -355,6 +371,7 @@ export function AgentComposer({
         />
         {compatibleGroups.length ? <BotanicSelect className="agent-composer__group-select" value={groupId} placeholder={copy.assetGroup} ariaLabel={copy.assetGroup} options={[{ value: '', label: copy.single }, ...compatibleGroups.map((group) => ({ value: group.id, label: `${group.name} · ${group.assetIds.length}` }))]} onChange={onGroupChange} renderTrigger={(selected) => <span className="agent-group-trigger" title={selected?.label ?? copy.single}><strong>{selected?.value ? copy.group : '1'}</strong></span>} /> : null}
       </div>
+      {planning && canSend ? <button type="button" className="agent-composer__queue-action" disabled={queuedInstructions.length >= AGENT_COMPOSER_QUEUE_LIMIT} aria-label={copy.queue} title={copy.queue} onClick={onQueue}><ListTodoIcon /></button> : null}
       <ComposerSendButton
         planning={planning}
         cancelling={cancelling}

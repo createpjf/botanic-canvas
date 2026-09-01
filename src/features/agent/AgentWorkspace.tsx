@@ -151,6 +151,8 @@ import {
   type AgentInstructionRetryOptions,
 } from './agentComposerState'
 import { useAgentComposerState } from './useAgentComposerState'
+import { resolveAgentInstructionExecutionContext, type AgentInstructionExecutionSnapshot, type AgentResolvedInstructionExecutionContext } from './agentComposerQueue'
+import { useAgentInstructionQueue } from './useAgentInstructionQueue'
 import { useAgentMessageDelivery } from './useAgentMessageDelivery'
 import {
   persistBotanicAgentActionMessageUpdate,
@@ -214,7 +216,9 @@ type AgentRunInstructionOptions = AgentInstructionRetryOptions & {
   sourceMessageId?: string
   requestId?: string
   sourceTurnId?: string
+  executionSnapshot?: AgentInstructionExecutionSnapshot
 }
+type AgentInstructionExecutionContext = AgentResolvedInstructionExecutionContext
 type AgentLiveConversation = {
   sessionId: string
   message: BotanicAgentMessage
@@ -444,7 +448,7 @@ export default function AgentWorkspace({
     searchConversations: 'Search conversations', searchPlaceholder: 'Search conversations, messages, or tasks', historyFilters: 'Filter collaboration history', all: 'All', unread: 'Unread', newResults: 'New results', attention: 'Needs attention', resultUpdates: (count: number) => `${count} new ${count === 1 ? 'result' : 'results'}`, updates: (count: number) => `${count} ${count === 1 ? 'update' : 'updates'}`, attentionCount: (count: number) => `${count} need${count === 1 ? 's' : ''} attention`, activeCount: (count: number) => `${count} active`, taskCount: (count: number) => `${count} ${count === 1 ? 'task' : 'tasks'}`, noConversations: 'No conversations match these filters.', noMessagesYet: 'No messages yet',
     localChangesKept: 'Local changes are preserved. Review the update.', locateChange: 'Locate this change.', latestSynced: 'Latest content synced.', closeCollaborationUpdate: 'Close collaboration update', gotIt: 'Got it', readingRestored: 'Returned to your previous reading position', jumpLatest: 'Jump to latest',
     tasksAria: 'Agent tasks and results', tasksEyebrow: 'Tasks', tasksTitle: 'Agent tasks', tasksDescription: 'Tasks started by Agent only. Failed tasks can be retried without replacing completed results.', taskFilters: 'Filter by task status', active: 'Active', completed: 'Completed', filterCount: (label: string, count: number) => `${label} · ${count} ${count === 1 ? 'item' : 'items'}`, sourceConversation: 'Source conversation', cancelling: 'Cancelling…', branchStatus: 'Branch status', branchIncomplete: 'This branch did not complete.', noFilteredTasks: 'No tasks match this filter.', noTasks: 'No Agent tasks yet.',
-    skillsAria: 'System and project Skills', skillsEyebrow: 'Skills', skillsTitle: 'Creative skills', skillsDescription: 'Type / in the composer to mount a Skill.', skillsUnavailableLocal: 'Skill registry is available when the workspace service is connected.', systemSkills: 'System Skills', availableSkills: 'Available Skills', mountedSkills: (count: number) => `${count} mounted ${count === 1 ? 'Skill' : 'Skills'}`, noMountedSkills: 'No Skills mounted in this conversation yet.', skillSearch: 'Search Skills', skillSourceFilter: 'Filter Skill source', skillSourceAll: 'All', skillSourceSystem: 'System', skillSourceProject: 'Project', removeSkill: (name: string) => `Remove ${name}`, noSkillMatches: 'No Skills match this search.', newSkill: '+ New Skill', skillNamePlaceholder: 'Skill name, for example: Summer scene swap', skillName: 'Skill name', skillRulesPlaceholder: 'Describe what must stay fixed, what may change, and the result rules.', skillRules: 'Skill rules', createProjectSkill: 'Create project Skill', createProjectSkillDetail: 'This Skill will be saved to the current project and available to Agent.', creating: 'Creating…', confirmCreate: 'Create Skill', createSkill: 'Create Skill', skillCreateFailed: 'Unable to create the Skill. Try again shortly.', noProjectSkills: 'No project Skills yet.', skillCount: (count: number) => `${count} ${count === 1 ? 'Skill' : 'Skills'}`,
+    skillsAria: 'System and project Skills', skillsEyebrow: 'Skills', skillsTitle: 'Creative skills', skillsDescription: 'Type / in the composer to mount a Skill.', skillsUnavailableLocal: 'Skill registry is available when the workspace service is connected.', systemSkills: 'System Skills', availableSkills: 'Available Skills', mountedSkills: (count: number) => `${count} mounted ${count === 1 ? 'Skill' : 'Skills'}`, noMountedSkills: 'No Skills mounted in this conversation yet.', skillSearch: 'Search Skills', skillSourceFilter: 'Filter Skill source', skillSourceAll: 'All', skillSourceSystem: 'System', skillSourceProject: 'Project', removeSkill: (name: string) => `Remove ${name}`, noSkillMatches: 'No Skills match this search.', newSkill: '+ New Skill', skillNamePlaceholder: 'Skill name, for example: Summer scene swap', skillName: 'Skill name', skillRulesPlaceholder: 'Describe what must stay fixed, what may change, and the result rules.', skillRules: 'Skill rules', createProjectSkill: 'Create project Skill', createProjectSkillDetail: 'This Skill will be saved to the current project and available to Agent.', creating: 'Creating…', confirmCreate: 'Create Skill', createSkill: 'Create Skill', skillCreateFailed: 'Unable to create the Skill. Try again shortly.', noProjectSkills: 'No project Skills yet.', skillCount: (count: number) => `${count} ${count === 1 ? 'Skill' : 'Skills'}`, queueFull: 'Queue is full.',
     refineOne: 'Continue refining this result:', refineMany: (count: number) => `Continue refining these ${count} results:`, continueContext: 'Continue creating from the current context:', runtimeAria: 'Agent run details', collapseSteps: 'Collapse run steps', viewSteps: 'View run steps', nextStep: 'Next:', runSteps: 'Run steps', runningStep: (label: string) => `Running ${label}`, runtimeStepFailed: 'This step did not complete.', runProgress: 'Agent Run progress', generationTask: 'Generation task', cancelTask: 'Cancel task', cancelFailed: 'Unable to cancel the task. Try again shortly.', retryFailed: (label: string) => `Unable to retry “${label}”. Try again shortly.`,
   } : {
     sources: '来源', noSources: '当前没有命中项目受控检索来源。', incomplete: '未完成', unavailable: 'Agent 暂时无法回答，请稍后重试。',
@@ -460,7 +464,7 @@ export default function AgentWorkspace({
     searchConversations: '搜索对话', searchPlaceholder: '搜索对话、消息或任务', historyFilters: '筛选协作历史', all: '全部', unread: '未读', newResults: '新结果', attention: '需处理', resultUpdates: (count: number) => `${count} 个新结果`, updates: (count: number) => `${count} 条更新`, attentionCount: (count: number) => `${count} 项需处理`, activeCount: (count: number) => `${count} 进行中`, taskCount: (count: number) => `${count} 个任务`, noConversations: '当前筛选下没有对话。', noMessagesYet: '还没有消息',
     localChangesKept: '本地改动仍保留，点击查看变更。', locateChange: '点击定位变更。', latestSynced: '最新内容已同步。', closeCollaborationUpdate: '关闭协作更新提示', gotIt: '知道了', readingRestored: '已回到上次阅读位置', jumpLatest: '跳到最新',
     tasksAria: 'Agent 任务与结果', tasksEyebrow: '任务', tasksTitle: 'Agent 任务', tasksDescription: '仅 Agent 发起的任务。失败可重试，不覆盖已完成结果。', taskFilters: '按任务状态筛选', active: '进行中', completed: '已完成', filterCount: (label: string, count: number) => `${label} · ${count} 项`, sourceConversation: '来源对话', cancelling: '取消中…', branchStatus: '分支状态', branchIncomplete: '该分支未完成', noFilteredTasks: '当前筛选下没有任务。', noTasks: '还没有 Agent 任务。',
-    skillsAria: '系统与项目 Skill', skillsEyebrow: '技能', skillsTitle: '创作技能', skillsDescription: '在输入框键入 / 即可挂载 Skill。', skillsUnavailableLocal: '本地预览模式未连接工作区服务；连接云端后可管理 Skill。', systemSkills: '系统 Skills', availableSkills: '可用技能', mountedSkills: (count: number) => `本轮已挂载 ${count} 个`, noMountedSkills: '本轮还没有挂载 Skill。', skillSearch: '搜索技能', skillSourceFilter: '筛选技能来源', skillSourceAll: '全部', skillSourceSystem: '系统', skillSourceProject: '项目', removeSkill: (name: string) => `移除 ${name}`, noSkillMatches: '没有匹配的 Skill。', newSkill: '＋ 新建技能', skillNamePlaceholder: '技能名称，例如：夏日换景', skillName: 'Skill 名称', skillRulesPlaceholder: '描述必须保持什么、允许改变什么，以及结果规则。', skillRules: 'Skill 规则', createProjectSkill: '创建项目 Skill', createProjectSkillDetail: '将写入当前项目，之后可被 Agent 调用。', creating: '创建中…', confirmCreate: '确认创建', createSkill: '创建 Skill', skillCreateFailed: 'Skill 创建失败。', noProjectSkills: '还没有项目 Skill。', skillCount: (count: number) => `${count} 个`,
+    skillsAria: '系统与项目 Skill', skillsEyebrow: '技能', skillsTitle: '创作技能', skillsDescription: '在输入框键入 / 即可挂载 Skill。', skillsUnavailableLocal: '本地预览模式未连接工作区服务；连接云端后可管理 Skill。', systemSkills: '系统 Skills', availableSkills: '可用技能', mountedSkills: (count: number) => `本轮已挂载 ${count} 个`, noMountedSkills: '本轮还没有挂载 Skill。', skillSearch: '搜索技能', skillSourceFilter: '筛选技能来源', skillSourceAll: '全部', skillSourceSystem: '系统', skillSourceProject: '项目', removeSkill: (name: string) => `移除 ${name}`, noSkillMatches: '没有匹配的 Skill。', newSkill: '＋ 新建技能', skillNamePlaceholder: '技能名称，例如：夏日换景', skillName: 'Skill 名称', skillRulesPlaceholder: '描述必须保持什么、允许改变什么，以及结果规则。', skillRules: 'Skill 规则', createProjectSkill: '创建项目 Skill', createProjectSkillDetail: '将写入当前项目，之后可被 Agent 调用。', creating: '创建中…', confirmCreate: '确认创建', createSkill: '创建 Skill', skillCreateFailed: 'Skill 创建失败。', noProjectSkills: '还没有项目 Skill。', skillCount: (count: number) => `${count} 个`, queueFull: '队列已满。',
     refineOne: '继续优化这张结果：', refineMany: (count: number) => `继续优化这 ${count} 张结果：`, continueContext: '继续基于当前上下文创作：', runtimeAria: 'Agent 运行记录', collapseSteps: '收起运行步骤', viewSteps: '查看运行步骤', nextStep: '下一步：', runSteps: '运行步骤', runningStep: (label: string) => `正在${label}`, runtimeStepFailed: '该步骤未完成。', runProgress: 'Agent Run 实时进度', generationTask: '生成任务', cancelTask: '取消任务', cancelFailed: '任务取消失败，请稍后重试。', retryFailed: (label: string) => `「${label}」重试失败，请稍后再试。`,
   }
   const displaySessionTitle = (title?: string) => !title || title === '新建对话'
@@ -486,7 +490,7 @@ export default function AgentWorkspace({
     clickInstruction,
     dismissMention,
   } = useAgentComposerState(projectId, session?.id, composerTextareaRef)
-  const { instruction, error, lastFailedInstruction, lastFailedCommand, lastFailedPlanMessageId, mentionQuery, pendingGenerationOverrides, pendingRecoveryContextSnapshot } = composerState
+  const { instruction, error, lastFailedInstruction, lastFailedCommand, lastFailedPlanMessageId, mentionQuery, queuedInstructions, pendingGenerationOverrides, pendingRecoveryContextSnapshot } = composerState
   const setError = useCallback((value: string) => updateComposerState({ error: value }), [updateComposerState])
   const setLastFailedInstruction = useCallback((value: string) => updateComposerState({
     lastFailedInstruction: value,
@@ -1576,27 +1580,33 @@ export default function AgentWorkspace({
     variationAxisLabel?: string,
     runtimeRequestKey?: string,
     resolvedIntent?: BotanicAgentIntent,
+    executionContext?: AgentInstructionExecutionContext,
   ): Promise<BotanicAgentPlan | BotanicAgentClarificationResponse | null> => {
-    if (!session || !target || !isCurrentAgentProject()) return null
-    const assetGroup = compatibleGroups.find((group) => group.id === groupId)
+    const planTarget = executionContext?.target ?? target
+    if (!session || !planTarget || !isCurrentAgentProject()) return null
+    const assetGroup = compatibleGroups.find((group) => group.id === (executionContext?.groupId ?? groupId))
+    const planContextItems = executionContext?.contextItems ?? contextItems
+    const planModel = executionContext?.plannerModel ?? plannerModel
+    const planMountedSkillIds = executionContext?.mountedSkillIds ?? session.mountedSkillIds
+    const planIntent = executionContext?.intent ?? intent
     // 失败 Run 恢复的权威引用优先进入快照（构建时按 nodeId 去重，先到先得）。
     const recoveryContextItems = failedCommand?.options.recoveryContextSnapshot ?? []
-    const planContextSnapshot = () => createBotanicAgentContextSnapshot([...recoveryContextItems, ...contextItems])
+    const planContextSnapshot = () => createBotanicAgentContextSnapshot([...recoveryContextItems, ...planContextItems])
     const input = {
       projectId,
       locale,
-      plannerModel,
-      mountedSkillIds: session?.mountedSkillIds,
+      plannerModel: planModel,
+      mountedSkillIds: planMountedSkillIds,
       instruction: cleanInstruction,
       // 综合 Prompt 链路里 cleanInstruction 是模型写的画面描述；变体轴必须从用户原话解析。
       ...(sourceInstruction?.trim() ? { sourceInstruction: sourceInstruction.trim() } : {}),
       // 回合模型结构化声明的变体：规划器直接展开，不再从自然语言里挖轴。
       ...(structuredVariants?.length ? { structuredVariants } : {}),
       ...(structuredVariants?.length && variationAxisLabel ? { variationAxisLabel } : {}),
-      requestedIntent: resolvedIntent ?? intent,
-      selectedResultNodeId: target.id,
-      selectedResultLabel: target.label,
-      rootRecipe: target.rootRecipe,
+      requestedIntent: resolvedIntent ?? planIntent,
+      selectedResultNodeId: planTarget.id,
+      selectedResultLabel: planTarget.label,
+      rootRecipe: planTarget.rootRecipe,
       assetGroup,
       availableAssetGroups: groups,
       projectMemory: memory,
@@ -1676,14 +1686,14 @@ export default function AgentWorkspace({
         : buildBotanicAgentPlan({
             instruction: cleanInstruction,
             locale,
-            intent,
-            selectedResultNodeId: target.id,
-            selectedResultLabel: target.label,
-            rootRecipe: target.rootRecipe,
+            intent: planIntent,
+            selectedResultNodeId: planTarget.id,
+            selectedResultLabel: planTarget.label,
+            rootRecipe: planTarget.rootRecipe,
             assetGroup,
             contextSnapshot: planContextSnapshot(),
             ...(outputCount ? { outputCount } : {}),
-            settings: { ...target.rootRecipe.settings, ...generationOverrides },
+            settings: { ...planTarget.rootRecipe.settings, ...generationOverrides },
           })
       if (controller.signal.aborted) return null
       attachPlannerToolTrace(nextPlan)
@@ -1716,23 +1726,23 @@ export default function AgentWorkspace({
           const fallbackPlan = { ...buildBotanicAgentPlan({
             instruction: cleanInstruction,
             locale,
-            intent,
-            selectedResultNodeId: target.id,
-            selectedResultLabel: target.label,
-            rootRecipe: target.rootRecipe,
+            intent: planIntent,
+            selectedResultNodeId: planTarget.id,
+            selectedResultLabel: planTarget.label,
+            rootRecipe: planTarget.rootRecipe,
             assetGroup,
             creativeBrief,
             contextSnapshot: planContextSnapshot(),
             ...(outputCount ? { outputCount } : {}),
-          }), plannerModel, settings: { ...target.rootRecipe.settings, ...generationOverrides } }
+          }), plannerModel: planModel, settings: { ...planTarget.rootRecipe.settings, ...generationOverrides } }
           const applied = applyBotanicAgentVariationToPlan(fallbackPlan, {
             // 变体轴只从用户原话解析：cleanInstruction 在综合 Prompt 链路里是模型 prose。
             instruction: sourceInstruction ?? failedCommand?.instruction ?? cleanInstruction,
             locale,
-            requestedIntent: resolvedIntent ?? intent,
+            requestedIntent: resolvedIntent ?? planIntent,
             clarificationAnswers,
             brief: creativeBrief,
-            fallbackPrompt: target.rootRecipe?.prompt,
+            fallbackPrompt: planTarget.rootRecipe?.prompt,
             structuredVariants,
             variationAxisLabel,
             assetGroup: assetGroup
@@ -1920,18 +1930,27 @@ export default function AgentWorkspace({
     options: AgentRunInstructionOptions = {},
   ) => {
     if (!session || planning || !isCurrentAgentProject()) return
+    const instructionExecutionContext = resolveAgentInstructionExecutionContext({
+      snapshot: options.executionSnapshot,
+      current: {
+        plannerModel, executionMode: session.executionMode,
+        mountedSkillIds: session.mountedSkillIds ?? [], sessionContextNodeIds: session.contextNodeIds,
+        contextItems, targetNodeId: target?.id ?? null, groupId,
+        ...(intent ? { intent } : {}), generationOverrides: pendingGenerationOverrides,
+      },
+      currentTarget: target,
+      explicitTargetProvided: Object.prototype.hasOwnProperty.call(options, 'targetNodeId'),
+      explicitTargetNodeId: options.targetNodeId,
+      generationOverrides: options.generationOverrides,
+      resolveTarget: (nodeId) => resolveBotanicAgentContinuationTarget(nodeId, onResolveTarget),
+    })
     const mentions = options.mentions?.length
       ? options.mentions
-      : snapshotBotanicAgentComposerMentions({ references: contextItems })
+      : snapshotBotanicAgentComposerMentions({ references: instructionExecutionContext.contextItems })
     if (mentions.length) options = { ...options, mentions }
-    // continuation 显式携带 targetNodeId（包括 null）时，一律按 Turn 快照解析。
-    // 这样刷新后上下文第一张图变了，也不会把旧意图落到新目标。
-    let instructionTarget = Object.prototype.hasOwnProperty.call(options, 'targetNodeId')
-      ? resolveBotanicAgentContinuationTarget(options.targetNodeId, onResolveTarget)
-      : target
-    // 快捷操作选的意图只作用于紧随其后的这一条指令；用完即清，
-    // 避免一次点击后的残留意图长期覆盖回合模型的判断。
-    if (intent) setIntent(undefined); const appendedUserMessageCreatedAt = options.appendUser !== undefined ? Date.now() : undefined
+    let instructionTarget = instructionExecutionContext.target
+    if (!options.executionSnapshot && intent) setIntent(undefined)
+    const appendedUserMessageCreatedAt = options.appendUser !== undefined ? Date.now() : undefined
     const appendedUserMessageId = options.appendUser !== undefined
       ? appendMessage({
           role: 'user',
@@ -1952,7 +1971,7 @@ export default function AgentWorkspace({
       ...(options.requestId ? { requestId: options.requestId } : {}),
       ...(options.sourceTurnId ? { turnId: options.sourceTurnId } : {}),
       options: {
-        ...(options.generationOverrides ? { generationOverrides: options.generationOverrides } : {}),
+        ...(Object.keys(instructionExecutionContext.generationOverrides).length ? { generationOverrides: instructionExecutionContext.generationOverrides } : {}),
         ...(options.recoveryContextSnapshot?.length ? { recoveryContextSnapshot: options.recoveryContextSnapshot } : {}),
         ...(options.clarificationAnswers ? { clarificationAnswers: options.clarificationAnswers } : {}),
         ...(options.creativeBrief ? { creativeBrief: options.creativeBrief } : {}),
@@ -1960,8 +1979,8 @@ export default function AgentWorkspace({
         ...(options.resolvedGeneration ? { resolvedGeneration: options.resolvedGeneration } : {}),
         ...(options.region ? { region: options.region } : {}),
         ...(options.composition ? { composition: options.composition } : {}),
-        ...(Object.prototype.hasOwnProperty.call(options, 'targetNodeId')
-          ? { targetNodeId: options.targetNodeId }
+        ...(Object.prototype.hasOwnProperty.call(options, 'targetNodeId') || options.executionSnapshot
+          ? { targetNodeId: instructionExecutionContext.targetNodeId }
           : {}),
       },
     }
@@ -1995,18 +2014,18 @@ export default function AgentWorkspace({
       && instructionRequestsCompositionRun(cleanInstruction)) {
       const totalCandidateCount = botanicAgentCompositionTotalCandidateCount(composition)
       const executionDecision = resolveBotanicAgentExecutionDecision({
-        mode: session.executionMode,
+        mode: instructionExecutionContext.executionMode,
         settingsComplete: true,
         pendingActionCount: 0,
         outputCount: totalCandidateCount,
         waivers: session.confirmationWaivers,
       })
       const sessionModel = [...session.messages].reverse().find((message) => message.plan)?.plan?.settings.model
-      const { model: requestedModel, ...compositionOverrides } = pendingGenerationOverrides
+      const { model: requestedModel, ...compositionOverrides } = instructionExecutionContext.generationOverrides
       const imageModel = resolveBotanicAgentCompositionImageModel(generationModels, [
         requestedModel,
         sessionModel,
-        target?.rootRecipe.settings.model,
+        instructionTarget?.rootRecipe.settings.model,
       ])
       if (!imageModel) {
         setError('当前没有可用的图片生成模型，无法整套执行。')
@@ -2017,7 +2036,7 @@ export default function AgentWorkspace({
           ...buildBotanicAgentCompositionPlan({
             instruction: cleanInstruction,
             composition,
-            contextSnapshot: createBotanicAgentContextSnapshot(contextItems),
+            contextSnapshot: createBotanicAgentContextSnapshot(instructionExecutionContext.contextItems),
             locale,
             settings: {
               model: imageModel.id,
@@ -2026,7 +2045,7 @@ export default function AgentWorkspace({
               ...compositionOverrides,
             } as GenerationSettings,
           }),
-          plannerModel,
+          plannerModel: instructionExecutionContext.plannerModel,
         }
         const planMessageId = appendMessage({
           role: 'assistant', kind: 'plan', plan: compositionPlan, status: 'pending',
@@ -2047,7 +2066,7 @@ export default function AgentWorkspace({
       return
     }
 
-    const hasImageContext = contextItems.some((item) => (
+    const hasImageContext = instructionExecutionContext.contextItems.some((item) => (
       (item.kind === '素材' || item.kind === '结果')
       && Boolean(item.image)
       && (item.mediaKind ?? 'image') === 'image'
@@ -2095,7 +2114,7 @@ export default function AgentWorkspace({
     // 服务端未配置或离线时回退到本地正则决策，保证本地开发、e2e 与无 Provider 部署不受影响。
     let serverDecision: ReturnType<typeof decideBotanicAgentRequest> | undefined = entry.decision
     let synthesizedPrompt: string | undefined = entry.synthesizedPrompt
-    let requestedIntent: BotanicAgentIntent | undefined = intent ?? entry.synthesizedIntent
+    let requestedIntent: BotanicAgentIntent | undefined = instructionExecutionContext.intent ?? entry.synthesizedIntent
     let synthesizedCount: number | undefined = entry.synthesizedCount
     let synthesizedDuration: number | undefined = entry.synthesizedDuration
     let synthesizedVariants: Array<{ label: string; promptDelta: string }> | undefined = entry.synthesizedVariants
@@ -2166,7 +2185,7 @@ export default function AgentWorkspace({
           : []
         const contextNodeIds = normalizeBotanicAgentContextNodeIds([
           ...(turnInputMessage.mentions ?? []).filter((item) => item.kind === 'reference').map((item) => item.id),
-          ...session.contextNodeIds,
+          ...instructionExecutionContext.sessionContextNodeIds,
           ...preparedContextIds,
         ])
         const turnRequest = {
@@ -2174,16 +2193,16 @@ export default function AgentWorkspace({
           sessionId: session.id,
           inputMessage: turnInputMessage,
           locale,
-          plannerModel,
+          plannerModel: instructionExecutionContext.plannerModel,
           ...(showRawReasoning ? { showRawReasoning: true } : {}),
-          mountedSkillIds: session.mountedSkillIds,
+          mountedSkillIds: instructionExecutionContext.mountedSkillIds,
           contextNodeIds,
           hasTarget: Boolean(instructionTarget),
           ...(instructionTarget ? {
             selectedResultNodeId: instructionTarget.id,
             selectedResultLabel: instructionTarget.label,
           } : {}),
-          executionMode: session.executionMode,
+          executionMode: instructionExecutionContext.executionMode,
           generationModels,
         }
         failedCommand.sourceMessageId = turnInputMessage.id
@@ -2481,7 +2500,7 @@ export default function AgentWorkspace({
         const briefTurn = advanceBotanicCreativeBrief({
           mode: 'prompt',
           locale,
-          executionMode: session.executionMode,
+          executionMode: instructionExecutionContext.executionMode,
           instruction: cleanInstruction,
           previousBrief: options.creativeBrief,
           answers: options.clarificationAnswers,
@@ -2549,7 +2568,7 @@ export default function AgentWorkspace({
           ? await onPrepareVisionContext(session.id)
           : []
         const contextNodeIds = normalizeBotanicAgentContextNodeIds([
-          ...session.contextNodeIds,
+          ...instructionExecutionContext.sessionContextNodeIds,
           ...preparedContextIds,
         ])
         const existingInputMessage = appendedUserMessageId
@@ -2572,8 +2591,8 @@ export default function AgentWorkspace({
           sessionId: session.id,
           inputMessage: { id: durableInputMessage.id, content: durableInputMessage.content },
           locale,
-          plannerModel,
-          mountedSkillIds: session.mountedSkillIds,
+          plannerModel: instructionExecutionContext.plannerModel,
+          mountedSkillIds: instructionExecutionContext.mountedSkillIds,
           mode: route,
           contextNodeIds,
         }, {
@@ -2668,7 +2687,7 @@ export default function AgentWorkspace({
       return
     }
     if (decision.kind !== 'generation') return
-    const variationGroup = compatibleGroups.find((group) => group.id === groupId)
+    const variationGroup = compatibleGroups.find((group) => group.id === instructionExecutionContext.groupId)
     const draft = prepareBotanicAgentGenerationDraft({
       instruction: cleanInstruction,
       locale,
@@ -2676,7 +2695,7 @@ export default function AgentWorkspace({
       options: resolvedOptions,
       messages: session.messages,
       generationModels,
-      executionMode: session.executionMode,
+      executionMode: instructionExecutionContext.executionMode,
       requestedIntent,
       target: instructionTarget
         ? { id: instructionTarget.id, label: instructionTarget.label, image: instructionTarget.image, inheritedSettings: instructionTarget.rootRecipe.settings }
@@ -2684,8 +2703,8 @@ export default function AgentWorkspace({
       // 失败 Run 恢复的权威引用排在最前：身份、顺序与角色以原计划快照为准，
       // 快照构建会按 nodeId 去重，UI 里新增的引用仍可追加在后。
       contextItems: resolvedOptions.recoveryContextSnapshot?.length
-        ? [...resolvedOptions.recoveryContextSnapshot, ...contextItems]
-        : contextItems,
+        ? [...resolvedOptions.recoveryContextSnapshot, ...instructionExecutionContext.contextItems]
+        : instructionExecutionContext.contextItems,
       variationAssetGroup: variationGroup
         ? { id: variationGroup.id, role: variationGroup.role, assetCount: variationGroup.assetIds.length }
         : undefined,
@@ -2741,7 +2760,7 @@ export default function AgentWorkspace({
     if (resolvedOptions.region && instructionTarget) {
       // 局部重绘：选区+指令已完全确定这次生成，本地构建计划，不经服务端图片规划器改写。
       const executionDecision = resolveBotanicAgentExecutionDecision({
-        mode: session.executionMode,
+        mode: instructionExecutionContext.executionMode,
         settingsComplete: true,
         pendingActionCount: 0,
         allowAutoSubmit: !entry.requiresGenerationConfirmation,
@@ -2759,7 +2778,7 @@ export default function AgentWorkspace({
             contextSnapshot: createBotanicAgentContextSnapshot(draft.planContextItems),
             region: resolvedOptions.region,
           }),
-          plannerModel,
+          plannerModel: instructionExecutionContext.plannerModel,
           settings: { ...instructionTarget.rootRecipe.settings, ...draft.generationOverrides },
           ...(sourceTurnId ? { turnId: sourceTurnId } : {}),
           ...(entry.requiresGenerationConfirmation ? { requiresGenerationConfirmation: true } : {}),
@@ -2805,7 +2824,7 @@ export default function AgentWorkspace({
         }
         const resolvedInitialPlan = {
           ...appliedInitial.plan,
-          plannerModel,
+          plannerModel: instructionExecutionContext.plannerModel,
           ...(sourceTurnId ? { turnId: sourceTurnId } : {}),
           ...(entry.requiresGenerationConfirmation ? { requiresGenerationConfirmation: true } : {}),
         }
@@ -2813,7 +2832,7 @@ export default function AgentWorkspace({
         if (!isCurrentAgentProject()) return
         setRuntimePhase('waiting_confirmation')
         const executionDecision = resolveBotanicAgentExecutionDecision({
-          mode: session.executionMode,
+          mode: instructionExecutionContext.executionMode,
           // draft 流程里设置不完整会提前走 clarification，到这里必然完整。
           settingsComplete: true,
           pendingActionCount: 0,
@@ -2855,6 +2874,7 @@ export default function AgentWorkspace({
       draft.variationAxisLabel,
       sourceTurnId ? `agent-plan-${sourceTurnId}` : undefined,
       requestedIntent,
+      { ...instructionExecutionContext, target: instructionTarget, targetNodeId: instructionTarget?.id ?? null },
     )
     if (!nextPlan || !session || !isCurrentAgentProject()) return
     if ('kind' in nextPlan && nextPlan.kind === 'clarification') {
@@ -3227,6 +3247,43 @@ export default function AgentWorkspace({
     setError('')
     void confirmMessagePlan(failedMessage)
   }
+
+  const instructionQueue = useAgentInstructionQueue({
+    state: composerState,
+    updateState: updateComposerState,
+    mountedSkills: mountedSkillOptions,
+    contextItems,
+    locale,
+    planning,
+    runtimePhase,
+    currentSnapshot: {
+      plannerModel,
+      executionMode: session?.executionMode ?? 'manual',
+      mountedSkillIds: [...(session?.mountedSkillIds ?? [])],
+      sessionContextNodeIds: [...(session?.contextNodeIds ?? [])],
+      contextItems,
+      targetNodeId: target?.id ?? null,
+      groupId,
+      ...(intent ? { intent } : {}),
+      generationOverrides: pendingGenerationOverrides,
+    },
+    execute: (item) => runInstruction(item.instruction, {
+      appendUser: item.content, mentions: structuredClone(item.mentions),
+      generationOverrides: { ...item.snapshot.generationOverrides },
+      targetNodeId: item.snapshot.targetNodeId, executionSnapshot: item.snapshot,
+    }),
+    applySnapshot: (item) => {
+      if (!session) return
+      if (item.snapshot.plannerModel !== plannerModel) onPlannerModelChange(session.id, item.snapshot.plannerModel)
+      if (item.snapshot.executionMode !== session.executionMode) onExecutionModeChange(session.id, item.snapshot.executionMode)
+      onContextChange(session.id, [...item.snapshot.sessionContextNodeIds])
+      onSkillsChange(session.id, [...item.snapshot.mountedSkillIds])
+      setGroupId(item.snapshot.groupId); setIntent(item.snapshot.intent)
+      requestAnimationFrame(() => composerTextareaRef.current?.focus())
+    },
+    onQueued: () => setIntent(undefined),
+    onFull: () => setError(flowCopy.queueFull),
+  })
 
   const sendInstruction = async () => {
     if (!session || planning || sendingInstructionRef.current) return
@@ -3782,6 +3839,7 @@ export default function AgentWorkspace({
         mentionOptions={mentionOptions}
         skillOptions={skillOptions}
         mountedSkills={mountedSkillOptions}
+        queuedInstructions={instructionQueue.queue}
         instruction={instruction}
         intentHint={composerIntentHint}
         error={error}
@@ -3823,6 +3881,9 @@ export default function AgentWorkspace({
         }}
         onGroupChange={setGroupId}
         onSend={() => void sendInstruction()}
+        onQueue={instructionQueue.enqueue}
+        onRemoveQueuedInstruction={instructionQueue.remove}
+        onRestoreQueuedInstruction={instructionQueue.restore}
         onCancelPlanning={cancelPlanning}
         onToggleImageContext={(itemId, selected) => { if (!session) return; changeSessionContext(selected ? session.contextNodeIds.filter((id) => id !== itemId) : [...session.contextNodeIds, itemId]) }}
         onExecutionModeChange={(mode) => { if (session) onExecutionModeChange(session.id, mode); setModeMenuOpen(false); requestAnimationFrame(() => modeMenuButtonRef.current?.focus()) }}

@@ -8,6 +8,7 @@ import {
 } from '../../domain/agent.ts'
 import type { BotanicAgentInstructionOptions } from '../../domain/agentInstructionRouting'
 import type { GenerationSizeOverride } from '../../domain/generationOutputSize'
+import type { AgentQueuedInstruction } from './agentComposerQueue.ts'
 
 /** 指令选项的形状由路由领域模块拥有；这里只是重试命令沿用的别名。 */
 export type AgentInstructionRetryOptions = BotanicAgentInstructionOptions
@@ -68,6 +69,7 @@ export type AgentComposerState = {
   lastFailedPlanMessageId: string
   mentionQuery?: BotanicAgentMentionQuery
   dismissedMention?: AgentDismissedMention
+  queuedInstructions: AgentQueuedInstruction[]
   pendingGenerationOverrides: GenerationSizeOverride
   /** 失败 Run 恢复暂存的权威快照引用；下一次发送随指令结构化下发后清空。 */
   pendingRecoveryContextSnapshot?: BotanicAgentContextSnapshot[]
@@ -80,6 +82,7 @@ export const initialAgentComposerState: AgentComposerState = {
   lastFailedInstruction: '',
   lastFailedCommand: undefined,
   lastFailedPlanMessageId: '',
+  queuedInstructions: [],
   pendingGenerationOverrides: {},
 }
 

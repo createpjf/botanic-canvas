@@ -33,8 +33,12 @@ const ownershipPolicies = Object.freeze({
   'server/promptRefinementProvider.mjs': { forbidden: agentSamplingTransportForbidden },
   'server/botanicAgentReview.mjs': { forbidden: agentSamplingTransportForbidden },
   'src/features/agent/AgentWorkspace.tsx': {
-    maxLines: 3853,
+    // Queue-after-turn 增加快照组装/adapters接口;状态机已归 useAgentInstructionQueue,
+    // 因此只给编排接口增加67行预算,并用 forbidden 防实现回流。
+    maxLines: 3920,
     forbidden: [
+      ['enqueueAgentInstruction', 'agent-workspace-cannot-own-input-queue'],
+      ['shiftAgentQueuedInstruction', 'agent-workspace-cannot-own-input-queue'],
       ['retryBotanicAgentTurnRecovery', 'agent-workspace-cannot-own-turn-recovery'],
       ['revalidateMissingBotanicAgentTurn', 'agent-workspace-cannot-own-turn-revalidation'],
       ['readProjectAgentActionStatus', 'agent-workspace-cannot-own-action-reconciliation'],
