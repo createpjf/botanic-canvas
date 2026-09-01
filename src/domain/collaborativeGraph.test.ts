@@ -45,7 +45,7 @@ test('协作图谱把节点与连线增量同步给另一位编辑者', () => {
   receiver.destroy()
 })
 
-test('同一节点的移动与 URI 前缀文案编辑并发时两者都保留', () => {
+test('真实拖拽帧与 URI 前缀文案编辑并发时两者都保留', () => {
   const initial = { nodes: [node('node-a', 10)], edges: [] as Edge[] }
   const leftUpdates: Uint8Array[] = []
   const rightUpdates: Uint8Array[] = []
@@ -62,11 +62,14 @@ test('同一节点的移动与 URI 前缀文案编辑并发时两者都保留', 
     onRemoteGraph: (graph) => { rightGraph = graph },
   })
 
-  left.replaceLocalGraph({ nodes: [node('node-a', 240)], edges: [] })
+  left.replaceLocalGraph({ nodes: [{ ...node('node-a', 240), dragging: true }], edges: [] })
   right.replaceLocalGraph({
     nodes: [{ ...node('node-a', 10), data: { label: 'blob: 是文案', content: 'data: 并发后的文案' } }],
     edges: [],
   })
+  const dragUpdate = new Y.Doc()
+  Y.applyUpdate(dragUpdate, leftUpdates[0])
+  assert.equal(dragUpdate.getMap('node-configs').has('node-a'), false, '拖拽帧不得写配置段')
   right.applyRemoteUpdate(leftUpdates[0])
   left.applyRemoteUpdate(rightUpdates[0])
 
@@ -76,6 +79,8 @@ test('同一节点的移动与 URI 前缀文案编辑并发时两者都保留', 
   assert.equal(rightGraph.nodes[0].position.x, 240)
   assert.equal(rightGraph.nodes[0].data.label, 'blob: 是文案')
   assert.equal(rightGraph.nodes[0].data.content, 'data: 并发后的文案')
+  assert.equal('dragging' in leftGraph.nodes[0], false)
+  assert.equal('dragging' in rightGraph.nodes[0], false)
   left.destroy()
   right.destroy()
 })

@@ -51,6 +51,7 @@ function sanitizeCollaborativeValue(value, key, mediaContext = false, stripExter
 function persistableNode(node) {
   const normalized = sanitizeCollaborativeValue(node)
   delete normalized.selected
+  delete normalized.dragging
   if (normalized.type === 'result' && normalized.data) delete normalized.data.selected
   return normalized
 }

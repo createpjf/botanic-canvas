@@ -35,16 +35,17 @@ test('两侧媒体负载字段词表逐项一致', () => {
   )
 })
 
-test('两侧的节点与连线清洗都剥离本机选中态', () => {
-  // 选中是本机私有视图状态。任何一侧漏剥离，协作者就会看到「被别人选中」，
-  // 且纯选中也会产生 CRDT 增量或 mutation log 记录。
+test('两侧清洗都剥离本机瞬态状态', () => {
+  // 选中和拖拽状态属于本机视图。前者不能广播给协作者，后者也不能争用节点配置记录。
   for (const [source, file] of [[domainSource, 'domain'], [serverSource, 'server']]) {
     const nodeBody = functionBody(source, 'collaborativeNode', file)
     const edgeBody = functionBody(source, 'collaborativeEdge', file)
     // 节点侧允许经 persistableNode 间接剥离（服务端形态）。
-    const nodeStrips = /delete\s+normalized\.selected/.test(nodeBody)
-      || /persistableNode\(/.test(nodeBody) && /delete\s+normalized\.selected/.test(functionBody(source, 'persistableNode', file, { optional: true }) ?? '')
-    assert.ok(nodeStrips, `${file} 的 collaborativeNode 未剥离 selected`)
+    const nodeSanitizerBody = /persistableNode\(/.test(nodeBody)
+      ? `${nodeBody}\n${functionBody(source, 'persistableNode', file, { optional: true }) ?? ''}`
+      : nodeBody
+    assert.match(nodeSanitizerBody, /delete\s+normalized\.selected/, `${file} 的 collaborativeNode 未剥离 selected`)
+    assert.match(nodeSanitizerBody, /delete\s+normalized\.dragging/, `${file} 的 collaborativeNode 未剥离 dragging`)
     assert.match(edgeBody, /delete\s+normalized\.selected/, `${file} 的 collaborativeEdge 未剥离 selected`)
   }
 })

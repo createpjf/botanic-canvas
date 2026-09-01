@@ -68,6 +68,7 @@ function sanitizeCollaborativeValue(value: unknown, key?: string, mediaContext =
 function collaborativeNode(node: CanvasNode): CanvasNode {
   const normalized = sanitizeCollaborativeValue(node) as CanvasNode
   delete normalized.selected
+  delete normalized.dragging
   if (normalized.type === 'result' && 'selected' in normalized.data) {
     delete normalized.data.selected
   }
