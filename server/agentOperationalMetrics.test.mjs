@@ -28,7 +28,7 @@ function events() {
 
 test('指标族是声明式的', () => {
   assert.deepEqual([...OPERATIONAL_METRIC_FAMILIES], [
-    'turn', 'tool', 'run', 'provider', 'cancel', 'writeback', 'review', 'workflow',
+    'turn', 'tool', 'run', 'provider', 'cancel', 'writeback', 'review', 'workflow', 'harness',
   ])
 })
 
@@ -109,4 +109,45 @@ test('前后对比只比两边都有样本的指标', () => {
 test('没有变化的指标不进对比结果', () => {
   const metrics = aggregateOperationalMetrics(events(), { minimumPercentileSamples: 1 })
   assert.deepEqual(diffOperationalMetrics(metrics, metrics), [])
+})
+
+test('harness 口径从 lifecycle 语义事件聚合,零容忍计数与 null 语义正确', () => {
+  const harness = (kind, outcome, extra = {}) => ({ event: 'botanic.agent.harness.lifecycle', kind, outcome, ...extra })
+  const metrics = aggregateOperationalMetrics([
+    harness('tool', 'started'),
+    harness('tool', 'succeeded'),
+    harness('tool', 'failed', { reason: 'ENTITY_NOT_FOUND' }),
+    harness('tool', 'unknown'),
+    harness('tool', 'repair'),
+    harness('loop', 'loop_stop', { reason: 'TOOL_NO_PROGRESS' }),
+    harness('loop', 'final_synthesis'),
+    harness('skill', 'loaded'),
+    harness('skill', 'rejected', { reason: 'AGENT_SKILL_BINDING_UNKNOWN' }),
+    harness('skill', 'snapshot_mismatch'),
+    harness('recovery', 'reused'),
+    harness('recovery', 'unknown'),
+    harness('provider', 'deadline_exceeded'),
+    harness('provider', 'resume_limit', { generation: 4 }),
+  ], { minimumPercentileSamples: 1 })
+  assert.equal(metrics.harness.toolSettledCount, 3)
+  assert.equal(metrics.harness.toolSuccessRate, 1 / 3)
+  assert.equal(metrics.harness.toolUnknownCount, 1)
+  assert.equal(metrics.harness.repairCount, 1)
+  assert.equal(metrics.harness.loopStopCount, 1)
+  assert.equal(metrics.harness.finalSynthesisSuccessRate, 1)
+  assert.equal(metrics.harness.skillLoadRejectRate, 0.5)
+  assert.equal(metrics.harness.skillSnapshotMismatchCount, 1)
+  assert.equal(metrics.harness.recoveryReusedCount, 1)
+  assert.equal(metrics.harness.recoveryUnknownCount, 1)
+  assert.equal(metrics.harness.deadlineExceededCount, 1)
+  assert.equal(metrics.harness.resumeLimitCount, 1)
+  // 零容忍不变量默认 0;取消延迟没有样本时是 null 而不是 0。
+  assert.equal(metrics.harness.startedAfterCancelCount, 0)
+  assert.equal(metrics.harness.completedAfterCancelCount, 0)
+  assert.equal(metrics.harness.duplicateDispatchCount, 0)
+  assert.equal(metrics.harness.cancelP95LatencyMs, null)
+  // 全空输入:比率为 null,计数为 0。
+  const empty = aggregateOperationalMetrics([])
+  assert.equal(empty.harness.toolSuccessRate, null)
+  assert.equal(empty.harness.toolSettledCount, 0)
 })

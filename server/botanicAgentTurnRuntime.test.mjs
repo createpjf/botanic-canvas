@@ -1304,3 +1304,58 @@ test('deadline 已过与 generation 4 都 terminal-only:具名失败且 resolver
   })
   assert.equal(staleCommit.kind, 'stale')
 })
+
+test('durable 取消触发本地 abort 时 emit cancel_observed 延迟事件,且每次执行至多一次', async () => {
+  let clock = 5_000_000
+  const store = fakeStore()
+  // fakeStore 内部时钟与 runtime fake clock 不同源;生产两者同为墙钟。
+  // 覆盖取消入口,让 cancellation.requestedAt 使用与 runtime 相同的时钟。
+  const storeCancel = store.requestAgentTurnCancellation.bind(store)
+  store.requestAgentTurnCancellation = async (userId, request) => {
+    const requested = await storeCancel(userId, request)
+    const stored = store.turns.get(request.id)
+    if (stored?.cancellation) {
+      stored.cancellation.requestedAt = clock
+      store.turns.set(request.id, stored)
+    }
+    // durable 写落地后、abort 传播到本地执行者前的延迟。
+    clock += 1_500
+    return requested
+  }
+  const registry = createLocalCancelRegistry()
+  const runtime = createBotanicAgentTurnRuntime({ productStore: store, localCancelRegistry: registry, now: () => clock })
+  const observed = []
+  const originalLog = console.log
+  console.log = (line) => {
+    try {
+      const parsed = JSON.parse(String(line))
+      if (parsed?.event === 'botanic.agent.harness.lifecycle' && parsed.outcome === 'cancel_observed') observed.push(parsed)
+    } catch { /* 非 JSON 行忽略 */ }
+  }
+  try {
+    let releaseResolver
+    const resolverGate = new Promise((resolve) => { releaseResolver = resolve })
+    const execution = runtime.execute({
+      userId: 'u', projectId: 'p', id: 'turn-cancel-observed', idempotencyKey: 'cancel-observed',
+      request: { probe: 'cancel' },
+      resolve: async ({ signal }) => {
+        releaseResolver()
+        await new Promise((_resolve, reject) => {
+          signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true })
+        })
+        return { kind: 'chat', answer: '不应到达' }
+      },
+    }).catch((caught) => caught)
+    await resolverGate
+    // durable cancel(写 cancellation.requestedAt)后经共享 registry 传递本地 abort。
+    await runtime.cancel({ userId: 'u', projectId: 'p', turnId: 'turn-cancel-observed' })
+    await execution
+    // observeCancellationAbort 的权威读取是异步旁路;等它落地。
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    assert.equal(observed.length, 1, 'cancel_observed 每次执行至多一次')
+    assert.equal(observed[0].durationMs, 1_500)
+    assert.equal(observed[0].turnId, 'turn-cancel-observed')
+  } finally {
+    console.log = originalLog
+  }
+})

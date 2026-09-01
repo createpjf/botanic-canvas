@@ -17,6 +17,16 @@ import {
   skillRiskOrder,
 } from './botanicAgentSkill.mjs'
 import { estimateAgentContextTokens } from './agentContextBudget.mjs'
+import { AGENT_SEMANTIC_EVENT_NAMES, writeAgentSemanticEvent } from './agentSemanticEvent.mjs'
+
+/** Skill 语义事件（H7）:只带低基数 reason(错误码词法),不带 Skill ID 或用户文本。 */
+function emitSkillOutcome(outcome, reason) {
+  writeAgentSemanticEvent(AGENT_SEMANTIC_EVENT_NAMES.HARNESS_LIFECYCLE, {
+    kind: 'skill',
+    outcome,
+    ...(reason ? { reason } : {}),
+  })
+}
 import { createAgentSubtask } from './agentSubtask.mjs'
 import { runAgentSubtaskFanout, subtaskFanoutSummary } from './agentSubtaskScheduler.mjs'
 import { readFileSync } from 'node:fs'
@@ -312,16 +322,20 @@ export function pinnedBotanicAgentProjectSkills(frozenCatalog, currentProjectSki
   if (frozenCatalog === undefined || frozenCatalog === null) return currentProjectSkills
   const frozen = validateFrozenSkillCatalog(frozenCatalog)
   const byId = new Map((Array.isArray(currentProjectSkills) ? currentProjectSkills : []).filter((skill) => skill?.id).map((skill) => [skill.id, skill]))
+  const mismatch = (message) => {
+    emitSkillOutcome('snapshot_mismatch', 'AGENT_SKILL_SNAPSHOT_MISMATCH')
+    throw new BotanicAgentSkillError(409, 'AGENT_SKILL_SNAPSHOT_MISMATCH', message)
+  }
   return frozen.project.map((binding) => {
     const current = byId.get(binding.id)
     if (!current) {
-      throw new BotanicAgentSkillError(409, 'AGENT_SKILL_SNAPSHOT_MISMATCH', `项目 Skill ${binding.id} 已不存在，无法按原回合恢复。`)
+      mismatch(`项目 Skill ${binding.id} 已不存在，无法按原回合恢复。`)
     }
     const currentMatches = Number(current.version) === binding.version && current.contentHash === binding.contentHash
     if (currentMatches) return { ...current, status: 'active' }
     const snapshot = agentSkillVersion(current, binding.version)
     if (!snapshot || (binding.contentHash && snapshot.contentHash !== binding.contentHash)) {
-      throw new BotanicAgentSkillError(409, 'AGENT_SKILL_SNAPSHOT_MISMATCH', `项目 Skill ${binding.id}@${binding.version ?? '?'} 的历史版本缺失或内容不一致。`)
+      mismatch(`项目 Skill ${binding.id}@${binding.version ?? '?'} 的历史版本缺失或内容不一致。`)
     }
     return {
       ...current,
@@ -364,13 +378,17 @@ function mountedSkillTokenBudget(contextPolicy) {
 export function resolveBotanicAgentMountedSkills(mountedSkillIds = [], projectSkills = [], { contextPolicy, builtIn } = {}) {
   const requested = [...new Set(Array.isArray(mountedSkillIds) ? mountedSkillIds : [])]
   if (!requested.length) return []
+  const reject = (statusCode, code, message) => {
+    emitSkillOutcome('rejected', code)
+    throw new BotanicAgentSkillError(statusCode, code, message)
+  }
   if (requested.length > BOTANIC_AGENT_MOUNTED_SKILL_LIMIT) {
-    throw new BotanicAgentSkillError(400, 'AGENT_SKILL_BINDING_LIMIT', `一次最多挂载 ${BOTANIC_AGENT_MOUNTED_SKILL_LIMIT} 个 Skill。`)
+    reject(400, 'AGENT_SKILL_BINDING_LIMIT', `一次最多挂载 ${BOTANIC_AGENT_MOUNTED_SKILL_LIMIT} 个 Skill。`)
   }
   const available = resolveBotanicAgentAvailableSkills(projectSkills, { builtIn })
   const unknown = requested.filter((skillId) => !available[skillId])
   if (unknown.length) {
-    throw new BotanicAgentSkillError(409, 'AGENT_SKILL_BINDING_UNKNOWN', `挂载的 Skill 不可用：${unknown.join('、')}。`)
+    reject(409, 'AGENT_SKILL_BINDING_UNKNOWN', `挂载的 Skill 不可用：${unknown.join('、')}。`)
   }
   // `resolveAgentSkillDependencyClosure` 按 id 查目录，因此这里摊成带 id 的数组。
   // 内置 Skill 没有 lifecycle，按已发布处理 —— 它们随代码发布，不存在「未批准」。
@@ -402,14 +420,14 @@ export function resolveBotanicAgentMountedSkills(mountedSkillIds = [], projectSk
     maxNodes: MOUNTED_SKILL_DEPENDENCY_MAX_NODES,
   })
   if (resolution.limitExceeded) {
-    throw new BotanicAgentSkillError(409, 'AGENT_SKILL_DEPENDENCY_LIMIT', '挂载 Skill 的依赖图超出防御边界，已停止解析。')
+    reject(409, 'AGENT_SKILL_DEPENDENCY_LIMIT', '挂载 Skill 的依赖图超出防御边界，已停止解析。')
   }
   if (resolution.conflicts.length) {
-    throw new BotanicAgentSkillError(409, 'AGENT_SKILL_DEPENDENCY_CONFLICT', `同一依赖被要求为不同版本：${resolution.conflicts.join('、')}。`)
+    reject(409, 'AGENT_SKILL_DEPENDENCY_CONFLICT', `同一依赖被要求为不同版本：${resolution.conflicts.join('、')}。`)
   }
   const broken = [...resolution.missing, ...resolution.unusable, ...resolution.cyclic]
   if (broken.length) {
-    throw new BotanicAgentSkillError(409, 'AGENT_SKILL_BINDING_DEPENDENCY', `挂载 Skill 的依赖不可用：${broken.join('、')}。`)
+    reject(409, 'AGENT_SKILL_BINDING_DEPENDENCY', `挂载 Skill 的依赖不可用：${broken.join('、')}。`)
   }
   const rootIds = new Set(requested)
   const dependencies = resolution.closure
@@ -423,12 +441,13 @@ export function resolveBotanicAgentMountedSkills(mountedSkillIds = [], projectSk
   const budget = mountedSkillTokenBudget(contextPolicy)
   if (totalTokens > budget) {
     const names = mounted.map((skill) => skill.name ?? skill.id).join('、')
-    throw new BotanicAgentSkillError(
+    reject(
       409,
       'AGENT_SKILL_CONTEXT_TOO_LARGE',
       `挂载 Skill（${names}）合计约 ${totalTokens} token，超出本轮 Skill 预算 ${budget} token；请减少挂载数量，正文不会被截断。`,
     )
   }
+  emitSkillOutcome('loaded')
   return mounted
 }
 

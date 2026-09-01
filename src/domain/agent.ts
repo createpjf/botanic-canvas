@@ -81,7 +81,7 @@ export type AgentToolCallTrace = {
   name: string
   label: string
   risk: 'read' | 'write' | 'costly' | 'external'
-  status: 'pending' | 'running' | 'awaiting_confirmation' | 'succeeded' | 'failed'
+  status: 'pending' | 'running' | 'awaiting_confirmation' | 'succeeded' | 'failed' | 'aborted'
   requiresConfirmation: boolean
   /** 模型自述的一句话调用目的。它是说给用户听的摘要，不是隐藏思维链，可展示也可持久化。 */
   summary?: string
@@ -221,7 +221,8 @@ export function insertBotanicAgentToolCallSteps(
       kind: agentToolCallStepKind(call.risk),
       label,
       detail: call.summary?.trim() || agentToolCallStepDetail(call),
-      status: call.status === 'awaiting_confirmation' ? 'pending' : call.status,
+      // aborted:同批 fatal 时未启动;运行轨迹按 failed 收尾,不留永久 pending。
+      status: call.status === 'awaiting_confirmation' ? 'pending' : call.status === 'aborted' ? 'failed' : call.status,
       ...(call.error?.trim() ? { error: call.error.trim() } : {}),
     }]
   })

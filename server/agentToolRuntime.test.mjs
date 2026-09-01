@@ -1625,3 +1625,39 @@ test('journal 恢复:pre-dispatch 可重执行,post-dispatch 无结果收口 out
   )
   assert.equal(fetches, 1, 'dispatched 恢复不得再次 fetch')
 })
+
+test('journal call 在同一执行内二次到达派发边界:emit duplicate_dispatch 并具名失败,不二次外呼', async () => {
+  let fetches = 0
+  const registry = createAgentToolRegistry([{
+    name: 'dup_external_read', label: '重复派发探针', risk: 'external', recovery: 'journal',
+    description: '测试。',
+    parameters: { type: 'object', additionalProperties: false, properties: { url: { type: 'string' } }, required: ['url'] },
+    validate: (input) => ({ url: input.url }),
+    execute: async () => { fetches += 1; return { ok: true } },
+  }])
+  const events = []
+  const originalLog = console.log
+  console.log = (line) => {
+    try {
+      const parsed = JSON.parse(String(line))
+      if (parsed?.event === 'botanic.agent.harness.lifecycle' && parsed.outcome === 'duplicate_dispatch') events.push(parsed)
+    } catch { /* 忽略非 JSON */ }
+  }
+  try {
+    // 有 checkpoint 时重复 id 已被 checkpoint 校验拦截;guard 是无 checkpoint
+    // 兼容路径(Chat 直调等)的最后防线。模型两步返回同一 call id:第二步在
+    // 派发边界被拦截,不产生第二次外呼。
+    await assert.rejects(runAgentToolLoop({
+      registry, messages: [], maximumSteps: 3,
+      callModel: async ({ step }) => ({ choices: [{ message: { tool_calls: [{
+        id: 'dup-call-1', type: 'function',
+        function: { name: 'dup_external_read', arguments: JSON.stringify({ url: 'https://example.com/' + step }) },
+      }] } }] }),
+    }), (caught) => caught.code === 'AGENT_TOOL_DUPLICATE_DISPATCH')
+    assert.equal(fetches, 1, '第二次派发必须被拦截')
+    assert.equal(events.length, 1)
+    assert.equal(events[0].reason, 'AGENT_TOOL_DUPLICATE_DISPATCH')
+  } finally {
+    console.log = originalLog
+  }
+})

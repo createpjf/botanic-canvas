@@ -259,14 +259,15 @@ function stepWithMergedSources(
 }
 
 function stepStatus(status: AgentToolCallTrace['status']): TimelineStepBlock['status'] {
-  if (status === 'failed') return 'failed'
+  // aborted:同批 fatal 时未启动的调用。此时 Turn 已失败,块级按 failed 收尾,不留永久 running。
+  if (status === 'failed' || status === 'aborted') return 'failed'
   if (status === 'succeeded') return 'succeeded'
   return 'running'
 }
 
 function aggregateStatus(toolIds: string[], items: AgentToolCallTrace[]): TimelineStepBlock['status'] {
   const statuses = toolIds.map((id) => items.find((item) => item.id === id)?.status)
-  if (statuses.some((status) => status === 'failed')) return 'failed'
+  if (statuses.some((status) => status === 'failed' || status === 'aborted')) return 'failed'
   if (statuses.some((status) => status !== 'succeeded')) return 'running'
   return 'succeeded'
 }

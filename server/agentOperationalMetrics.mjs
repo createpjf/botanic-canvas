@@ -21,6 +21,7 @@ export const OPERATIONAL_METRIC_FAMILIES = Object.freeze([
   'writeback',
   'review',
   'workflow',
+  'harness',
 ])
 
 function ratio(numerator, denominator) {
@@ -80,6 +81,34 @@ export function aggregateOperationalMetrics(events = [], { minimumPercentileSamp
   const workflowAdvanced = eventsOf(all, 'workflow.advanced')
   const workflowFailed = eventsOf(all, 'workflow.advance.failed')
 
+  // Harness 控制面口径（H7）：消费 botanic.agent.harness.lifecycle 语义事件。
+  const harness = eventsOf(all, 'botanic.agent.harness.lifecycle')
+  const harnessOf = (kind, outcome) => harness.filter((event) => event.kind === kind && event.outcome === outcome)
+  const toolStarted = harnessOf('tool', 'started')
+  const toolSucceeded = harnessOf('tool', 'succeeded')
+  const toolFailed = harnessOf('tool', 'failed')
+  const toolAborted = harnessOf('tool', 'aborted')
+  const toolUnknown = harnessOf('tool', 'unknown')
+  const toolSettled = toolSucceeded.length + toolFailed.length + toolAborted.length + toolUnknown.length
+  const repairs = harnessOf('tool', 'repair')
+  const loopStops = harnessOf('loop', 'loop_stop')
+  const synthesis = harness.filter((event) => event.kind === 'loop' && event.outcome === 'final_synthesis')
+  const skillLoaded = harnessOf('skill', 'loaded')
+  const skillRejected = harnessOf('skill', 'rejected')
+  const skillMismatch = harnessOf('skill', 'snapshot_mismatch')
+  const cancelLatency = harnessOf('cancel', 'cancel_observed').map((event) => Number(event.durationMs)).filter(Number.isFinite)
+  const startedAfterCancel = harnessOf('cancel', 'started_after_cancel')
+  const completedAfterCancel = harnessOf('cancel', 'completed_after_cancel')
+  const recoveryReused = harnessOf('recovery', 'reused')
+  const recoveryReexecuted = harnessOf('recovery', 'reexecuted')
+  const recoveryUnknown = harnessOf('recovery', 'unknown')
+  const duplicateDispatch = harnessOf('recovery', 'duplicate_dispatch')
+  const providerRetries = harnessOf('provider', 'retry')
+  const providerCallTimeouts = harnessOf('provider', 'call_timeout')
+  const deadlineExceeded = harnessOf('provider', 'deadline_exceeded')
+  const resumeLimit = harnessOf('provider', 'resume_limit')
+  const generations = harness.map((event) => Number(event.generation)).filter(Number.isFinite)
+
   return {
     sampleCount: all.length,
     turn: {
@@ -135,6 +164,35 @@ export function aggregateOperationalMetrics(events = [], { minimumPercentileSamp
     workflow: {
       advanceSampleCount: workflowAdvanced.length + workflowFailed.length,
       advanceSuccessRate: ratio(workflowAdvanced.length, workflowAdvanced.length + workflowFailed.length),
+    },
+    harness: {
+      toolSettledCount: toolSettled,
+      toolSuccessRate: ratio(toolSucceeded.length, toolSettled),
+      toolUnknownCount: toolUnknown.length,
+      toolStartedCount: toolStarted.length,
+      repairCount: repairs.length,
+      loopStopCount: loopStops.length,
+      finalSynthesisCount: synthesis.length,
+      finalSynthesisSuccessRate: ratio(
+        synthesis.filter((event) => event.reason === undefined).length,
+        synthesis.length,
+      ),
+      skillLoadRejectRate: ratio(skillRejected.length, skillLoaded.length + skillRejected.length),
+      skillSnapshotMismatchCount: skillMismatch.length,
+      cancelP50LatencyMs: percentile(cancelLatency, 0.5, percentileOptions),
+      cancelP95LatencyMs: percentile(cancelLatency, 0.95, percentileOptions),
+      // 零容忍不变量:任何 > 0 都是发布阻断,不是趋势指标。
+      startedAfterCancelCount: startedAfterCancel.length,
+      completedAfterCancelCount: completedAfterCancel.length,
+      duplicateDispatchCount: duplicateDispatch.length,
+      recoveryReusedCount: recoveryReused.length,
+      recoveryReexecutedCount: recoveryReexecuted.length,
+      recoveryUnknownCount: recoveryUnknown.length,
+      providerRetryCount: providerRetries.length,
+      providerCallTimeoutCount: providerCallTimeouts.length,
+      deadlineExceededCount: deadlineExceeded.length,
+      resumeLimitCount: resumeLimit.length,
+      generationP95: percentile(generations, 0.95, percentileOptions),
     },
   }
 }

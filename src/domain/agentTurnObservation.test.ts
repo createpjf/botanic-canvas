@@ -437,6 +437,11 @@ test('恢复只重试缺失 Turn 的 404，项目/会话/消息资源 404 明确
   assert.equal(isRetryableBotanicAgentTurnRecoveryError({ status: 404, code: 'PROJECT_NOT_FOUND' }), false)
   assert.equal(isRetryableBotanicAgentTurnRecoveryError({ status: 404, code: 'AGENT_SESSION_NOT_FOUND' }), false)
   assert.equal(isRetryableBotanicAgentTurnRecoveryError({ status: 404, code: 'AGENT_MESSAGE_NOT_FOUND' }), false)
+  // Harness terminal 码即使带 5xx status 也不重试:重试不会改变结局。
+  assert.equal(isRetryableBotanicAgentTurnRecoveryError({ status: 504, code: 'AGENT_TURN_DEADLINE_EXCEEDED' }), false)
+  assert.equal(isRetryableBotanicAgentTurnRecoveryError({ status: 409, code: 'AGENT_TURN_RESUME_LIMIT_REACHED' }), false)
+  assert.equal(isRetryableBotanicAgentTurnRecoveryError({ status: 409, code: 'AGENT_SKILL_SNAPSHOT_MISMATCH' }), false)
+  assert.equal(isRetryableBotanicAgentTurnRecoveryError({ status: 409, code: 'AGENT_TOOL_OUTCOME_UNKNOWN' }), false)
 
   let attempts = 0
   await assert.rejects(retryBotanicAgentTurnRecovery({

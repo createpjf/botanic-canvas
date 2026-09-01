@@ -15,6 +15,7 @@ import { extractAgentEntityReferences, mergeAgentEntityReferences } from './agen
 import { normalizeProviderUsage } from './botanicAgentStream.mjs'
 import { withBotanicSpan } from './executionTelemetry.mjs'
 import { normalizeAgentToolCallId } from './agentToolCallIdentity.mjs'
+import { AGENT_SEMANTIC_EVENT_NAMES, writeAgentSemanticEvent } from './agentSemanticEvent.mjs'
 
 const TOOL_NAME = /^[a-z][a-z0-9_]{1,63}$/
 const TOOL_RECOVERY_MODES = new Set(['reexecute', 'receipt', 'never', 'journal'])
@@ -682,8 +683,14 @@ export async function runAgentToolLoop({
     if (typeof onEvent !== 'function') return
     try { onEvent(event) } catch { /* 展示层异常不得中断工具循环。 */ }
   }
+  // Harness 语义事件（H7）:低基数旁路,fail-open;label 不含用户文本/URL/Skill ID/参数。
+  const emitHarness = (kind, outcome, extra = {}) => {
+    writeAgentSemanticEvent(AGENT_SEMANTIC_EVENT_NAMES.HARNESS_LIFECYCLE, { kind, outcome, ...extra })
+  }
   // 无进展检测只覆盖本 attempt 新执行的工具；恢复历史步骤不计入。
   const noProgress = createAgentToolNoProgressDetector()
+  // duplicate_dispatch guard（H7 0B）:本次 loop 执行内已到达派发边界的 journal call id。
+  const dispatchedJournalCallIds = new Set()
 
   const persistCheckpoint = async (next) => {
     if (!checkpointing) return
@@ -857,6 +864,7 @@ export async function runAgentToolLoop({
     })))
     if (preflightRepairSignatures.has(signature)) throw failures[0].error
     preflightRepairSignatures.add(signature)
+    writeAgentSemanticEvent(AGENT_SEMANTIC_EVENT_NAMES.HARNESS_LIFECYCLE, { kind: 'tool', outcome: 'repair', step })
     return { repair: { outcomes, failures } }
   }
 
@@ -963,6 +971,7 @@ export async function runAgentToolLoop({
           }
           return { tool, rawArguments, validatedInput, trace, descriptor: call, recovering: true, referencesFromCheckpoint }
         }
+        writeAgentSemanticEvent(AGENT_SEMANTIC_EVENT_NAMES.HARNESS_LIFECYCLE, { kind: 'recovery', outcome: 'unknown' })
         throw new AgentToolRuntimeError(
           'AGENT_TOOL_OUTCOME_UNKNOWN',
           `Agent 工具 ${call.name} 已派发但结果未知，系统不会自动重放。`,
@@ -978,6 +987,7 @@ export async function runAgentToolLoop({
         } catch (caught) {
           throw knownPreEffectFailure(caught)
         }
+        writeAgentSemanticEvent(AGENT_SEMANTIC_EVENT_NAMES.HARNESS_LIFECYCLE, { kind: 'recovery', outcome: 'reexecuted' })
       }
       return {
         tool, rawArguments, validatedInput, trace, descriptor: call, recovering: true,
@@ -1020,6 +1030,7 @@ export async function runAgentToolLoop({
       })
     }
     if (progress.status === 'terminate') {
+      emitHarness('loop', 'loop_stop', { reason: 'TOOL_NO_PROGRESS' })
       throw new AgentToolRuntimeError(
         'TOOL_NO_PROGRESS',
         `工具 ${entry.trace.label} 连续 ${progress.repeatCount} 次返回相同结果，已停止执行。`,
@@ -1046,6 +1057,8 @@ export async function runAgentToolLoop({
           ...(runningPresentation ? { presentation: runningPresentation } : {}),
         })
       }
+      if (signal?.aborted) emitHarness('cancel', 'started_after_cancel', { step })
+      emitHarness('tool', 'started', { step })
       // journal completed 恢复:复用 durable envelope,不再执行工具、不重新扣配额。
       if (entry.reuseEnvelope !== undefined) {
         for (const url of agentTurnCheckpointResultEnvelopeUrls(entry.reuseEnvelope)) {
@@ -1059,6 +1072,7 @@ export async function runAgentToolLoop({
         }
         const reused = { ...trace, status: entry.reuseStatus ?? 'succeeded' }
         toolCalls.push(reused)
+        emitHarness('recovery', 'reused', { step })
         appendPreparedToolOutput(entry, {
           content: entry.reuseEnvelope,
           tokens: estimateAgentContextTokens(entry.reuseEnvelope),
@@ -1079,6 +1093,19 @@ export async function runAgentToolLoop({
         continue
       }
       // journal（H6B）:请求交给 client 前先 durable 写 dispatched;此后不能再假设「没执行」。
+      if (entry.descriptor.recovery === 'journal') {
+        // duplicate_dispatch guard（H7 0B）:同一 call id 在本次执行内第二次到达派发
+        // 边界说明恢复/编排出错。先 emit 零容忍事件再具名失败,绝不二次外呼。
+        if (dispatchedJournalCallIds.has(trace.id)) {
+          emitHarness('recovery', 'duplicate_dispatch', { step, reason: 'AGENT_TOOL_DUPLICATE_DISPATCH' })
+          throw new AgentToolRuntimeError(
+            'AGENT_TOOL_DUPLICATE_DISPATCH',
+            `Agent 工具 ${trace.name} 的同一调用被重复派发，已停止执行。`,
+            409,
+          )
+        }
+        dispatchedJournalCallIds.add(trace.id)
+      }
       if (checkpointing && entry.descriptor.recovery === 'journal' && !entry.recovering) {
         await persistCheckpoint(journalAgentTurnCheckpointCall(checkpoint, { callId: trace.id, phase: 'dispatched' }))
       }
@@ -1123,11 +1150,14 @@ export async function runAgentToolLoop({
           const failedNow = { ...trace, status: 'failed', error: terminalFailure instanceof Error ? terminalFailure.message : '工具执行失败。' }
           toolCalls.push(failedNow)
           if (emitEvents) emit({ type: 'tool', step, toolCall: failedNow })
+          const failureKind = classifyAgentToolFailure(terminalFailure, { phase: 'execute', tool })
+          emitHarness('tool', failureKind === 'outcome-unknown' ? 'unknown' : 'failed', { step, reason: typeof terminalFailure?.code === 'string' ? terminalFailure.code : undefined })
           const startedIndex = entries.indexOf(entry)
           for (const notStarted of entries.slice(startedIndex + 1)) {
             const abortedTrace = { ...notStarted.trace, status: 'aborted', error: 'BATCH_NOT_STARTED' }
             toolCalls.push(abortedTrace)
             if (emitEvents) emit({ type: 'tool', step, toolCall: abortedTrace })
+            emitHarness('tool', 'aborted', { step, reason: 'BATCH_NOT_STARTED' })
           }
           throw terminalFailure
         }
@@ -1141,6 +1171,7 @@ export async function runAgentToolLoop({
         }
         const failedOutput = { ok: false, error, code: caught.code }
         toolCalls.push(failed)
+        emitHarness('tool', 'failed', { step, reason: typeof caught?.code === 'string' ? caught.code : undefined })
         if (checkpointing && entry.descriptor.recovery === 'journal' && !entry.recovering) {
           // 已知失败也是终局:durable 记 failed,恢复不再重放这次调用。
           await persistCheckpoint(journalAgentTurnCheckpointCall(checkpoint, { callId: trace.id, phase: 'failed' }))
@@ -1168,6 +1199,8 @@ export async function runAgentToolLoop({
         })
       }
       toolCalls.push(succeededTrace)
+      emitHarness('tool', 'succeeded', { step })
+      if (signal?.aborted) emitHarness('cancel', 'completed_after_cancel', { step })
       noteToolProgress(entry, output, { isError: false, emitEvents })
       if (tool.terminal) {
         terminalOutput = output
@@ -1424,6 +1457,7 @@ export async function runAgentToolLoop({
     const message = response?.choices?.[0]?.message
     const content = typeof message?.content === 'string' ? message.content : undefined
     if (!content?.trim()) throw new AgentToolRuntimeError('TOOL_LOOP_LIMIT_REACHED', 'Agent 工具调用步骤过多，已停止执行。')
+    emitHarness('loop', 'final_synthesis', { step: maximumSteps })
     reasoning = appendAgentReasoning(reasoning, {
       step: maximumSteps,
       source: 'raw',
@@ -1443,6 +1477,7 @@ export async function runAgentToolLoop({
     }
   } catch (caught) {
     // 综合失败回退原错误码,保留已完成工具摘要在 toolCalls 中;取消/deadline 原样透传。
+    emitHarness('loop', 'final_synthesis', { step: maximumSteps, reason: typeof caught?.code === 'string' ? caught.code : 'FAILED' })
     if (caught?.code === 'REQUEST_CANCELLED' || caught?.code === 'AGENT_TURN_DEADLINE_EXCEEDED') throw caught
     if (caught?.code === 'TOOL_LOOP_LIMIT_REACHED') throw caught
     throw new AgentToolRuntimeError('TOOL_LOOP_LIMIT_REACHED', 'Agent 工具调用步骤过多，已停止执行。')

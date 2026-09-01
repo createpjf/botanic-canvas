@@ -1491,6 +1491,7 @@ test('规划型生成工具显式可重放，未持久化回执的联网工具�
   assert.equal(videoCheckpoints[0].pendingStep.calls[0].recovery, 'reexecute')
   assert.equal(videoCheckpoints[0].pendingStep.calls[0].terminal, true)
 
+  // 联网工具按 canonical journal 恢复(H6B):prepared 有证据未派发,恢复时可安全重执行。
   let webCheckpoint
   const webInput = {
     projectId: 'project-turn',
@@ -1510,39 +1511,38 @@ test('规划型生成工具显式可重放，未持久化回执的联网工具�
     fetchImpl: async () => new Response(JSON.stringify({ choices: [{ message: {
       content: null,
       tool_calls: [
-        { id: 'call-web-never', type: 'function', function: {
+        { id: 'call-web-journal', type: 'function', function: {
           name: 'web_search', arguments: JSON.stringify({ query: 'Botanic 品牌' }),
-        } },
-        { id: 'call-fetch-never', type: 'function', function: {
-          name: 'web_fetch', arguments: JSON.stringify({ url: 'https://example.com/brand' }),
         } },
       ],
     } }] }), { status: 200 }),
     webFetchImpl: async () => { throw new Error('prepared 持久化失败前不能触发联网副作用') },
   }), /服务暂时不可用/u)
   assert.deepEqual(webCheckpoint.pendingStep.calls[0], {
-    id: 'call-web-never',
+    id: 'call-web-journal',
     name: 'web_search',
     risk: 'external',
-    recovery: 'never',
+    recovery: 'journal',
     terminal: false,
+    phase: 'prepared',
+    arguments: { query: 'Botanic 品牌' },
   })
-  assert.deepEqual(webCheckpoint.pendingStep.calls[1], {
-    id: 'call-fetch-never',
-    name: 'web_fetch',
-    risk: 'external',
-    recovery: 'never',
-    terminal: false,
-  })
-  await assert.rejects(resolveBotanicAgentTurn(webInput, webRuntime, {
+  // prepared 恢复:重执行一次联网调用,随后回合正常完成;不再整轮 NOT_REPLAYABLE。
+  let webDispatches = 0
+  const resumed = await resolveBotanicAgentTurn(webInput, webRuntime, {
     document,
     resumeCheckpoint: webCheckpoint,
-    saveCheckpoint: async () => { throw new Error('never 恢复应在保存前失败') },
-    fetchImpl: async () => { throw new Error('never 恢复不应请求 Provider') },
-    webFetchImpl: async () => { throw new Error('never 恢复不应重放联网副作用') },
-  }), (error) => error instanceof BotanicAgentChatError
-    && error.statusCode === 409
-    && error.code === 'AGENT_TURN_NOT_REPLAYABLE')
+    saveCheckpoint: async () => {},
+    fetchImpl: async () => new Response(JSON.stringify({ choices: [{ message: {
+      content: '已根据搜索结果整理品牌资料。',
+    } }] }), { status: 200 }),
+    webFetchImpl: async () => {
+      webDispatches += 1
+      return new Response(JSON.stringify({ results: [{ title: '品牌', url: 'https://example.com/brand', content: '资料' }] }), { status: 200 })
+    },
+  })
+  assert.equal(webDispatches, 1, 'prepared journal 恢复只派发一次')
+  assert.equal(resumed.kind, 'chat')
 })
 
 test('pending 只读步骤从 Checkpoint 重执行并续接下一模型步，不重复生成原调用', async () => {
