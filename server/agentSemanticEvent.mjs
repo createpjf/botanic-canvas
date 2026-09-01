@@ -9,6 +9,8 @@ import { ROLLOUT_FLAGS } from './featureFlags.mjs'
  * Provider 回包或媒体地址在某个调用点“顺手”进入日志。新增字段必须先在本模块
  * 进入固定 schema，再由测试证明边界。
  */
+import { recordAgentSemanticMetric } from './agentTelemetryMetrics.mjs'
+
 export const AGENT_SEMANTIC_EVENT_SCHEMA = 'botanic.agent.semantic'
 export const AGENT_SEMANTIC_EVENT_SCHEMA_VERSION = 1
 
@@ -333,6 +335,8 @@ export function writeAgentSemanticEvent(name, input, logger = console, timestamp
   try {
     const event = createAgentSemanticEvent(name, input, timestamp)
     logger.log(JSON.stringify(event))
+    // metrics 旁路(CS3):共用同一安全投影,fail-open,不让 exporter 故障改变业务。
+    recordAgentSemanticMetric(event)
     return event
   } catch {
     return undefined

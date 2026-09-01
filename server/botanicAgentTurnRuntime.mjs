@@ -9,6 +9,7 @@ import { validateAgentEntityReferences, validateAgentToolEntityReferences } from
 import { presentationWebSources } from './agentWebResearch.mjs'
 import { withBotanicSpan } from './executionTelemetry.mjs'
 import { AGENT_SEMANTIC_EVENT_NAMES, writeAgentSemanticEvent } from './agentSemanticEvent.mjs'
+import { registerAgentDiagnosticGauge } from './agentRuntimeDiagnostics.mjs'
 
 // completed Turn 仍可能拥有后续创建的 linked Run / Job；显式深取消必须能从
 // completed 进入 cancelling，才能撤销这些已授权但尚未完成的下游任务。
@@ -228,6 +229,10 @@ export function createBotanicAgentTurnRuntime({
   if (!productStore) throw new TypeError('Agent Turn Runtime 缺少 ProductStore。')
   const activeTurns = new Map()
   const cancelledTurns = new Set()
+  // content-free 诊断(CS3):只暴露计数,事实仍归本模块所有。
+  registerAgentDiagnosticGauge('agent.turns.active', () => activeTurns.size)
+  registerAgentDiagnosticGauge('agent.turns.pending_cancel_acks', () => cancelledTurns.size)
+  if (localCancelRegistry) registerAgentDiagnosticGauge('agent.turns.local_cancel_handles', () => localCancelRegistry.size)
   const boundedLeaseMs = Math.max(30_000, Math.min(Number(leaseMs) || 120_000, 900_000))
   const boundedHeartbeatMs = Math.max(10, Math.min(Number(heartbeatMs) || 30_000, Math.floor(boundedLeaseMs / 2)))
   const boundedTurnLifetimeMs = boundedAgentTurnLifetimeMs(turnLifetimeMs)
