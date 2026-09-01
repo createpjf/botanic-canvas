@@ -1032,6 +1032,15 @@ async function executeTurnAttempt({ config, model, system, messages, registry, o
     }
     if (options.signal?.aborted) throw new BotanicAgentChatError(499, 'REQUEST_CANCELLED', 'Agent 请求已取消。')
     if (activeCallTimeout?.aborted) throw new BotanicAgentChatError(504, 'PROVIDER_TIMEOUT', 'Agent 响应超时，请重试。')
+    // TOOL_*、AGENT_SKILL_*、取消与 deadline 是具名事实（H4），不得吞成 Provider 错;
+    // INVALID_PROVIDER_RESPONSE 只在 Provider payload 本身不可解析时使用。
+    if (typeof caught?.code === 'string'
+      && (caught.code.startsWith('TOOL_')
+        || caught.code.startsWith('AGENT_SKILL_')
+        || caught.code === 'REQUEST_CANCELLED'
+        || caught.code === 'AGENT_TURN_DEADLINE_EXCEEDED')) {
+      throw new BotanicAgentChatError(caught.statusCode ?? 422, caught.code, caught.message, { cause: caught })
+    }
     if (caught instanceof AgentToolRuntimeError) {
       throw new BotanicAgentChatError(502, 'INVALID_PROVIDER_RESPONSE', 'Agent 返回了不允许的工具调用。', { cause: caught })
     }

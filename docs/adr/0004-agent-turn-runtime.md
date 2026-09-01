@@ -131,6 +131,15 @@ Worker 的恢复任务不使用 offset 或固定首页。Supabase 为 Turn、失
 
 ## 修订记录
 
+### 2026-09-01（Harness 可靠性 H2–H4）
+
+- 根取消信号贯穿工具循环：`runAgentToolLoop` 接收冻结 `signal/deadlineAt`，在模型调用前、整批 preflight 前、每个 `tool.execute` 前与下一 step 前检查；`tool.execute` context 携带 signal/deadline/toolCallId。web 工具将根 signal 与自身 12s timeout 合并，根取消优先归因取消；子任务组合根 signal 与自身 timeout。派发前取消是 terminal-known（`REQUEST_CANCELLED`），派发后取消不得假设「取消 = 没执行」。
+- Turn 业务期限：Turn 顶层新增 `deadlineAt`（`AGENT_TURN_LIFETIME_MS`，默认 600s，clamp 60–900s），与 `createdAt` 同级、不进入 request hash；幂等重试与 reclaim 均命中原值，旧 Turn 按 `createdAt` 兼容推导；deadline 已过 terminal-only 收口 `AGENT_TURN_DEADLINE_EXCEEDED`。
+- 恢复代际：`execution.generation` 1–3 可进业务 resolver；4 只允许提交 `failed + AGENT_TURN_RESUME_LIMIT_REACHED`，旧 lease 迟到 commit 被 fencing 拒绝。
+- 工具错误三分法：`repairable`（preflight 失败整批无副作用、已知失败的只读/WEB 工具）结果回给模型且同一规范化批签名最多一次 repair；`terminal-known`（策略/取消/deadline/checkpoint）保留原错误码终止；其余 write/costly/external 执行失败按 `outcome-unknown` 处理。整批 pairing：invalid call 返回具体失败、同批返回 `BATCH_PREFLIGHT_ABORTED`、执行期 fatal 时未启动 call 收口 `aborted + BATCH_NOT_STARTED`，已 completed 不改写。
+- Final synthesis：action budget 耗尽后不再执行工具，额外一次 `tools: [] / tool_choice: none` 最终综合；`maximumSteps` 只计 action steps，terminal checkpoint cursor 允许等于 MAX_STEPS（仅写 `terminalContent`，不产生新 tool step）；综合失败回退 `TOOL_LOOP_LIMIT_REACHED` 并保留已完成工具摘要。
+- No-progress：签名忽略 `why` 与注册 volatile 输出字段（timestamp/requestId/traceId/elapsedMs），4 项环形窗口识别 A→B→A→B 双签名环。
+
 ### 2026-08-28
 
 - chat、intent、plan 全部改为 durable operation dispatcher；兼容 URL 只负责响应 presenter，Plan/Chat 补齐 Checkpoint、Worker 恢复、accepted/observer、稳定键和深取消。

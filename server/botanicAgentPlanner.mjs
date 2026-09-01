@@ -882,6 +882,14 @@ export async function planBotanicGeneration(input, runtimeConfig, options = {}) 
     }
     if (options.signal?.aborted) throw new BotanicAgentPlannerError(499, 'REQUEST_CANCELLED', '生图 Agent 请求已取消。')
     if (activeCallTimeout?.aborted) throw new BotanicAgentPlannerError(504, 'PROVIDER_TIMEOUT', '生图 Agent 规划超时，请重试。')
+    // TOOL_*、AGENT_SKILL_*、取消与 deadline 是具名事实（H4），不得吞成 Provider 错。
+    if (typeof caught?.code === 'string'
+      && (caught.code.startsWith('TOOL_')
+        || caught.code.startsWith('AGENT_SKILL_')
+        || caught.code === 'REQUEST_CANCELLED'
+        || caught.code === 'AGENT_TURN_DEADLINE_EXCEEDED')) {
+      throw new BotanicAgentPlannerError(caught.statusCode ?? 422, caught.code, caught.message)
+    }
     if (caught instanceof AgentToolRuntimeError) {
       throw new BotanicAgentPlannerError(502, 'INVALID_PROVIDER_RESPONSE', '生图 Agent 返回了不允许的工具调用。')
     }

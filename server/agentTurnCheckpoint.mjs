@@ -267,7 +267,9 @@ export function validateAgentTurnCheckpoint(value) {
   }
   if (raw.terminalContent !== undefined) {
     if (checkpoint.pendingStep) invalid('Terminal Checkpoint 不能同时包含 pending 步骤。')
-    if (checkpoint.completedSteps.length >= MAX_STEPS) invalid('Terminal Checkpoint 步骤超出上限。')
+    // terminal cursor 允许等于 MAX_STEPS（H4 final synthesis）:它只写 terminalContent,
+    // 不创建第 MAX_STEPS+1 个 tool step;工具步骤校验仍严格 < MAX_STEPS。
+    if (checkpoint.completedSteps.length > MAX_STEPS) invalid('Terminal Checkpoint 步骤超出上限。')
     checkpoint.terminalContent = text(raw.terminalContent, 'Terminal Checkpoint 内容', MAX_TERMINAL_CONTENT)
   }
   assertCheckpointSize(checkpoint)
@@ -366,7 +368,7 @@ export function terminalAgentTurnCheckpoint(previous, input) {
   const currentAttempt = assertSameAttempt(checkpoint, input?.attempt)
   const content = text(input?.content, 'Terminal Checkpoint 内容', MAX_TERMINAL_CONTENT)
   if (checkpoint.pendingStep) invalid('Pending 工具步骤尚未完成，不能写入终态内容。')
-  if (!Number.isInteger(input?.step) || input.step !== checkpoint.completedSteps.length || input.step >= MAX_STEPS) {
+  if (!Number.isInteger(input?.step) || input.step !== checkpoint.completedSteps.length || input.step > MAX_STEPS) {
     invalid('Terminal Checkpoint 步骤与已完成游标不匹配。')
   }
   if (checkpoint.terminalContent !== undefined) {

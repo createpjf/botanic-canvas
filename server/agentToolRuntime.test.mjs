@@ -1354,3 +1354,101 @@ test('取消发生在模型调用前:归因为取消而非 Provider 错,模型�
   )
   assert.equal(modelCalls, 0)
 })
+
+test('第 N 个 action round 执行工具后仍有一次无工具最终综合,工具只执行一次且 checkpoint 可恢复', async () => {
+  const registry = createAgentToolRegistry([{
+    name: 'page_read', label: '分页读取', risk: 'read', recovery: 'reexecute',
+    description: '测试读取。',
+    parameters: { type: 'object', additionalProperties: false, properties: { page: { type: 'number' } }, required: ['page'] },
+    validate: (input) => ({ page: input.page }),
+    execute: async (input) => ({ page: input.page, rows: ['row-' + input.page] }),
+  }])
+  let toolRuns = 0
+  const checkpoints = []
+  const attempt = { id: 'attempt-h4', model: 'model-a', snapshotHash: 'hash-h4' }
+  let synthesisRequest
+  const result = await runAgentToolLoop({
+    registry,
+    messages: [],
+    maximumSteps: 2,
+    attempt,
+    saveCheckpoint: async (checkpoint) => { checkpoints.push(structuredClone(checkpoint)) },
+    callModel: async ({ tools: requestTools, tool_choice, step }) => {
+      if (step < 2) {
+        toolRuns += 1
+        return { choices: [{ message: { tool_calls: [{
+          id: 'call-' + step, type: 'function',
+          function: { name: 'page_read', arguments: JSON.stringify({ page: step }) },
+        }] } }] }
+      }
+      // budget 耗尽后的最终综合:无工具、tool_choice none。
+      synthesisRequest = { tools: requestTools, tool_choice, step }
+      return { choices: [{ message: { content: '综合:已读取 2 页。' } }] }
+    },
+  })
+  assert.equal(result.output, '综合:已读取 2 页。')
+  assert.deepEqual(synthesisRequest, { tools: [], tool_choice: 'none', step: 2 })
+  assert.equal(result.toolCalls.filter((call) => call.status === 'succeeded').length, 2)
+  const terminal = checkpoints.at(-1)
+  assert.equal(terminal.terminalContent, '综合:已读取 2 页。')
+  assert.equal(terminal.completedSteps.length, 2)
+  // terminal checkpoint 可直接恢复,不再调模型、不重跑工具。
+  const recovered = await runAgentToolLoop({
+    registry,
+    messages: [],
+    maximumSteps: 2,
+    attempt,
+    resumeCheckpoint: terminal,
+    saveCheckpoint: async () => { throw new Error('恢复 terminal 不应再写 checkpoint') },
+    callModel: async () => { throw new Error('恢复 terminal 不应再调模型') },
+  })
+  assert.equal(recovered.output, '综合:已读取 2 页。')
+})
+
+test('preflight repair 一次配对结果,同签名第二次与 A/B 环都有界终止', async () => {
+  const registry = createAgentToolRegistry([{
+    name: 'flip_read', label: '翻转读取', risk: 'read',
+    description: '测试。',
+    parameters: { type: 'object', additionalProperties: false, properties: { key: { type: 'string' } }, required: ['key'] },
+    validate: (input) => {
+      if (typeof input.key !== 'string') throw new AgentToolRuntimeError('INVALID_TOOL_ARGUMENTS', 'key 无效。')
+      return { key: input.key }
+    },
+    // volatile 字段(timestamp)不参与签名;A→B→A→B 输出构成环。
+    execute: async (input) => ({ key: input.key, timestamp: Date.now() + Math.random() }),
+  }])
+  // 失败一:同一无效批第一次得到配对修复结果,第二次同签名直接终止。
+  let invalidRounds = 0
+  await assert.rejects(
+    runAgentToolLoop({
+      registry, messages: [], maximumSteps: 6,
+      callModel: async () => {
+        invalidRounds += 1
+        return { choices: [{ message: { tool_calls: [
+          { id: 'bad-' + invalidRounds, type: 'function', function: { name: 'flip_read', arguments: JSON.stringify({ key: 7 }) } },
+          { id: 'ok-' + invalidRounds, type: 'function', function: { name: 'flip_read', arguments: JSON.stringify({ key: 'a' }) } },
+        ] } }] }
+      },
+    }),
+    (caught) => caught.code === 'INVALID_TOOL_ARGUMENTS',
+  )
+  assert.equal(invalidRounds, 2, '同签名批次只允许一次 repair round')
+
+  // 失败二:A→B→A→B 双签名环在窗口内有界终止,不烧完步数。
+  let cycleRounds = 0
+  await assert.rejects(
+    runAgentToolLoop({
+      registry, messages: [], maximumSteps: 8,
+      callModel: async () => {
+        cycleRounds += 1
+        const key = cycleRounds % 2 === 1 ? 'a' : 'b'
+        return { choices: [{ message: { tool_calls: [{
+          id: 'cycle-' + cycleRounds, type: 'function',
+          function: { name: 'flip_read', arguments: JSON.stringify({ key }) },
+        }] } }] }
+      },
+    }),
+    (caught) => caught.code === 'TOOL_NO_PROGRESS',
+  )
+  assert.equal(cycleRounds, 4, 'A→B→A→B 在第 4 个重复签名处终止')
+})
