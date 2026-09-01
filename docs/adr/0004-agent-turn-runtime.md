@@ -131,6 +131,22 @@ Worker 的恢复任务不使用 offset 或固定首页。Supabase 为 Turn、失
 
 ## 修订记录
 
+### 2026-09-01（H6G Gate 批准：Checkpoint V2 与外部读取 result envelope）
+
+维护者已批准以下窄幅规则，取代「read 恢复时一律重执行且不保存输出」对外部读取工具的适用：
+
+1. checkpoint 只允许保存**实际送给模型的、已规范化脱敏的 read/external result envelope**，不保存 raw Provider body。
+2. 只允许经现有 web 安全校验、去凭据、去 query secret 的公开 HTTPS source URL；私网地址、授权链接、媒体直链继续禁止。
+3. result 预算：单 call ≤8KiB、全 Turn ≤24KiB；总 checkpoint 仍 64KiB。
+4. Runtime 先按剩余 durable budget 生成最终 envelope，再把**同一字符串**同时写 checkpoint 与模型 history。
+5. 旧结果不驱逐、不二次摘要；放不下时在 dispatch 前报 `AGENT_TURN_CHECKPOINT_TOO_LARGE`。
+6. `resultRef` 只能指向已存在且可按权限读取的 Action Receipt 或 Artifact。
+7. reasoning、媒体字节、Data URL、凭据、私有 URL、完整原始工具结果继续绝对禁止。
+
+Checkpoint V2（`version: 2`）承载每 call lifecycle：`prepared → dispatched → completed/failed/aborted/unknown`，
+recovery 模式新增 `journal`（外部读取逐 call 持久化）。V1 reader 保留；V2 reader 先部署，writer 后启用。
+`unknown`（已派发无可靠结果）禁止自动重放，收口为 `AGENT_TOOL_OUTCOME_UNKNOWN`。
+
 ### 2026-09-01（Harness 可靠性 H2–H4）
 
 - 根取消信号贯穿工具循环：`runAgentToolLoop` 接收冻结 `signal/deadlineAt`，在模型调用前、整批 preflight 前、每个 `tool.execute` 前与下一 step 前检查；`tool.execute` context 携带 signal/deadline/toolCallId。web 工具将根 signal 与自身 12s timeout 合并，根取消优先归因取消；子任务组合根 signal 与自身 timeout。派发前取消是 terminal-known（`REQUEST_CANCELLED`），派发后取消不得假设「取消 = 没执行」。

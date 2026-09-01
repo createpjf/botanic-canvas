@@ -256,3 +256,79 @@ test('terminalContent 只接受当前步的最终用户可见文本', () => {
     (error) => error.code === 'AGENT_TURN_CHECKPOINT_INVALID',
   )
 })
+
+test('Checkpoint V2 reader:V1/V2 fixture 均可读,journal call 顺序与配对稳定', () => {
+  // V1 fixture 原样可读(向前兼容 reader)。
+  const v1 = validateAgentTurnCheckpoint({
+    version: 1,
+    attempt: attempt(),
+    completedSteps: [{ step: 0, calls: [readCall()] }],
+  })
+  assert.equal(v1.version, 1)
+
+  // V2 fixture:journal call 携带 lifecycle 与安全 result envelope。
+  const envelope = JSON.stringify({ url: 'https://example.com/page', title: '页面', text: '正文摘录' })
+  const v2 = validateAgentTurnCheckpoint({
+    version: 2,
+    attempt: attempt(),
+    completedSteps: [{
+      step: 0,
+      calls: [
+        { id: 'call-web-1', name: 'web_fetch', risk: 'external', recovery: 'journal', terminal: false, phase: 'completed', arguments: { url: 'https://example.com/page' }, resultEnvelope: envelope },
+        { id: 'call-web-2', name: 'web_fetch', risk: 'external', recovery: 'journal', terminal: false, phase: 'unknown', arguments: { url: 'https://example.com/next' } },
+      ],
+    }],
+    pendingStep: {
+      step: 1,
+      calls: [{ id: 'call-web-3', name: 'web_fetch', risk: 'external', recovery: 'journal', terminal: false, phase: 'dispatched', arguments: { url: 'https://example.com/third' } }],
+    },
+  })
+  assert.equal(v2.version, 2)
+  assert.deepEqual(v2.completedSteps[0].calls.map((call) => [call.id, call.phase]), [
+    ['call-web-1', 'completed'],
+    ['call-web-2', 'unknown'],
+  ])
+  assert.equal(v2.completedSteps[0].calls[0].resultEnvelope, envelope)
+  assert.equal(v2.pendingStep.calls[0].phase, 'dispatched')
+  // resultRef 只能指向既有 Receipt/Artifact。
+  assert.throws(() => validateAgentTurnCheckpoint({
+    version: 2, attempt: attempt(),
+    completedSteps: [{ step: 0, calls: [{ id: 'c1', name: 'web_fetch', risk: 'external', recovery: 'journal', terminal: false, phase: 'completed', resultRef: { kind: 'url', id: 'x' } }] }],
+  }))
+})
+
+test('Checkpoint V2 拒绝 raw/私网/媒体/推理与超预算 result', () => {
+  const journalCall = (overrides) => ({
+    id: 'call-x', name: 'web_fetch', risk: 'external', recovery: 'journal', terminal: false, phase: 'completed', ...overrides,
+  })
+  const withEnvelope = (resultEnvelope, id = 'call-x') => ({
+    version: 2, attempt: attempt(),
+    completedSteps: [{ step: 0, calls: [journalCall({ id, resultEnvelope })] }],
+  })
+  assert.throws(() => validateAgentTurnCheckpoint(withEnvelope('data:image/png;base64,AAAA')), /Data URL/u)
+  assert.throws(() => validateAgentTurnCheckpoint(withEnvelope('{"reasoning":"隐藏推理"}')), /原始推理/u)
+  assert.throws(() => validateAgentTurnCheckpoint(withEnvelope('{"url":"http://10.0.0.8/internal"}')))
+  assert.throws(() => validateAgentTurnCheckpoint(withEnvelope('{"url":"http://example.com"}')), /HTTPS/u)
+  // 单 call >8KiB
+  assert.throws(
+    () => validateAgentTurnCheckpoint(withEnvelope(JSON.stringify({ text: 'x'.repeat(9 * 1024) }))),
+    (caught) => caught.code === 'AGENT_TURN_CHECKPOINT_TOO_LARGE',
+  )
+  // 全 Turn >24KiB(4 × 7KiB)
+  const sevenKb = JSON.stringify({ text: 'y'.repeat(7 * 1024) })
+  assert.throws(
+    () => validateAgentTurnCheckpoint({
+      version: 2, attempt: attempt(),
+      completedSteps: [{
+        step: 0,
+        calls: [1, 2, 3, 4].map((index) => journalCall({ id: 'call-' + index, resultEnvelope: sevenKb })),
+      }],
+    }),
+    (caught) => caught.code === 'AGENT_TURN_CHECKPOINT_TOO_LARGE',
+  )
+  // journal recovery 需要 V2。
+  assert.throws(() => validateAgentTurnCheckpoint({
+    version: 1, attempt: attempt(),
+    completedSteps: [{ step: 0, calls: [journalCall({ phase: undefined })] }],
+  }))
+})
