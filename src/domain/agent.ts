@@ -2699,7 +2699,11 @@ export function mergeBotanicAgentRunSnapshot(
   if (run.id !== snapshot.id) return run
   // Realtime 与 4 秒恢复轮询可能同时返回同一快照；旧快照也不能回退
   // 已显示的进度。返回原对象让 Store 跳过无意义的持久化写入。
-  if (snapshot.updatedAt <= run.updatedAt) return run
+  // 例外：本地 updatedAt 可能被本机挂钟写过而领先服务端；非终态 → 终态的
+  // 权威快照必须收下，否则 Run 永远显示活跃、4 秒恢复轮询永不停止。
+  const activeStatuses: BotanicAgentRunStatus[] = ['awaiting_confirmation', 'queued', 'executing', 'running']
+  const settlesActiveRun = activeStatuses.includes(run.status) && !activeStatuses.includes(snapshot.status)
+  if (snapshot.updatedAt <= run.updatedAt && !settlesActiveRun) return run
   return {
     ...run,
     status: snapshot.status,

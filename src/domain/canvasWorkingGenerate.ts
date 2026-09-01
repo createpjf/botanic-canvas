@@ -106,10 +106,23 @@ export function displayGenerateOwnerId(generateId: string, nodes: CanvasNode[], 
   ))?.id ?? null
 }
 
-/** 参考边画到归属媒体；generate 自己的输出边仍隐藏。 */
+/**
+ * Agent generate 没有 primaryInputId，归属媒体会解析回引用源自己，参考边成自环后被隐藏，
+ * 新结果看起来就"没连上"参考的老节点。它的可见落点是自己的输出 result。
+ */
+function agentGenerateOutputResultId(generateId: string, nodes: CanvasNode[], edges: Edge[]) {
+  const generate = nodes.find((node) => node.id === generateId && node.type === 'generate')
+  if (!generate || !(generate.data as GenerateNodeData).agentRun) return null
+  const resultIds = new Set(nodes.filter((node) => node.type === 'result').map((node) => node.id))
+  return edges.find((edge) => edge.source === generateId && resultIds.has(edge.target))?.target ?? null
+}
+
+/** 参考边画到归属媒体（Agent 工作流画到输出结果）；generate 自己的输出边仍隐藏。 */
 export function displayEdgeEnds(edge: Edge, nodes: CanvasNode[], edges: Edge[], hiddenIds: ReadonlySet<string>) {
   if (hiddenIds.has(edge.source)) return { source: edge.source, target: edge.target, hidden: true }
   if (!hiddenIds.has(edge.target)) return { source: edge.source, target: edge.target, hidden: false }
-  const target = displayGenerateOwnerId(edge.target, nodes, edges) ?? edge.target
+  const target = agentGenerateOutputResultId(edge.target, nodes, edges)
+    ?? displayGenerateOwnerId(edge.target, nodes, edges)
+    ?? edge.target
   return { source: edge.source, target, hidden: edge.source === target }
 }

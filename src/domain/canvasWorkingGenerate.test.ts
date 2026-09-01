@@ -73,6 +73,30 @@ test('两张图的参考边画在媒体之间，不指向隐藏 generate', () =>
   assert.equal(displayEdgeEnds(edges[2], extra, linked, hidden).hidden, true)
 })
 
+test('Agent 工作流的参考边画到输出结果上，而不是折成自环被隐藏', () => {
+  const agentNodes = [
+    { id: 'asset-old', type: 'asset', position: { x: 0, y: 0 }, data: { name: '老素材', image: 'old.png', role: '商品' } },
+    { id: 'result-old', type: 'result', position: { x: 0, y: 200 }, data: { label: '老结果', image: 'old-r.png', status: 'ready' } },
+    { id: 'agent-generate-1', type: 'generate', position: { x: 460, y: 0 }, data: { kind: 'generate', label: 'Agent 生成', prompt: '', batchCount: 1, settings: { model: 'm', aspectRatio: '1:1', resolution: '1K' }, agentRun: { runId: 'run-1', branchId: 'branch-1' } } },
+    { id: 'agent-result-1', type: 'result', position: { x: 920, y: 0 }, data: { kind: 'result', outputOf: 'agent-generate-1', status: 'generating' } },
+  ] as CanvasNode[]
+  const agentEdges = [
+    { id: 'agent-reference-edge-a', source: 'asset-old', target: 'agent-generate-1' },
+    { id: 'agent-reference-edge-b', source: 'result-old', target: 'agent-generate-1' },
+    { id: 'agent-output-edge', source: 'agent-generate-1', target: 'agent-result-1' },
+  ] as Edge[]
+  const hidden = hiddenGenerateIds(agentNodes, agentEdges)
+  assert.equal(hidden.has('agent-generate-1'), true)
+  assert.deepEqual(
+    displayEdgeEnds(agentEdges[0], agentNodes, agentEdges, hidden),
+    { source: 'asset-old', target: 'agent-result-1', hidden: false },
+  )
+  assert.deepEqual(
+    displayEdgeEnds(agentEdges[1], agentNodes, agentEdges, hidden),
+    { source: 'result-old', target: 'agent-result-1', hidden: false },
+  )
+})
+
 test('用户钉在画布上的 generate 连上旧图后仍可见，参考边仍指向该节点', () => {
   const standaloneNodes = nodes.map((node) => (
     node.id === 'generate-orphan'

@@ -23,6 +23,7 @@ import type {
 } from '../domain/canvas'
 import {
   deleteGlobalAssetAndScrubDocuments,
+  persistAcceptedRemoteCanvasDocument,
   persistAcknowledgedRemoteCanvasPatch,
   writeCanvasDocument,
 } from '../lib/db'
@@ -307,6 +308,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => {
     persistAcknowledgedRemotePatch: persistAcknowledgedRemoteCanvasPatch,
     invalidateDocumentPersistence: persistenceOperations.invalidate,
     persistAgentSession,
+    persistLocalDocumentMirror: persistAcceptedRemoteCanvasDocument,
   }),
 
   ...createCanvasBatchVariationActions({

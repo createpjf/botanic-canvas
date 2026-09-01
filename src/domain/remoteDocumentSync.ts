@@ -54,8 +54,12 @@ export function resolveRemoteCanvasRefresh({
   remoteRevision,
   appliedRevision,
 }: RemoteCanvasRefreshInput): { document: CanvasDocument; applied: boolean } {
-  const remoteIsNewer = typeof remoteRevision === 'number' && typeof appliedRevision === 'number'
-    ? remoteRevision > appliedRevision
+  // appliedRevision 只活在内存，刷新页面即丢。此时若继续比挂钟，本机写过的
+  // updatedAt（挂钟领先）会永久拒收更新的服务端文档——事件也永远走不出这个死锁。
+  // 服务端 revision 已知而本地基线未知时，以服务端为权威；本地未同步编辑仍由
+  // hasPendingDraft 与 baselineUpdatedAt 两道防线保护。
+  const remoteIsNewer = typeof remoteRevision === 'number'
+    ? typeof appliedRevision === 'number' ? remoteRevision > appliedRevision : true
     : remote.updatedAt > current.updatedAt
   if (hasPendingDraft
     || current.id !== remote.id
