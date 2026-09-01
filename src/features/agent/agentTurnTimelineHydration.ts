@@ -101,3 +101,28 @@ export function agentTurnTimelineHydrationFailureDisposition(
   if (status >= 400 && status < 500 && status !== 408 && status !== 429) return 'terminal'
   return 'retry_later'
 }
+
+
+/** 继续读取:新事件直接 reduce 进已有Timeline,稳定tool id原地更新且旧raw items不丢。 */
+export function appendAgentTurnTimelineHydrationRead(
+  current: AgentTimelineState,
+  result: { events: readonly BotanicAgentStreamEvent[]; truncated: boolean; nextAfter?: number },
+  receivedAt = Date.now(),
+): AgentTimelineState {
+  let timeline = current
+  for (const event of result.events) {
+    if (event.type !== 'tool') continue
+    timeline = reduceAgentTimeline(timeline, {
+      type: 'tool', step: event.step, toolCall: event.toolCall,
+      ...(event.presentation ? { presentation: event.presentation } : {}), receivedAt,
+    })
+  }
+  timeline = reduceAgentTimeline(timeline, { type: 'done', receivedAt })
+  const loadedCount = (current.truncation?.loadedCount ?? 0) + result.events.length
+  return {
+    ...timeline,
+    ...(result.truncated && result.nextAfter !== undefined
+      ? { truncation: { loadedCount, nextAfter: result.nextAfter } }
+      : { truncation: undefined }),
+  }
+}

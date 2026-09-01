@@ -4426,6 +4426,9 @@ details.agent-timeline__thinking { display: block; width: 100%; }
 .agent-timeline__step.is-aborted .agent-timeline__step-icon,
 .agent-timeline__step.is-aborted strong,
 .agent-timeline__step.is-aborted > small { color: #89958d; }
+.agent-timeline__load-more { width: fit-content; min-height: 26px; margin-left: 22px; padding: 2px 8px; border: 1px solid #d5e0d6; border-radius: 6px; background: #f7faf6; color: #607267; cursor: pointer; font-size: 9px; font-weight: 700; }
+.agent-timeline__load-more:hover:not(:disabled) { border-color: #a9c1ad; background: #eef5ed; }
+.agent-timeline__load-more:disabled { cursor: wait; opacity: .55; }
 .agent-timeline__search { display: grid; min-width: 0; }
 .agent-timeline__search-toggle { width: 100%; border: 0; background: transparent; color: inherit; font: inherit; text-align: start; cursor: pointer; grid-template-columns: 16px minmax(0, 1fr) auto 10px; }
 .agent-timeline__search-toggle > svg { width: 10px; height: 10px; color: #9aa89e; justify-self: end; transition: transform 180ms cubic-bezier(.2, .82, .2, 1); }

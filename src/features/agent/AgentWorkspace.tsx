@@ -153,6 +153,7 @@ import {
 import { useAgentComposerState } from './useAgentComposerState'
 import { resolveAgentInstructionExecutionContext, type AgentInstructionExecutionSnapshot, type AgentResolvedInstructionExecutionContext } from './agentComposerQueue'
 import { useAgentInstructionQueue } from './useAgentInstructionQueue'
+import { useAgentTimelineContinuation } from './useAgentTimelineContinuation'
 import { useAgentMessageDelivery } from './useAgentMessageDelivery'
 import {
   persistBotanicAgentActionMessageUpdate,
@@ -570,6 +571,10 @@ export default function AgentWorkspace({
     () => agentMountedRef.current && useCanvasStore.getState().document.id === projectId,
     [projectId],
   )
+  const timelineContinuation = useAgentTimelineContinuation({
+    projectId, isCurrentProject: isCurrentAgentProject, setTimelines: setExecutionTimelines,
+    onError: setError, locale,
+  })
   const skillRegistry = useAgentSkillRegistry({
     projectId,
     session,
@@ -3703,6 +3708,7 @@ export default function AgentWorkspace({
             : undefined
           const executionTimeline = executionTimelines[message.id]
             ?? (message.runId ? executionTimelineByRunId.get(message.runId) : undefined)
+          const messageTimeline = live?.timeline ?? executionTimeline
           return <div
             key={message.id}
             ref={(node) => registerMessageNode(message.id, node)}
@@ -3711,7 +3717,9 @@ export default function AgentWorkspace({
             data-agent-message-id={message.id}
           ><AgentConversationMessage
           message={message}
-          timeline={live?.timeline ?? executionTimeline}
+          timeline={messageTimeline}
+          timelineLoadingMore={Boolean(message.turnId && timelineContinuation.loadingTurnIds.has(message.turnId))}
+          onLoadMoreTimeline={messageTimeline?.truncation ? () => void timelineContinuation.loadMore(message, messageTimeline) : undefined}
           streaming={live?.streaming}
           isLatestAssistant={message.id === latestAssistantMessageId}
           agentBusy={agentBusy}

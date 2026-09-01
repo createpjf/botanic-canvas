@@ -4,6 +4,7 @@ import type { BotanicAgentStreamEvent } from '../../domain/agentChatStream.ts'
 import {
   agentTurnTimelineHydrationFailureDisposition,
   agentTurnTimelineFromHydrationEvents,
+  appendAgentTurnTimelineHydrationRead,
   beginAgentTurnTimelineHydrationBatch,
   mergeHydratedAgentTurnTimeline,
   releaseAbortedAgentTurnTimelineHydrations,
@@ -48,12 +49,20 @@ test('没有工具事件时不制造历史时间线', () => {
   assert.equal(agentTurnTimelineFromHydrationEvents([{ type: 'done' }], 100), undefined)
 })
 
-test('截断的历史时间线保留已加载数量与续读游标', () => {
-  const timeline = agentTurnTimelineFromHydrationEvents([], 100, {
-    loadedCount: 1000,
-    nextAfter: 1000,
-  })
-  assert.deepEqual(timeline?.truncation, { loadedCount: 1000, nextAfter: 1000 })
+test('截断时间线按 nextAfter 继续 reduce,旧工具/raw items 保留且终页清掉 truncation', () => {
+  const firstEvent: BotanicAgentStreamEvent = {
+    type: 'tool', step: 0,
+    toolCall: { id: 'read-1', name: 'ontology_read', label: '读取本体', risk: 'read', status: 'succeeded', requiresConfirmation: false },
+  }
+  const timeline = agentTurnTimelineFromHydrationEvents([firstEvent], 100, { loadedCount: 1000, nextAfter: 1000 })!
+  assert.deepEqual(timeline.truncation, { loadedCount: 1000, nextAfter: 1000 })
+  const appended = appendAgentTurnTimelineHydrationRead(timeline, {
+    events: [{ type: 'tool', step: 1, toolCall: { id: 'read-2', name: 'skill_search', label: '检索 Skill', risk: 'read', status: 'succeeded', requiresConfirmation: false } }],
+    truncated: false,
+  }, 200)
+  const raw = appended.blocks.find((block) => block.type === 'raw_group')
+  assert.deepEqual(raw?.items.map((item) => item.id), ['read-1', 'read-2'])
+  assert.equal(appended.truncation, undefined)
 })
 
 test('404 终止热循环，网络错误留待 online/focus 重试，切会话 abort 可立即释放', () => {

@@ -7,7 +7,7 @@ import {
 } from '../domain/agentTurnObservation.ts'
 
 const pageLimit = 200
-const maximumPages = 5
+const defaultMaximumPages = 5
 
 function readerError(message: string, code: string) {
   return Object.assign(new Error(message), { status: 409, code })
@@ -24,6 +24,8 @@ export async function readAgentTurnTimelineEvents(input: {
   turnId: string
   projectId: string
   signal?: AbortSignal
+  after?: number
+  maximumPages?: number
   readPage: (
     path: string,
     signal?: AbortSignal,
@@ -31,7 +33,12 @@ export async function readAgentTurnTimelineEvents(input: {
 }): Promise<AgentTurnTimelineReadResult> {
   const turnId = input.turnId.trim()
   if (!turnId) return { events: [], truncated: false }
-  let after = 0
+  let after = Number(input.after ?? 0)
+  if (!Number.isSafeInteger(after) || after < 0) throw readerError('Agent 回合事件游标无效。', 'INVALID_AGENT_TURN_CURSOR')
+  const maximumPages = Number(input.maximumPages ?? defaultMaximumPages)
+  if (!Number.isSafeInteger(maximumPages) || maximumPages < 1 || maximumPages > defaultMaximumPages) {
+    throw readerError('Agent 回合事件页数无效。', 'INVALID_AGENT_TURN_LIMIT')
+  }
   const events: BotanicAgentStreamEvent[] = []
   for (let pageIndex = 0; pageIndex < maximumPages; pageIndex += 1) {
     if (input.signal?.aborted) throw new DOMException('The operation was aborted.', 'AbortError')

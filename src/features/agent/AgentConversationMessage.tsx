@@ -572,7 +572,9 @@ function timelineStepTitle(block: Extract<TimelineBlock, { type: 'step' }>, loca
   return 'Running tool'
 }
 
-function AgentMessageTimeline({ timeline }: { timeline: AgentTimelineState }) {
+function AgentMessageTimeline({
+  timeline, loadingMore = false, onLoadMore,
+}: { timeline: AgentTimelineState; loadingMore?: boolean; onLoadMore?: () => void }) {
   const { locale } = useProductI18n()
   const [now, setNow] = useState(() => Date.now())
   const accordion = presentAgentToolAccordion(timeline, locale, now)
@@ -663,11 +665,9 @@ function AgentMessageTimeline({ timeline }: { timeline: AgentTimelineState }) {
       <summary><span>{locale === 'en' ? 'View steps' : '查看步骤'}</span></summary>
       <div className="agent-timeline__settled-list">{view.collapsed.map(renderBlock)}</div>
     </details> : null}
-    {timeline.truncation ? <p className="agent-timeline__step-error" role="status">
-      {locale === 'en'
-        ? `Only the first ${timeline.truncation.loadedCount} runtime events are loaded. More events remain after cursor ${timeline.truncation.nextAfter}.`
-        : `仅加载前 ${timeline.truncation.loadedCount} 条运行事件；游标 ${timeline.truncation.nextAfter} 之后仍有记录。`}
-    </p> : null}
+    {timeline.truncation && onLoadMore ? <button type="button" className="agent-timeline__load-more" disabled={loadingMore} onClick={onLoadMore}>
+      {loadingMore ? (locale === 'en' ? 'Loading…' : '加载中…') : (locale === 'en' ? 'More activity' : '更多活动')}
+    </button> : null}
   </div>
 }
 
@@ -1047,6 +1047,8 @@ function AgentCompositionCard({
 type AgentConversationMessageProps = {
   message: BotanicAgentMessage
   timeline?: AgentTimelineState
+  timelineLoadingMore?: boolean
+  onLoadMoreTimeline?: () => void
   streaming?: boolean
   isLatestAssistant?: boolean
   agentBusy?: boolean
@@ -1096,6 +1098,8 @@ type AgentConversationMessageProps = {
 export function AgentConversationMessage({
   message,
   timeline,
+  timelineLoadingMore = false,
+  onLoadMoreTimeline,
   streaming = false,
   isLatestAssistant = false,
   agentBusy = false,
@@ -1233,10 +1237,10 @@ export function AgentConversationMessage({
   return <article className={`agent-message is-${message.role} is-${message.kind}${timeline ? ' has-timeline' : ''}${allowsSays ? ' is-bob-large' : ''}${showUtilities ? utilitySurface.className : ''}`} role={liveStatus ? 'status' : undefined} aria-live={liveStatus ? 'polite' : undefined} aria-busy={streaming || undefined}>
     <div className="agent-message__role" data-bob-mood={bob?.mood} data-bob-says={bob?.says}>{bob ? <BobCharacter mood={bob.mood} says={bob.says} saysCycles={bob.cycles} onSaysComplete={() => bobPlays.markPlayed(bob.says)} /> : <span>{t('你', 'You')}</span>}</div>
     <div className="agent-message__body">
-      {resultsFirst ? null : timeline ? <AgentMessageTimeline timeline={timeline} /> : null}
+      {resultsFirst ? null : timeline ? <AgentMessageTimeline timeline={timeline} loadingMore={timelineLoadingMore} onLoadMore={onLoadMoreTimeline} /> : null}
       {messageProse}
       {runResults}
-      {resultsFirst && timeline ? <AgentMessageTimeline timeline={timeline} /> : null}
+      {resultsFirst && timeline ? <AgentMessageTimeline timeline={timeline} loadingMore={timelineLoadingMore} onLoadMore={onLoadMoreTimeline} /> : null}
       {message.role === 'assistant' && botanicAgentMessageOffersVisualPrompt(message) ? <div className="agent-run-message__actions" aria-label={t('Prompt 操作', 'Prompt actions')}>
         <button type="button" disabled={planning || promptUsePending} onClick={() => onUsePrompt(message)}>{promptUsePending ? t('等待确认', 'Awaiting approval') : t('用这段 Prompt 生成', 'Generate with this prompt')}</button>
       </div> : null}

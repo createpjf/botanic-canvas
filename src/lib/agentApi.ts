@@ -279,12 +279,14 @@ async function observeBotanicAgentTurn(input: {
 export async function readPersistentBotanicAgentTurnEvents(
   turnId: string,
   projectId: string,
-  options: { signal?: AbortSignal } = {},
+  options: { signal?: AbortSignal; after?: number; maximumPages?: number } = {},
 ) {
   return readAgentTurnTimelineEvents({
     turnId,
     projectId,
     signal: options.signal,
+    after: options.after,
+    maximumPages: options.maximumPages,
     readPage: (path, signal) => productRequest(path, { signal }),
   })
 }
