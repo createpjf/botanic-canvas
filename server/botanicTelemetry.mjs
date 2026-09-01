@@ -2,13 +2,17 @@
 
 import { W3CTraceContextPropagator } from '@opentelemetry/core'
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http'
+import { OTLPMetricExporter } from '@opentelemetry/exporter-metrics-otlp-http'
 import { resourceFromAttributes } from '@opentelemetry/resources'
+import { MeterProvider, PeriodicExportingMetricReader } from '@opentelemetry/sdk-metrics'
 import {
   BatchSpanProcessor,
   NodeTracerProvider,
   ParentBasedSampler,
   TraceIdRatioBasedSampler,
 } from '@opentelemetry/sdk-trace-node'
+import { initializeAgentTelemetryMetrics } from './agentTelemetryMetrics.mjs'
+import { bindAgentDiagnosticsToMeter } from './agentRuntimeDiagnostics.mjs'
 
 const truthy = new Set(['1', 'true', 'yes', 'on'])
 const enabled = (value, fallback = false) => value === undefined
@@ -41,23 +45,46 @@ export function initializeBotanicTelemetry(config, dependencies = {}) {
     const Provider = dependencies.Provider ?? NodeTracerProvider
     const Exporter = dependencies.Exporter ?? OTLPTraceExporter
     const exporter = new Exporter()
+    const resource = resourceFromAttributes({
+      'service.namespace': 'botanic',
+      'service.name': config.serviceName,
+      'service.version': config.serviceVersion,
+      'service.instance.id': config.serviceInstanceId,
+      'deployment.environment.name': config.deploymentEnvironment,
+    })
     const provider = new Provider({
-      resource: resourceFromAttributes({
-        'service.namespace': 'botanic',
-        'service.name': config.serviceName,
-        'service.version': config.serviceVersion,
-        'service.instance.id': config.serviceInstanceId,
-        'deployment.environment.name': config.deploymentEnvironment,
-      }),
+      resource,
       sampler: new ParentBasedSampler({ root: new TraceIdRatioBasedSampler(config.sampleRatio) }),
       spanProcessors: [new BatchSpanProcessor(exporter)],
     })
     provider.register({ propagator: new W3CTraceContextPropagator() })
+    // metrics(CS3):与 traces 同开关、同 OTEL_* 端点约定;初始化失败只降级 metrics,
+    // 不影响 traces 与业务。语义事件经 agentTelemetryMetrics 旁路成低基数指标。
+    let meterProvider
+    try {
+      const MetricExporter = dependencies.MetricExporter ?? OTLPMetricExporter
+      meterProvider = new MeterProvider({
+        resource,
+        readers: [new PeriodicExportingMetricReader({ exporter: new MetricExporter() })],
+      })
+      initializeAgentTelemetryMetrics({ meterProvider })
+      bindAgentDiagnosticsToMeter(meterProvider)
+    } catch (caught) {
+      dependencies.logger?.error?.('[telemetry] metrics disabled: ' + (/** @type {any} */ (caught)?.name ?? 'unknown'))
+      meterProvider = undefined
+    }
     activeProvider = Object.freeze({
       enabled: true,
-      async forceFlush() { await provider.forceFlush() },
+      metricsEnabled: Boolean(meterProvider),
+      async forceFlush() {
+        await provider.forceFlush()
+        await meterProvider?.forceFlush()
+      },
       async shutdown() {
-        try { await provider.shutdown() } finally { activeProvider = undefined }
+        try {
+          await provider.shutdown()
+          await meterProvider?.shutdown()
+        } finally { activeProvider = undefined }
       },
     })
     return activeProvider

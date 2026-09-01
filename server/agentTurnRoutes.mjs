@@ -2,6 +2,7 @@
 import { generationIdempotencyKey } from './generationIdempotency.mjs'
 import { validateBotanicAgentTurnInput } from './botanicAgentTurn.mjs'
 import { agentTurnLastSequence, publicAgentTurn } from './botanicAgentTurnRuntime.mjs'
+import { AGENT_PROTOCOL_VERSION } from './agentProtocol.mjs'
 import { publicAgentRun } from './botanicAgentRun.mjs'
 import { requireProjectPermission } from './projectAuthorization.mjs'
 
@@ -61,6 +62,13 @@ export function createAgentTurnHttpAdapter({
       agentTurnCancel: agentTurnCancelMatch,
     } = routeMatches
     if (!agentTurnsMatch && !agentTurnStreamMatch && !agentTurnMatch && !agentTurnCancelMatch) return false
+
+    // Protocol v1(CS2):缺版本按 v1 兼容;显式传入未知版本 fail closed,
+    // 不让新客户端拿旧语义静默解释。
+    const requestedProtocol = request.headers['x-agent-protocol-version']
+    if (requestedProtocol !== undefined && Number(requestedProtocol) !== AGENT_PROTOCOL_VERSION) {
+      return error(response, 400, 'AGENT_PROTOCOL_VERSION_UNSUPPORTED', `Agent 协议版本不受支持,当前为 v${AGENT_PROTOCOL_VERSION}。`)
+    }
 
     if (agentTurnsMatch || agentTurnStreamMatch) {
       const streaming = Boolean(agentTurnStreamMatch)
@@ -124,6 +132,7 @@ export function createAgentTurnHttpAdapter({
       try {
         const durableTurn = await submission.accepted
         if (!sse) return json(response, 202, {
+          protocolVersion: AGENT_PROTOCOL_VERSION,
           runtimeTurn: publicAgentTurn(durableTurn),
           observer: { url: `/api/agent-turns/${encodeURIComponent(turnId)}?after=0` },
         })
@@ -218,6 +227,7 @@ export function createAgentTurnHttpAdapter({
     }) ?? []
     const linkedRuns = await productStore.listAgentRunsForTurn(user.id, turn.projectId, turn.id) ?? []
     return json(response, 200, {
+      protocolVersion: AGENT_PROTOCOL_VERSION,
       turn: publicAgentTurn(turn, {
         lastSequence: agentTurnLastSequence(turnEvents),
         linkedRunIds: linkedRuns.map((run) => run.id),

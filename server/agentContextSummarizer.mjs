@@ -1,6 +1,7 @@
 // @ts-check
 
 import { canonicalHash } from './canonicalHash.mjs'
+import { createBotanicAgentModelProvider } from './botanicAgentModelProvider.mjs'
 import { sanitizeAgentModelContextCheckpoint } from './agentModelContextSurface.mjs'
 import { redactSummaryText } from './agentThreadSummary.mjs'
 
@@ -223,37 +224,23 @@ export function createAgentContextCheckpointEnricher(options) {
 export function createFlockContextSummaryInvoker(runtimeConfig, fetchImpl = fetch) {
   const apiKey = typeof runtimeConfig?.flockApiKey === 'string' ? runtimeConfig.flockApiKey.trim() : ''
   const model = typeof runtimeConfig?.flockTextModel === 'string' ? runtimeConfig.flockTextModel.trim() : ''
-  const baseUrl = typeof runtimeConfig?.flockApiBaseUrl === 'string' && runtimeConfig.flockApiBaseUrl.trim()
-    ? runtimeConfig.flockApiBaseUrl.trim().replace(/\/+$/, '')
-    : 'https://api.flock.io/v1'
   if (!apiKey || !model) {
     return async () => {
       throw new Error('Agent Context LLM summary invoker 未配置。')
     }
   }
+  // 传输差异由 Model Provider 拥有;摘要保留自己的超时预算与文本提取,失败由 enrich 吞掉回退。
+  const provider = createBotanicAgentModelProvider(runtimeConfig, { fetchImpl })
   return async (request) => {
     const { messages, maxTokens = 400 } = request ?? {}
-    const response = await fetchImpl(`${baseUrl}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'x-litellm-api-key': apiKey,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model,
-        messages,
-        max_tokens: maxTokens,
-        temperature: 0.2,
-      }),
-      signal: AbortSignal.timeout(SUMMARY_TIMEOUT_MS),
+    const payload = await provider.sample({
+      model,
+      messages,
+      maxOutputTokens: maxTokens,
+      temperature: 0.2,
+      timeoutMs: SUMMARY_TIMEOUT_MS,
     })
-    if (!response.ok) {
-      throw new Error(`Agent Context LLM summary HTTP ${response.status}`)
-    }
-    /** @type {any} */
-    const payload = await response.json()
-    const content = payload?.choices?.[0]?.message?.content
+    const content = /** @type {any} */ (payload)?.choices?.[0]?.message?.content
     if (typeof content === 'string') return content
     if (Array.isArray(content)) {
       return content.flatMap((part) => typeof part?.text === 'string' ? [part.text] : []).join('\n')

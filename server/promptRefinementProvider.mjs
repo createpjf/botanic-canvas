@@ -1,5 +1,5 @@
 import { readFile } from 'node:fs/promises'
-import { outboundAgentTraceHeaders } from './agentTraceContext.mjs'
+import { createBotanicAgentModelProvider } from './botanicAgentModelProvider.mjs'
 
 const PROMPT_REFINER_SKILL = new URL('./skills/prompt-refiner/SKILL.md', import.meta.url)
 const BOTANIC_FASHION_SKILL = new URL('./skills/botanic-fashion-prompt/SKILL.md', import.meta.url)
@@ -206,46 +206,37 @@ export async function refinePrompt(input, runtimeConfig, options = {}) {
   if (options.signal?.aborted) {
     throw new PromptRefinementError(499, 'REQUEST_CANCELLED', '提示词润色请求已取消。')
   }
-  const fetchImpl = options.fetchImpl ?? fetch
-  const timeoutSignal = AbortSignal.timeout(config.timeoutMs)
-  const signal = options.signal
-    ? AbortSignal.any([options.signal, timeoutSignal])
-    : timeoutSignal
-  let response
+  // 传输差异由 Model Provider 拥有;润色保留自己的错误类与文案。
+  const provider = options.modelProvider ?? createBotanicAgentModelProvider(
+    { flockApiBaseUrl: config.baseUrl, flockApiKey: config.apiKey, agentPlannerTimeoutMs: config.timeoutMs },
+    { fetchImpl: options.fetchImpl ?? fetch },
+  )
+  let body
   try {
-    response = await fetchImpl(`${config.baseUrl}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        ...outboundAgentTraceHeaders(),
-        Authorization: `Bearer ${config.apiKey}`,
-        'x-litellm-api-key': config.apiKey,
-        Accept: 'application/json',
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: config.model,
-        messages: [
-          { role: 'system', content: system },
-          { role: 'user', content: JSON.stringify(structuredInput(input)) },
-        ],
-        max_tokens: 6000,
-        temperature: 0.2,
-        stream: false,
-      }),
-      signal,
+    body = await provider.sample({
+      model: config.model,
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: JSON.stringify(structuredInput(input)) },
+      ],
+      maxOutputTokens: 6000,
+      temperature: 0.2,
+      timeoutMs: config.timeoutMs,
+      signal: options.signal,
     })
-  } catch {
-    if (timeoutSignal.aborted) {
-      throw new PromptRefinementError(504, 'PROVIDER_TIMEOUT', '提示词润色服务响应超时，请重试。')
+  } catch (caught) {
+    const code = /** @type {any} */ (caught)?.code
+    if (code === 'REQUEST_CANCELLED') throw new PromptRefinementError(499, 'REQUEST_CANCELLED', '提示词润色请求已取消。')
+    if (code === 'PROVIDER_TIMEOUT') throw new PromptRefinementError(504, 'PROVIDER_TIMEOUT', '提示词润色服务响应超时，请重试。')
+    if (code === 'PROVIDER_AUTH_FAILED' || code === 'PROVIDER_RATE_LIMITED' || code === 'PROVIDER_REJECTED') {
+      throw providerResponseError(code === 'PROVIDER_AUTH_FAILED' ? 401 : code === 'PROVIDER_RATE_LIMITED' ? 429 : 400)
     }
-    if (options.signal?.aborted) {
-      throw new PromptRefinementError(499, 'REQUEST_CANCELLED', '提示词润色请求已取消。')
+    if (code === 'INVALID_PROVIDER_RESPONSE') {
+      throw new PromptRefinementError(502, 'INVALID_PROVIDER_RESPONSE', '提示词润色服务没有返回可用内容。')
     }
     throw new PromptRefinementError(502, 'PROVIDER_UNAVAILABLE', '提示词润色服务暂时不可用，请稍后重试。')
   }
-  const body = await response.json().catch(() => null)
-  if (!response.ok) throw providerResponseError(response.status)
-  const content = body?.choices?.[0]?.message?.content
+  const content = /** @type {any} */ (body)?.choices?.[0]?.message?.content
   if (typeof content !== 'string' || !content.trim() || content.trim().length > 6000) {
     throw new PromptRefinementError(502, 'INVALID_PROVIDER_RESPONSE', '提示词润色服务没有返回可用内容。')
   }

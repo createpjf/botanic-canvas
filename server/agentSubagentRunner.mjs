@@ -6,7 +6,7 @@ import {
   validateSubtaskOutputShape,
 } from './agentSubtask.mjs'
 import { canonicalHash } from './canonicalHash.mjs'
-import { outboundAgentTraceHeaders } from './agentTraceContext.mjs'
+import { createBotanicAgentModelProvider } from './botanicAgentModelProvider.mjs'
 import {
   freezeAgentStepSnapshot,
   runAgentToolLoop as executeAgentToolLoop,
@@ -220,31 +220,26 @@ export function createAgentSubagentRunner(input) {
   // 注入 fake/provider adapter 时给 Checkpoint 一个稳定模型身份；生产默认仍要求显式配置。
   const fallbackModel = configuredModel || (typeof callModel === 'function' ? 'injected-subagent-model' : '')
   const apiKey = typeof runtimeConfig?.flockApiKey === 'string' ? runtimeConfig.flockApiKey.trim() : ''
-  const invoke = typeof callModel === 'function' ? callModel : (configuredModel && apiKey
+  // 传输差异由 Model Provider 拥有;Subagent 保留自己的错误语义(统一收口
+  // SUBAGENT_MODEL_UNAVAILABLE)与业务参数(900 tokens/0.3 温度)。
+  const provider = configuredModel && apiKey
+    ? createBotanicAgentModelProvider(runtimeConfig, { fetchImpl })
+    : undefined
+  const invoke = typeof callModel === 'function' ? callModel : (provider
     ? async ({ model, messages, tools, tool_choice: toolChoice, signal }) => {
-      const baseUrl = typeof runtimeConfig?.flockApiBaseUrl === 'string' && runtimeConfig.flockApiBaseUrl.trim()
-        ? runtimeConfig.flockApiBaseUrl.trim().replace(/\/+$/, '')
-        : 'https://api.flock.io/v1'
-      const requestBody = { model, messages, max_tokens: 900, temperature: 0.3 }
-      if (Array.isArray(tools) && tools.length) {
-        requestBody.tools = tools
-        requestBody.tool_choice = toolChoice ?? 'auto'
+      try {
+        return await provider.sample({
+          model,
+          messages,
+          ...(Array.isArray(tools) && tools.length ? { tools, toolChoice: toolChoice ?? 'auto' } : {}),
+          maxOutputTokens: 900,
+          temperature: 0.3,
+          signal,
+        })
+      } catch (caught) {
+        if (/** @type {any} */ (caught)?.code === 'REQUEST_CANCELLED') throw caught
+        throw new AgentSubtaskError('SUBAGENT_MODEL_UNAVAILABLE', '子 Agent 模型暂时不可用。', 502)
       }
-      const response = await fetchImpl(`${baseUrl}/chat/completions`, {
-        method: 'POST',
-        headers: {
-          ...outboundAgentTraceHeaders(),
-          Authorization: `Bearer ${apiKey}`,
-          'x-litellm-api-key': apiKey,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(requestBody),
-        signal,
-      })
-      if (!response.ok) {
-        throw new AgentSubtaskError('SUBAGENT_MODEL_UNAVAILABLE', `子 Agent 模型返回 ${response.status}。`, 502)
-      }
-      return response.json().catch(() => null)
     }
     : undefined)
   if (!invoke) return undefined

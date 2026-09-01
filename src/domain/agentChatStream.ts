@@ -3,6 +3,7 @@ import type { BotanicAgentChatResponse } from './agentChatContract'
 import type { BotanicAgentTurnResult } from './agentTurnContract'
 import type { TimelineToolPresentation } from './agentTimeline'
 import type { ProductLocale } from '../i18n/core'
+import { AGENT_STREAM_EVENT_TYPE_VALUES } from './agentProtocol.generated.ts'
 
 /**
  * Agent 实时通道的事件契约（chat / turn / plan 共用）。
@@ -59,7 +60,7 @@ export type BotanicAgentStreamEvent = ({ sequence?: number }) & (
 /** 对话流事件；与 BotanicAgentStreamEvent 同构，保留别名以免旧导入断裂。 */
 export type BotanicAgentChatStreamEvent = BotanicAgentStreamEvent
 
-const streamEventTypes = new Set(['accepted', 'handoff', 'reasoning', 'answer', 'tool', 'done', 'error'])
+const streamEventTypes: ReadonlySet<string> = new Set(AGENT_STREAM_EVENT_TYPE_VALUES)
 
 function parseStreamEvent(payload: string): BotanicAgentStreamEvent[] {
   try {

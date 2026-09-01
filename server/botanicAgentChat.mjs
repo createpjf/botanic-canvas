@@ -1,6 +1,7 @@
 import { AgentToolRuntimeError, createAgentToolRegistry, freezeAgentStepSnapshot, runAgentToolLoop } from './agentToolRuntime.mjs'
 import { botanicAgentWebResearchSourceLabels, createBotanicAgentWebResearchTools } from './botanicAgentWebTools.mjs'
-import { botanicAgentProviderConfig, botanicAgentProviderTemperature } from './botanicAgentPlanner.mjs'
+import { botanicAgentProviderConfig } from './botanicAgentPlanner.mjs'
+import { createBotanicAgentModelProvider } from './botanicAgentModelProvider.mjs'
 import { normalizeBotanicAgentLocale, readBotanicAgentInstructions } from './agentInstructions.mjs'
 import { botanicAgentContextBriefing, buildBotanicAgentOntology, safeBotanicAgentMemory } from './botanicAgentOntology.mjs'
 import {
@@ -10,13 +11,10 @@ import {
   resolveBotanicAgentVisionParts,
 } from './botanicAgentVision.mjs'
 import { captionAgentVisionModel, nativeAgentVisionModel } from './botanicAgentVisionCapability.mjs'
-import { readStreamedChatCompletion } from './botanicAgentStream.mjs'
 import { botanicAgentContextToolSourceLabels, createBotanicAgentReadToolDefinitions } from './botanicAgentContextTools.mjs'
 import { BOTANIC_AGENT_MOUNTED_SKILL_LIMIT, botanicAgentMountedSkillBriefing, botanicAgentSearchableSkills, pinnedBotanicAgentProjectSkills, resolveBotanicAgentMountedSkills } from './botanicAgentTools.mjs'
 import { canonicalHash } from './canonicalHash.mjs'
-import { throwIfAgentProviderContextOverflow } from './agentProviderContextOverflow.mjs'
 import { resolveAgentModelContextBinding } from './agentModelContextBinding.mjs'
-import { outboundAgentTraceHeaders } from './agentTraceContext.mjs'
 
 const CHAT_MODES = new Set(['conversation', 'prompt', 'research'])
 const MESSAGE_ROLES = new Set(['user', 'assistant'])
@@ -132,13 +130,6 @@ function chatToolRegistry({ ontology, memory, skills, mountedSkillIds = [], webR
   ])
 }
 
-function providerError(status) {
-  if (status === 401 || status === 403) return new BotanicAgentChatError(502, 'PROVIDER_AUTH_FAILED', 'Agent 对话服务鉴权失败。')
-  if (status === 429) return new BotanicAgentChatError(429, 'PROVIDER_RATE_LIMITED', 'Agent 当前繁忙，请稍后重试。')
-  if (status >= 500) return new BotanicAgentChatError(502, 'PROVIDER_UNAVAILABLE', 'Agent 对话服务暂时不可用，请稍后重试。')
-  return new BotanicAgentChatError(422, 'PROVIDER_REJECTED', 'Agent 无法处理本次对话。')
-}
-
 function chatConfig(runtimeConfig, requestedModel) {
   try {
     return botanicAgentProviderConfig(runtimeConfig, requestedModel)
@@ -169,13 +160,12 @@ function chatModelContextBinding(options, model) {
 async function executeChatAttempt({ input, config, model, system, messages, registry, mountedSkills, attemptId, options, allowRawReasoning, emitEvent, streaming }) {
   const hasWebSearch = Boolean(registry.get('web_search'))
   const hasWebFetch = Boolean(registry.get('web_fetch'))
-  // 超时按单次模型调用计，不罩整轮 tool loop；与 Turn 链路同一语义。
-  let activeCallTimeout
-  const providerCallSignal = (runtimeSignal = options.signal) => {
-    activeCallTimeout = AbortSignal.timeout(config.timeoutMs)
-    return runtimeSignal ? AbortSignal.any([runtimeSignal, activeCallTimeout]) : activeCallTimeout
-  }
-  const fetchImpl = options.fetchImpl ?? fetch
+  // 传输差异由 Model Provider 拥有;超时仍按单次模型调用计,与 Turn 链路同一语义。
+  const provider = options.modelProvider
+    ?? createBotanicAgentModelProvider(
+      { flockApiBaseUrl: config.baseUrl, flockApiKey: config.apiKey, agentPlannerTimeoutMs: config.timeoutMs },
+      { fetchImpl: options.fetchImpl ?? fetch },
+    )
   const contextBinding = chatModelContextBinding(options, model)
   const snapshot = freezeAgentStepSnapshot({
     registry,
@@ -211,50 +201,25 @@ async function executeChatAttempt({ input, config, model, system, messages, regi
       maxOutputTokens: input.mode === 'prompt' ? 2200 : 3000,
       signal: options.signal,
       deadlineAt: options.deadlineAt,
-      callModel: async ({ messages: turnMessages, tools, tool_choice, step }, { signal: runtimeSignal } = {}) => {
-        const response = await fetchImpl(`${config.baseUrl}/chat/completions`, {
-          method: 'POST',
-          headers: {
-            ...outboundAgentTraceHeaders(),
-            Authorization: `Bearer ${config.apiKey}`,
-            'x-litellm-api-key': config.apiKey,
-            Accept: streaming ? 'text/event-stream' : 'application/json',
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            model,
-            messages: turnMessages,
-            tools,
-            tool_choice,
-            max_tokens: input.mode === 'prompt' ? 2200 : 3000,
-            temperature: botanicAgentProviderTemperature(model),
-            stream: streaming,
-          }),
-          signal: providerCallSignal(runtimeSignal),
-        })
-        if (!response.ok) {
-          const failureBody = await response.text().catch(() => '')
-          throwIfAgentProviderContextOverflow(response.status, failureBody)
-          throw providerError(response.status)
-        }
-        if (!streaming) {
-          const parsed = await response.json().catch(() => null)
-          activeCallTimeout = undefined
-          return parsed
-        }
-        // 传输层把增量还原成非流式形状，工具循环下游完全不感知流式。
-        const parsed = await readStreamedChatCompletion(response.body, {
-          onEvent: (event) => {
-            if (event.type === 'reasoning') {
-              if (allowRawReasoning) emitEvent({ type: 'reasoning', step, delta: event.delta })
-              return
+      callModel: ({ messages: turnMessages, tools, tool_choice, step }, { signal: runtimeSignal } = {}) => provider.sample({
+        model,
+        messages: turnMessages,
+        tools,
+        toolChoice: tool_choice,
+        maxOutputTokens: input.mode === 'prompt' ? 2200 : 3000,
+        stream: streaming,
+        timeoutMs: config.timeoutMs,
+        signal: runtimeSignal ?? options.signal,
+        onEvent: streaming
+          ? (event) => {
+              if (event.type === 'reasoning') {
+                if (allowRawReasoning) emitEvent({ type: 'reasoning', step, delta: event.delta })
+                return
+              }
+              if (event.type === 'answer') emitEvent({ type: 'answer', step, delta: event.delta })
             }
-            if (event.type === 'answer') emitEvent({ type: 'answer', step, delta: event.delta })
-          },
-        })
-        activeCallTimeout = undefined
-        return parsed
-      },
+          : undefined,
+      }),
     })
     if (typeof result.output !== 'string' || !result.output.trim()) {
       throw new BotanicAgentChatError(502, 'INVALID_PROVIDER_RESPONSE', 'Agent 没有返回有效回答。')
@@ -283,11 +248,12 @@ async function executeChatAttempt({ input, config, model, system, messages, regi
       throw new BotanicAgentChatError(caught.statusCode ?? 409, caught.code, caught.message)
     }
     if (options.signal?.aborted) throw new BotanicAgentChatError(499, 'REQUEST_CANCELLED', 'Agent 对话请求已取消。')
-    if (activeCallTimeout?.aborted) throw new BotanicAgentChatError(504, 'PROVIDER_TIMEOUT', 'Agent 对话超时，请重试。')
-    // TOOL_*、AGENT_SKILL_*、取消与 deadline 是具名事实（H4），不得吞成 Provider 错。
+    // TOOL_*、AGENT_SKILL_*、PROVIDER_*、取消与 deadline 是具名事实（H4/1B），不得吞成通用 Provider 错。
     if (typeof caught?.code === 'string'
       && (caught.code.startsWith('TOOL_')
         || caught.code.startsWith('AGENT_SKILL_')
+        || caught.code.startsWith('AGENT_TOOL_')
+        || caught.code.startsWith('PROVIDER_')
         || caught.code === 'WEB_QUOTA_EXCEEDED'
         || caught.code === 'REQUEST_CANCELLED'
         || caught.code === 'AGENT_TURN_DEADLINE_EXCEEDED')) {

@@ -2,7 +2,7 @@
 
 ## 状态
 
-已采纳，2026-08-28。W3C 传播与安全 semantic schema 已实现；OTLP traces 默认关闭，GenAI
+已采纳，2026-08-28;2026-09-01 修订(CS3:同开关低基数 metrics 与 content-free diagnostics)。W3C 传播与安全 semantic schema 已实现；OTLP traces 默认关闭，GenAI
 development semantic conventions 默认关闭。
 
 ## 背景
@@ -64,4 +64,8 @@ API、Redis 与 Worker 建立父子关系。日志事件由不同模块自由拼
 - Shadow 能先验证预算、错误率和压缩率，但不能证明模型回答质量等价；质量仍需固定 eval/人工评审。
 - 进程崩溃后只靠数据库恢复、且原队列 carrier 已丢失的 attempt 会形成新 trace；后续若需连续视图，应增加
   只含 W3C SpanContext 的私有 durable attempt link，不能把产品 `agent-trace:*` 冒充 W3C parent。
-- 当前只承诺 traces；OTel Logs 仍非稳定路径，semantic JSON 继续由现有日志管道承载。
+- 当前承诺 traces 与低基数 metrics(2026-09-01 修订):`writeAgentSemanticEvent` 成功投影后旁路
+  `agentTelemetryMetrics.mjs`,与日志共用同一安全事件;标签只允许固定枚举(kind/outcome/reason 等),
+  所有 `*Id` 丢弃;`agentRuntimeDiagnostics.mjs` 提供 content-free gauges(active turns/pending cancel
+  acks/进程内存)。exporter/初始化失败一律 fail-open。OTel Logs 仍非稳定路径,semantic JSON 继续由
+  现有日志管道承载。

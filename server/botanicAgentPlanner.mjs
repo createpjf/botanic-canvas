@@ -1,4 +1,5 @@
 import { AgentToolRuntimeError, freezeAgentStepSnapshot, runAgentToolLoop } from './agentToolRuntime.mjs'
+import { createBotanicAgentModelProvider } from './botanicAgentModelProvider.mjs'
 import {
   BOTANIC_AGENT_MOUNTED_SKILL_LIMIT,
   botanicAgentMountedSkillBriefing,
@@ -7,10 +8,8 @@ import {
   pinnedBotanicAgentProjectSkills,
   resolveBotanicAgentMountedSkills,
 } from './botanicAgentTools.mjs'
-import { readStreamedChatCompletion } from './botanicAgentStream.mjs'
 import { createAgentSubagentRunner } from './agentSubagentRunner.mjs'
 import { normalizeBotanicAgentLocale, readBotanicAgentInstructions } from './agentInstructions.mjs'
-import { outboundAgentTraceHeaders } from './agentTraceContext.mjs'
 import {
   botanicCreativeBriefFieldIds,
   BotanicCreativeBriefValidationError,
@@ -29,7 +28,6 @@ import {
   normalizeCustomGenerationSize,
 } from './generationOutputSize.mjs'
 import { canonicalHash } from './canonicalHash.mjs'
-import { throwIfAgentProviderContextOverflow } from './agentProviderContextOverflow.mjs'
 import { resolveAgentModelContextBinding } from './agentModelContextBinding.mjs'
 
 const INTENTS = new Set([
@@ -435,17 +433,6 @@ export function botanicAgentProviderConfig(runtimeConfig, requestedModel) {
   }
 }
 
-export function botanicAgentProviderResponseError(status) {
-  if (status === 401 || status === 403) return new BotanicAgentPlannerError(502, 'PROVIDER_AUTH_FAILED', '生图 Agent 规划服务鉴权失败。')
-  if (status === 429) return new BotanicAgentPlannerError(429, 'PROVIDER_RATE_LIMITED', '生图 Agent 当前繁忙，请稍后重试。')
-  if (status >= 500) return new BotanicAgentPlannerError(502, 'PROVIDER_UNAVAILABLE', '生图 Agent 暂时不可用，请稍后重试。')
-  return new BotanicAgentPlannerError(422, 'PROVIDER_REJECTED', '生图 Agent 无法处理本次要求。')
-}
-
-export function botanicAgentProviderTemperature(model) {
-  return model === 'kimi-k3' ? 1 : 0.1
-}
-
 function plannerModelContextBinding(options, model) {
   try {
     return resolveAgentModelContextBinding(options, model)
@@ -708,14 +695,12 @@ export async function planBotanicGeneration(input, runtimeConfig, options = {}) 
     botanicAgentMountedSkillBriefing(mountedSkills, input.locale),
   ].filter(Boolean).join('\n\n')
   if (options.signal?.aborted) throw new BotanicAgentPlannerError(499, 'REQUEST_CANCELLED', '生图 Agent 请求已取消。')
-  // 超时按单次模型调用计，不罩整轮 tool loop：与 Turn/Chat 同一语义（H3A）。
-  // timeout signal 不跨工具执行复用，每次 sampling 重新创建。
-  let activeCallTimeout
-  const providerCallSignal = (runtimeSignal = options.signal) => {
-    activeCallTimeout = AbortSignal.timeout(config.timeoutMs)
-    return runtimeSignal ? AbortSignal.any([runtimeSignal, activeCallTimeout]) : activeCallTimeout
-  }
-  const fetchImpl = options.fetchImpl ?? fetch
+  // 传输差异由 Model Provider 拥有;超时仍按单次模型调用计,与 Turn/Chat 同一语义(H3A)。
+  const provider = options.modelProvider
+    ?? createBotanicAgentModelProvider(
+      { flockApiBaseUrl: config.baseUrl, flockApiKey: config.apiKey, agentPlannerTimeoutMs: config.timeoutMs },
+      { fetchImpl: options.fetchImpl ?? fetch },
+    )
   const proposedActions = []
   const webResearch = {
     apiKey: runtimeConfig?.webSearch?.apiKey,
@@ -807,43 +792,25 @@ export async function planBotanicGeneration(input, runtimeConfig, options = {}) 
       maxOutputTokens: 3000,
       signal: options.signal,
       deadlineAt: options.deadlineAt,
-      callModel: async ({ messages, tools, tool_choice, step }, { signal: runtimeSignal } = {}) => {
-        const response = await fetchImpl(`${config.baseUrl}/chat/completions`, {
-          method: 'POST',
-          headers: {
-            ...outboundAgentTraceHeaders(),
-            Authorization: `Bearer ${config.apiKey}`,
-            'x-litellm-api-key': config.apiKey,
-            Accept: streaming ? 'text/event-stream' : 'application/json',
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            model: config.model,
-            messages,
-            tools,
-            tool_choice,
-            max_tokens: 3000,
-            temperature: botanicAgentProviderTemperature(config.model),
-            stream: streaming,
-          }),
-          signal: providerCallSignal(runtimeSignal),
-        })
-        if (!response.ok) {
-          const failureBody = await response.text().catch(() => '')
-          throwIfAgentProviderContextOverflow(response.status, failureBody)
-          throw botanicAgentProviderResponseError(response.status)
-        }
-        if (!streaming) return await response.json().catch(() => null)
-        return await readStreamedChatCompletion(response.body, {
-          onEvent: (event) => {
-            if (event.type === 'reasoning') {
-              if (allowRawReasoning) emitEvent({ type: 'reasoning', step, delta: event.delta })
-              return
+      callModel: ({ messages, tools, tool_choice, step }, { signal: runtimeSignal } = {}) => provider.sample({
+        model: config.model,
+        messages,
+        tools,
+        toolChoice: tool_choice,
+        maxOutputTokens: 3000,
+        stream: streaming,
+        timeoutMs: config.timeoutMs,
+        signal: runtimeSignal ?? options.signal,
+        onEvent: streaming
+          ? (event) => {
+              if (event.type === 'reasoning') {
+                if (allowRawReasoning) emitEvent({ type: 'reasoning', step, delta: event.delta })
+                return
+              }
+              if (event.type === 'answer') emitEvent({ type: 'answer', step, delta: event.delta })
             }
-            if (event.type === 'answer') emitEvent({ type: 'answer', step, delta: event.delta })
-          },
-        })
-      },
+          : undefined,
+      }),
     })
     const output = typeof result.output === 'string'
       ? parseProviderJson(result.output)
@@ -889,11 +856,12 @@ export async function planBotanicGeneration(input, runtimeConfig, options = {}) 
       throw new BotanicAgentPlannerError(caught.statusCode ?? 409, caught.code, caught.message)
     }
     if (options.signal?.aborted) throw new BotanicAgentPlannerError(499, 'REQUEST_CANCELLED', '生图 Agent 请求已取消。')
-    if (activeCallTimeout?.aborted) throw new BotanicAgentPlannerError(504, 'PROVIDER_TIMEOUT', '生图 Agent 规划超时，请重试。')
-    // TOOL_*、AGENT_SKILL_*、取消与 deadline 是具名事实（H4），不得吞成 Provider 错。
+    // TOOL_*、AGENT_SKILL_*、PROVIDER_*、取消与 deadline 是具名事实（H4/1B），不得吞成通用 Provider 错。
     if (typeof caught?.code === 'string'
       && (caught.code.startsWith('TOOL_')
         || caught.code.startsWith('AGENT_SKILL_')
+        || caught.code.startsWith('AGENT_TOOL_')
+        || caught.code.startsWith('PROVIDER_')
         || caught.code === 'WEB_QUOTA_EXCEEDED'
         || caught.code === 'REQUEST_CANCELLED'
         || caught.code === 'AGENT_TURN_DEADLINE_EXCEEDED')) {

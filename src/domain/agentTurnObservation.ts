@@ -3,6 +3,7 @@ import type { BotanicAgentStreamEvent } from './agentChatStream.ts'
 import type { BotanicAgentTurnResult } from './agentTurnContract.ts'
 import type { TimelineStepKind, TimelineToolPresentation } from './agentTimeline.ts'
 import { safeTimelineWebSources } from './agentTimelineWebSources.ts'
+import { AGENT_TOOL_CALL_PUBLIC_RISK_VALUES, AGENT_TOOL_CALL_PUBLIC_STATUS_VALUES } from './agentProtocol.generated.ts'
 
 /**
  * 浏览器断线/刷新后必须用同一条用户 Message 找回同一 Turn；随机请求键会静默重跑模型。
@@ -409,8 +410,8 @@ export function monotonicAgentTurnEventDecision(
     : { deliver: false, lastSequence }
 }
 
-const toolRisks = new Set<AgentToolCallTrace['risk']>(['read', 'write', 'costly', 'external'])
-const toolStatuses = new Set<AgentToolCallTrace['status']>(['pending', 'running', 'awaiting_confirmation', 'succeeded', 'failed', 'aborted'])
+const toolRisks: ReadonlySet<string> = new Set(AGENT_TOOL_CALL_PUBLIC_RISK_VALUES)
+const toolStatuses: ReadonlySet<string> = new Set(AGENT_TOOL_CALL_PUBLIC_STATUS_VALUES)
 const presentationKinds = new Set<TimelineStepKind>(['search', 'fetch', 'read_skill', 'connect_runtime', 'read', 'write', 'other'])
 
 function stringValue(value: unknown, fallback = '') {

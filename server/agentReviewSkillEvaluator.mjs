@@ -1,8 +1,8 @@
 // @ts-check
 import { createAgentSubtask } from './agentSubtask.mjs'
+import { createBotanicAgentModelProvider } from './botanicAgentModelProvider.mjs'
 import { runAgentSubtask } from './agentSubtaskScheduler.mjs'
 import { isEvaluatorSkill } from './botanicAgentSkill.mjs'
-import { outboundAgentTraceHeaders } from './agentTraceContext.mjs'
 
 /**
  * 评审第 3 类判据：**项目自定义的 evaluator Skill**（Epic 6 × Epic 11）。
@@ -174,19 +174,16 @@ export async function runEvaluatorSkillCriterion({
 export function createEvaluatorSkillRunner({ runtimeConfig, resolveMedia, callModel, fetchImpl = fetch } = {}) {
   const model = typeof runtimeConfig?.agentVisionModel === 'string' ? runtimeConfig.agentVisionModel.trim() : ''
   const apiKey = typeof runtimeConfig?.flockApiKey === 'string' ? runtimeConfig.flockApiKey.trim() : ''
-  const invoke = callModel ?? (model && apiKey
+  // 传输差异由 Model Provider 拥有;失败仍以普通 Error 抛出由上层记 unverifiable。
+  const provider = model && apiKey ? createBotanicAgentModelProvider(runtimeConfig, { fetchImpl }) : undefined
+  const invoke = callModel ?? (provider
     ? async ({ messages, signal }) => {
-      const baseUrl = typeof runtimeConfig?.flockApiBaseUrl === 'string' && runtimeConfig.flockApiBaseUrl.trim()
-        ? runtimeConfig.flockApiBaseUrl.trim().replace(/\/+$/, '')
-        : 'https://api.flock.io/v1'
-      const response = await fetchImpl(`${baseUrl}/chat/completions`, {
-        method: 'POST',
-        headers: { ...outboundAgentTraceHeaders(), Authorization: `Bearer ${apiKey}`, 'x-litellm-api-key': apiKey, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model, messages, max_tokens: 500, temperature: 0.2 }),
-        signal,
-      })
-      if (!response.ok) throw new Error(`自定义判据模型返回 ${response.status}。`)
-      return response.json().catch(() => null)
+      try {
+        return await provider.sample({ model, messages, maxOutputTokens: 500, temperature: 0.2, signal })
+      } catch (caught) {
+        if (/** @type {any} */ (caught)?.code === 'REQUEST_CANCELLED') throw caught
+        throw new Error('自定义判据模型暂时不可用。')
+      }
     }
     : undefined)
   if (!invoke) return undefined

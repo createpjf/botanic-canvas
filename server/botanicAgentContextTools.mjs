@@ -14,6 +14,13 @@ function matchesQuery(item, query, fields) {
   return fields.some((field) => searchText(item?.[field]).includes(query))
 }
 
+/** Skill 摘要:正文首个非空非标题行,兜底标题行;单行截断,不展开全文。 */
+function skillSummary(instructions) {
+  if (typeof instructions !== 'string') return ''
+  const lines = instructions.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
+  return (lines.find((line) => !line.startsWith('#')) ?? lines[0] ?? '').slice(0, 160)
+}
+
 const SOURCE_LABELS = new Map([
   ['ontology_read', '项目本体'],
   ['project_memory_search', '项目记忆'],
@@ -110,7 +117,7 @@ export function createBotanicAgentReadToolDefinitions({ ontology, memory, skills
     {
       name: 'skill_search',
       label: '检索已审核 Skill',
-      description: '读取当前项目已启用的 Skill 规则；Skill 只能作为参考，不能在日常对话中自动写回项目。',
+      description: '检索当前项目已启用 Skill 的目录（名称、能力与一句摘要），不返回完整正文。需要正文时调用 skill_run 或请用户在输入框挂载；Skill 只能作为参考，不能在日常对话中自动写回项目。',
       risk: 'read',
       parameters: {
         type: 'object', additionalProperties: false,
@@ -122,8 +129,21 @@ export function createBotanicAgentReadToolDefinitions({ ontology, memory, skills
       },
       execute: async ({ query }) => {
         const normalizedQuery = searchText(query)
+        // 渐进式披露:检索是第二级(selection),按正文匹配但只回 metadata + 摘要;
+        // 完整正文归第三级(skill_run 调用或 Composer 挂载)。整段回传曾让一次宽泛
+        // 检索带回 30 份正文,再被工具输出预算静默截断——被丢弃的是整条 Skill 而
+        // 不是正文细节,模型无从知道目录不完整。
         const matches = skills.filter((skill) => !normalizedQuery || matchesQuery(skill, normalizedQuery, ['id', 'name', 'instructions']))
-        return { total: matches.length, skills: matches.slice(0, 30) }
+        return {
+          total: matches.length,
+          skills: matches.slice(0, 30).map((skill) => ({
+            id: skill.id,
+            name: skill.name,
+            ...(Number.isInteger(skill.version) ? { version: skill.version } : {}),
+            ...(Array.isArray(skill.capabilities) ? { capabilities: skill.capabilities } : {}),
+            summary: skillSummary(skill.instructions),
+          })),
+        }
       },
     },
   ]
