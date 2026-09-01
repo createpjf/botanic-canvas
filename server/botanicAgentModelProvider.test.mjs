@@ -80,6 +80,20 @@ test('错误归类稳定:根取消优先于 timeout,HTTP 状态映射保留,over
     (caught) => caught.code === 'PROVIDER_TIMEOUT' && caught.statusCode === 504,
   )
 
+  // headers 已返回后，读取响应体超时仍属于 Provider timeout，不能降级成 payload 无效。
+  const bodyTimedOut = createBotanicAgentModelProvider(runtimeConfig, {
+    fetchImpl: async (_url, init) => ({
+      ok: true,
+      json: () => new Promise((_resolve, reject) => {
+        init.signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true })
+      }),
+    }),
+  })
+  await assert.rejects(
+    bodyTimedOut.sample({ model: 'deepseek-v4-pro', messages: [{ role: 'user', content: 'x' }], timeoutMs: 5 }),
+    (caught) => caught.code === 'PROVIDER_TIMEOUT' && caught.statusCode === 504,
+  )
+
   // HTTP 状态映射与 raw body 边界。
   const statuses = [[401, 'PROVIDER_AUTH_FAILED'], [429, 'PROVIDER_RATE_LIMITED'], [503, 'PROVIDER_UNAVAILABLE'], [400, 'PROVIDER_REJECTED']]
   for (const [status, code] of statuses) {

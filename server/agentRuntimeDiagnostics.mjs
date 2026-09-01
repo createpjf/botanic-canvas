@@ -9,13 +9,15 @@
  * counters 由拥有事实的模块注册回调(observable 模式),诊断层自己不持有业务状态。
  */
 
-/** @type {Map<string, () => number>} */
+/** @type {Map<string, Set<() => number>>} */
 const gaugeSources = new Map()
 
-/** 注册一个观测源;重复注册同名源以最后一次为准(实例内组合根只装配一次)。 */
+/** 注册一个观测源;同名实例汇总为一个 gauge。 */
 export function registerAgentDiagnosticGauge(name, read) {
   if (typeof name !== 'string' || !/^[a-z][a-z0-9_.]{2,63}$/.test(name) || typeof read !== 'function') return false
-  gaugeSources.set(name, read)
+  const sources = gaugeSources.get(name) ?? new Set()
+  sources.add(read)
+  gaugeSources.set(name, sources)
   return true
 }
 
@@ -26,10 +28,10 @@ export function unregisterAgentDiagnosticGauge(name) {
 /** content-free 快照:任何 source 抛错都记为 null,不让诊断影响业务。 */
 export function agentRuntimeDiagnosticsSnapshot({ now = Date.now } = {}) {
   const gauges = {}
-  for (const [name, read] of gaugeSources) {
+  for (const [name, sources] of gaugeSources) {
     try {
-      const value = Number(read())
-      gauges[name] = Number.isFinite(value) ? value : null
+      const values = [...sources].map((read) => Number(read()))
+      gauges[name] = values.every(Number.isFinite) ? values.reduce((sum, value) => sum + value, 0) : null
     } catch {
       gauges[name] = null
     }

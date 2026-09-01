@@ -163,15 +163,18 @@ export function createBotanicAgentModelProvider(runtimeConfig, { fetchImpl = fet
       } catch (caught) {
         throw classifyTransportFailure(caught, { rootSignal: request.signal, callTimeout, startedAt })
       }
-      if (!response.ok) {
-        // overflow 判定需要 body;判定后丢弃,不进入错误对象。
-        const failureBody = await response.text().catch(() => '')
-        throwIfAgentProviderContextOverflow(response.status, failureBody)
-        throw agentModelProviderResponseError(response.status)
-      }
       try {
+        if (!response.ok) {
+          // overflow 判定需要 body;判定后丢弃,不进入错误对象。
+          const failureBody = await response.text()
+          throwIfAgentProviderContextOverflow(response.status, failureBody)
+          throw agentModelProviderResponseError(response.status)
+        }
         if (!stream) {
-          const parsed = /** @type {{ choices?: unknown } | null} */ (await response.json().catch(() => null))
+          const parsed = /** @type {{ choices?: unknown } | null} */ (await response.json().catch((caught) => {
+            if (request.signal?.aborted || callTimeout.aborted) throw caught
+            return null
+          }))
           if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.choices)) {
             throw new BotanicAgentModelProviderError(502, 'INVALID_PROVIDER_RESPONSE', 'Agent 模型返回了无法解析的响应。')
           }
@@ -182,6 +185,7 @@ export function createBotanicAgentModelProvider(runtimeConfig, { fetchImpl = fet
         })
       } catch (caught) {
         if (caught instanceof BotanicAgentModelProviderError) throw caught
+        if (caught && typeof caught === 'object' && 'code' in caught && caught.code === 'AGENT_CONTEXT_OVERFLOW') throw caught
         throw classifyTransportFailure(caught, { rootSignal: request.signal, callTimeout, startedAt })
       }
     } finally {

@@ -46,15 +46,19 @@ test('recorder 未初始化或 gauge 源抛错都 fail-open,快照只含计数�
   // gauge 源抛错 → null,不影响其他源。
   registerAgentDiagnosticGauge('agent.test.broken', () => { throw new Error('boom') })
   registerAgentDiagnosticGauge('agent.test.ok', () => 7)
+  registerAgentDiagnosticGauge('agent.test.shared', () => 2)
+  registerAgentDiagnosticGauge('agent.test.shared', () => 3)
   try {
     const snapshot = agentRuntimeDiagnosticsSnapshot({ now: () => 42 })
     assert.equal(snapshot.gauges['agent.test.broken'], null)
     assert.equal(snapshot.gauges['agent.test.ok'], 7)
+    assert.equal(snapshot.gauges['agent.test.shared'], 5)
     assert.equal(snapshot.generatedAt, 42)
     assert.ok(snapshot.process.rssBytes > 0)
     assert.equal(JSON.stringify(snapshot).includes('prompt'), false)
   } finally {
     unregisterAgentDiagnosticGauge('agent.test.broken')
     unregisterAgentDiagnosticGauge('agent.test.ok')
+    unregisterAgentDiagnosticGauge('agent.test.shared')
   }
 })
