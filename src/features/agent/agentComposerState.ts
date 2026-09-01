@@ -187,3 +187,100 @@ export function reduceAgentComposerStates(
   const current = states[input.key] ?? input.base
   return { ...states, [input.key]: agentComposerStateReducer(current, input.patch) }
 }
+
+
+export type AgentComposerHistoryState = {
+  cursor?: number
+  recalledText?: string
+}
+
+export type AgentComposerHistoryNavigation = {
+  handled: boolean
+  state: AgentComposerHistoryState
+  text?: string
+  caret?: number
+}
+
+export const initialAgentComposerHistoryState: AgentComposerHistoryState = {}
+
+/**
+ * Shell-style history:空输入可进入;召回后只有文本未改且 caret 在边界才继续,
+ * 不劫持普通多行 Up/Down。越过最新恢复空草稿。
+ */
+export function navigateAgentComposerHistory(input: {
+  state: AgentComposerHistoryState
+  entries: readonly string[]
+  direction: 'older' | 'newer'
+  text: string
+  caret: number
+}): AgentComposerHistoryNavigation {
+  const entries = input.entries.map((entry) => entry.trim()).filter(Boolean)
+  if (!entries.length) return { handled: false, state: input.state }
+  const browsing = input.state.cursor !== undefined
+  if (input.text) {
+    const atBoundary = input.caret === 0 || input.caret === input.text.length
+    if (!atBoundary || input.state.recalledText !== input.text) return { handled: false, state: input.state }
+  } else if (!browsing && input.direction === 'newer') {
+    return { handled: false, state: input.state }
+  }
+
+  if (input.direction === 'older') {
+    const cursor = input.state.cursor === undefined
+      ? entries.length - 1
+      : Math.max(0, input.state.cursor - 1)
+    const text = entries[cursor]
+    return { handled: true, state: { cursor, recalledText: text }, text, caret: text.length }
+  }
+
+  const current = input.state.cursor
+  if (current === undefined) return { handled: false, state: input.state }
+  if (current + 1 >= entries.length) {
+    return { handled: true, state: {}, text: '', caret: 0 }
+  }
+  const cursor = current + 1
+  const text = entries[cursor]
+  return { handled: true, state: { cursor, recalledText: text }, text, caret: text.length }
+}
+
+function normalizedSuggestionText(value: string) {
+  return value.normalize('NFKC').trim().toLocaleLowerCase()
+}
+
+/** exact > prefix > substring > ordered subsequence;中文按字符工作。-1 表示不匹配。 */
+export function agentSuggestionFuzzyScore(value: string, query: string) {
+  const source = normalizedSuggestionText(value)
+  const target = normalizedSuggestionText(query)
+  if (!target) return 0
+  if (source === target) return 1_000
+  if (source.startsWith(target)) return 800 - Math.min(200, source.length - target.length)
+  const containedAt = source.indexOf(target)
+  if (containedAt >= 0) return 600 - Math.min(200, containedAt * 4)
+  let sourceIndex = 0
+  let score = 300
+  let previous = -2
+  for (const character of target) {
+    const found = source.indexOf(character, sourceIndex)
+    if (found < 0) return -1
+    score += found === previous + 1 ? 12 : Math.max(1, 8 - (found - sourceIndex))
+    previous = found
+    sourceIndex = found + 1
+  }
+  return score - Math.min(100, source.length - target.length)
+}
+
+export function rankAgentSuggestions<T>(
+  items: readonly T[],
+  query: string,
+  searchable: (item: T) => readonly string[],
+): T[] {
+  if (!query.trim()) return [...items]
+  return items
+    .map((item, index) => ({
+      item,
+      index,
+      score: Math.max(...searchable(item).map((value) => agentSuggestionFuzzyScore(value, query))),
+    }))
+    .filter((entry) => entry.score >= 0)
+    .sort((left, right) => right.score - left.score || left.index - right.index)
+    .map((entry) => entry.item)
+}

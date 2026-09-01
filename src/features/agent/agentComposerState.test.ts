@@ -4,9 +4,13 @@ import test from 'node:test'
 import type { BotanicAgentMessage } from '../../domain/agent.ts'
 import {
   agentComposerDraftStorageKey,
+  agentSuggestionFuzzyScore,
   createAgentComposerState,
   dismissAgentComposerMention,
+  initialAgentComposerHistoryState,
+  navigateAgentComposerHistory,
   nextAgentSuggestionIndex,
+  rankAgentSuggestions,
   readAgentComposerDraft,
   reduceAgentComposerStates,
   resolveAgentComposerMention,
@@ -74,4 +78,34 @@ test('Esc dismissed mention 在 token 未修改时保持关闭,编辑 token 后�
   const dismissed = dismissAgentComposerMention('/plat', initial.mentionQuery)
   assert.equal(resolveAgentComposerMention('/plat', 5, dismissed).mentionQuery, undefined)
   assert.equal(resolveAgentComposerMention('/platform', 9, dismissed).mentionQuery?.query, 'platform')
+})
+
+
+test('输入历史只在空输入或未修改召回文本的边界接管 Up/Down', () => {
+  const entries = ['第一条', '第二条']
+  let state = initialAgentComposerHistoryState
+  const latest = navigateAgentComposerHistory({ state, entries, direction: 'older', text: '', caret: 0 })
+  assert.equal(latest.handled, true)
+  assert.equal(latest.text, '第二条')
+  state = latest.state
+  const older = navigateAgentComposerHistory({ state, entries, direction: 'older', text: '第二条', caret: 3 })
+  assert.equal(older.text, '第一条')
+  const newer = navigateAgentComposerHistory({ state: older.state, entries, direction: 'newer', text: '第一条', caret: 3 })
+  assert.equal(newer.text, '第二条')
+  const cleared = navigateAgentComposerHistory({ state: newer.state, entries, direction: 'newer', text: '第二条', caret: 3 })
+  assert.equal(cleared.text, '')
+  assert.equal(navigateAgentComposerHistory({ state, entries, direction: 'older', text: '第二条\n继续写', caret: 2 }).handled, false)
+  assert.equal(navigateAgentComposerHistory({ state, entries, direction: 'older', text: '第二条已改', caret: 5 }).handled, false)
+})
+
+test('fuzzy 建议排序 exact>prefix>substring>有序子序列,中文按字符匹配', () => {
+  assert.ok(agentSuggestionFuzzyScore('平台交付包', '平台') > agentSuggestionFuzzyScore('电商平台交付', '平台'))
+  assert.ok(agentSuggestionFuzzyScore('platform_pack', 'pfpk') >= 0)
+  assert.equal(agentSuggestionFuzzyScore('受控局部编辑', '视频'), -1)
+  const ranked = rankAgentSuggestions(
+    [{ name: '电商平台交付' }, { name: '平台交付包' }, { name: '视频分镜' }],
+    '平台',
+    (item) => [item.name],
+  )
+  assert.deepEqual(ranked.map((item) => item.name), ['平台交付包', '电商平台交付'])
 })

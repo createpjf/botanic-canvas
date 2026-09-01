@@ -145,6 +145,7 @@ import {
 } from './AgentWorkspaceParts'
 import {
   applyAgentSessionContextChange,
+  rankAgentSuggestions,
   resolveAgentRetrySourceMessage,
   type AgentFailedInstruction,
   type AgentInstructionRetryOptions,
@@ -757,7 +758,7 @@ export default function AgentWorkspace({
     .map((message) => message.question!.sourcePromptMessageId!)), [session?.messages])
   const mentionOptions = useMemo(() => {
     if (!mentionQuery || mentionQuery.trigger !== '@') return []
-    const query = mentionQuery.query.trim().toLocaleLowerCase()
+    const query = mentionQuery.query.trim()
     const canReference = (item: AgentContextItem) => {
       if (item.kind === '文字') return Boolean(item.content)
       // 图/视频素材与结果都可 @；视频没封面时仍保留，由菜单用「视」徽章展示。
@@ -766,22 +767,25 @@ export default function AgentWorkspace({
       }
       return false
     }
-    return contextOptions
-      .filter(canReference)
-      .filter((item) => !query || item.label.toLocaleLowerCase().includes(query))
-      .slice(0, 8)
+    return rankAgentSuggestions(
+      contextOptions.filter(canReference),
+      query,
+      (item) => [item.label, item.id, item.content ?? ''],
+    ).slice(0, 8)
   }, [contextOptions, mentionQuery])
   const skillOptions = useMemo<AgentSkillOption[]>(() => {
     if (!mentionQuery || mentionQuery.trigger !== '/') return []
-    const query = mentionQuery.query.trim().toLocaleLowerCase()
-    const catalog = [...systemSkills, ...skills.map((skill) => ({
-      id: skill.id,
-      name: skill.name,
-      instructions: skill.instructions,
-      source: 'project' as const,
-    }))]
-      .filter((skill, index, items) => items.findIndex((candidate) => candidate.id === skill.id) === index)
-      .filter((skill) => !query || skill.name.toLocaleLowerCase().includes(query) || skill.id.toLocaleLowerCase().includes(query))
+    const query = mentionQuery.query.trim()
+    const catalog = rankAgentSuggestions(
+      [...systemSkills, ...skills.map((skill) => ({
+        id: skill.id,
+        name: skill.name,
+        instructions: skill.instructions,
+        source: 'project' as const,
+      }))].filter((skill, index, items) => items.findIndex((candidate) => candidate.id === skill.id) === index),
+      query,
+      (skill) => [skill.name, skill.id],
+    )
     // 系统 Skill 全量出现在 / 菜单；项目 Skill 仍截断，避免目录把菜单撑爆。
     const systemMatches = catalog.filter((skill) => skill.source === 'system')
     const projectMatches = catalog.filter((skill) => skill.source !== 'system').slice(0, 8)

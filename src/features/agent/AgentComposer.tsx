@@ -17,7 +17,7 @@ import {
 } from '../../components/gsapMotion'
 import { agentPlannerModelLabel, agentPlannerModelShortLabel } from '../../components/generationModelPresentation'
 import type { AgentContextItem, AgentSkillOption } from './agentWorkspace.types'
-import { nextAgentSuggestionIndex } from './agentComposerState'
+import { initialAgentComposerHistoryState, navigateAgentComposerHistory, nextAgentSuggestionIndex } from './agentComposerState'
 import { BOTANIC_AGENT_MOUNTED_SKILL_LIMIT } from './agentSkillForm'
 import { useProductI18n, useProductMessages } from '../../i18n/react'
 
@@ -154,6 +154,12 @@ export function AgentComposer({
   const canvasMenuOpen = mentionQuery?.trigger === '@'
   const mountedSkillIds = new Set(mountedSkills.map((skill) => skill.id))
   const skillLimitReached = mountedSkills.length >= BOTANIC_AGENT_MOUNTED_SKILL_LIMIT
+  const historyEntries = (session?.messages ?? [])
+    .filter((message) => message.role === 'user' && message.content.trim())
+    .map((message) => message.content.trim())
+    .filter((entry, index, entries) => index === 0 || entry !== entries[index - 1])
+  const latestHistoryMessageId = [...(session?.messages ?? [])].reverse().find((message) => message.role === 'user')?.id ?? ''
+  const historyStateRef = useRef(initialAgentComposerHistoryState)
   const skillOptionUnavailable = (skill: AgentSkillOption) => skillLimitReached && !mountedSkillIds.has(skill.id)
   // Composite listbox:方向键只走可用 option;active(键盘高亮)与 selected(已挂载)是两件事。
   const selectableSuggestionIndexes = skillMenuOpen
@@ -183,6 +189,21 @@ export function AgentComposer({
       const nextPosition = nextAgentSuggestionIndex(currentPosition, selectableSuggestionIndexes.length, direction)
       setActiveSuggestionIndex(selectableSuggestionIndexes[nextPosition])
       return
+    }
+    if ((event.key === 'ArrowUp' || event.key === 'ArrowDown') && !mentionQuery) {
+      const navigation = navigateAgentComposerHistory({
+        state: historyStateRef.current,
+        entries: historyEntries,
+        direction: event.key === 'ArrowUp' ? 'older' : 'newer',
+        text: instruction,
+        caret: event.currentTarget.selectionStart ?? instruction.length,
+      })
+      if (navigation.handled) {
+        event.preventDefault()
+        historyStateRef.current = navigation.state
+        onInstructionChange(navigation.text ?? '', navigation.caret ?? 0)
+        return
+      }
     }
     if (event.key === 'Enter' && mentionQuery) {
       if (skillMenuOpen && skillOptions[selectedSuggestionIndex]) {
@@ -221,6 +242,12 @@ export function AgentComposer({
   const mentionMenuKey = mentionQuery?.trigger ?? ''
 
   useEffect(() => setActiveSuggestionIndex(0), [mentionQuery?.query, mentionQuery?.trigger])
+  useEffect(() => { historyStateRef.current = initialAgentComposerHistoryState }, [latestHistoryMessageId, session?.id])
+  useEffect(() => {
+    if (historyStateRef.current.recalledText !== undefined && historyStateRef.current.recalledText !== instruction) {
+      historyStateRef.current = initialAgentComposerHistoryState
+    }
+  }, [instruction])
 
   useEffect(() => {
     if (!activeSuggestionId) return
@@ -291,7 +318,10 @@ export function AgentComposer({
     <textarea
       ref={textareaRef}
       value={instruction}
-      onChange={(event) => onInstructionChange(event.target.value, event.target.selectionStart ?? event.target.value.length)}
+      onChange={(event) => {
+        historyStateRef.current = initialAgentComposerHistoryState
+        onInstructionChange(event.target.value, event.target.selectionStart ?? event.target.value.length)
+      }}
       onClick={(event) => onInstructionClick(event.currentTarget.selectionStart ?? instruction.length)}
       onKeyDown={handleKeyDown}
       placeholder={copy.placeholder}
