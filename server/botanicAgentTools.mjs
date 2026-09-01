@@ -8,12 +8,14 @@ import { createBotanicAgentWebResearchTools } from './botanicAgentWebTools.mjs'
 import {
   agentSkillExecutionContentHash,
   agentSkillManifestRisk,
+  BotanicAgentSkillError,
   botanicAgentSkillCapabilities,
   normalizeAgentSkillManifest,
   normalizeBotanicAgentSkillCapabilities,
-  resolveAgentSkillDependencies,
+  resolveAgentSkillDependencyClosure,
   skillRiskOrder,
 } from './botanicAgentSkill.mjs'
+import { estimateAgentContextTokens } from './agentContextBudget.mjs'
 import { createAgentSubtask } from './agentSubtask.mjs'
 import { runAgentSubtaskFanout, subtaskFanoutSummary } from './agentSubtaskScheduler.mjs'
 import { readFileSync } from 'node:fs'
@@ -115,7 +117,6 @@ function projectSkillEntries(projectSkills = []) {
   return (Array.isArray(projectSkills) ? projectSkills : [])
     .filter((skill) => skill?.status === 'active' && typeof skill.id === 'string' && typeof skill.name === 'string' && typeof skill.instructions === 'string')
     .filter((skill) => !skillCatalog[skill.id])
-    .slice(0, 30)
     .map((skill) => [skill.id, {
       label: skill.name,
       instructions: skill.instructions,
@@ -152,17 +153,43 @@ export function resolveBotanicAgentAvailableSkills(projectSkills = []) {
   return { ...Object.fromEntries(systemEntries), ...Object.fromEntries(projectSkillEntries(projectSkills)) }
 }
 
+/** Composer 公开请求上限与解析上限共用同一常量；两处不一致就会出现「API 接受、解析器丢弃」。 */
+export const BOTANIC_AGENT_MOUNTED_SKILL_LIMIT = 16
+/** 依赖 closure 防御边界：越界直接具名失败，不进入 Provider。 */
+const MOUNTED_SKILL_DEPENDENCY_MAX_DEPTH = 8
+const MOUNTED_SKILL_DEPENDENCY_MAX_NODES = 64
+/** Skill 聚合子预算上限（token）；至少 75% 输入预算留给 system/工具/历史。 */
+const MOUNTED_SKILL_TOKEN_BUDGET_CEILING = 4000
+
+function mountedSkillTokenBudget(contextPolicy) {
+  const maxInputTokens = Number(contextPolicy?.maxInputTokens)
+  if (!Number.isSafeInteger(maxInputTokens) || maxInputTokens <= 0) return MOUNTED_SKILL_TOKEN_BUDGET_CEILING
+  return Math.min(MOUNTED_SKILL_TOKEN_BUDGET_CEILING, Math.floor(maxInputTokens * 0.25))
+}
+
 /**
- * Composer 挂载的 Skill：解析成带正文的列表，未知 id 直接丢掉。
+ * Composer 挂载的 Skill：解析成带正文的列表，**fail-closed**。
  *
- * 依赖不可用的 Skill **仍然挂载，但带上 `dependencyIssues`**（Epic 6 Manifest 的依赖项）。
- * 两种更简单的做法都不对：静默丢掉会让用户以为自己挂的规则在生效；静默照用会让
- * Agent 拿着少了半截的约束去创作，而两边都不知道少了什么。带标记挂载之后，
- * 简报会明说哪一条依赖不可用（见 `botanicAgentMountedSkillBriefing`）。
+ * 任何静默降级都会让用户以为自己挂的规则在生效：未知 id 不再丢弃、第 9–16 个
+ * 不再裁掉、依赖缺失/环/冲突不再带 warning 继续。任一问题都在 Provider 调用前
+ * 以具名 `AGENT_SKILL_*` 错误收口。
+ *
+ * 返回数组 = 依赖 closure（dependency-first 拓扑序，diamond 只注入一次，
+ * `role: 'dependency'`）+ 挂载 roots（保留用户挂载顺序）。全部条目正文完整注入，
+ * 聚合预算超限时具名失败而不是裁剪正文。
  */
-export function resolveBotanicAgentMountedSkills(mountedSkillIds = [], projectSkills = []) {
+export function resolveBotanicAgentMountedSkills(mountedSkillIds = [], projectSkills = [], { contextPolicy } = {}) {
+  const requested = [...new Set(Array.isArray(mountedSkillIds) ? mountedSkillIds : [])]
+  if (!requested.length) return []
+  if (requested.length > BOTANIC_AGENT_MOUNTED_SKILL_LIMIT) {
+    throw new BotanicAgentSkillError(400, 'AGENT_SKILL_BINDING_LIMIT', `一次最多挂载 ${BOTANIC_AGENT_MOUNTED_SKILL_LIMIT} 个 Skill。`)
+  }
   const available = resolveBotanicAgentAvailableSkills(projectSkills)
-  // `resolveAgentSkillDependencies` 按 id 查目录，因此这里摊成带 id 的数组。
+  const unknown = requested.filter((skillId) => !available[skillId])
+  if (unknown.length) {
+    throw new BotanicAgentSkillError(409, 'AGENT_SKILL_BINDING_UNKNOWN', `挂载的 Skill 不可用：${unknown.join('、')}。`)
+  }
+  // `resolveAgentSkillDependencyClosure` 按 id 查目录，因此这里摊成带 id 的数组。
   // 内置 Skill 没有 lifecycle，按已发布处理 —— 它们随代码发布，不存在「未批准」。
   const catalog = Object.entries(available).map(([id, skill]) => ({
     id,
@@ -172,23 +199,54 @@ export function resolveBotanicAgentMountedSkills(mountedSkillIds = [], projectSk
     contentHash: skill.contentHash,
     manifest: skill.manifest,
     versions: skill.versions ?? [],
+    name: skill.label,
+    instructions: skill.instructions,
+    capabilities: skill.capabilities,
+    source: skill.source ?? 'system',
   }))
-  return [...new Set(Array.isArray(mountedSkillIds) ? mountedSkillIds : [])]
-    .map((skillId) => {
-      const skill = available[skillId]
-      if (!skill) return undefined
-      const dependencies = resolveAgentSkillDependencies({ id: skillId, manifest: skill.manifest }, catalog)
-      return {
-        id: skillId, name: skill.label, instructions: skill.instructions, source: skill.source ?? 'system',
-        ...(skill.version ? { version: skill.version } : {}),
-        ...(skill.contentHash ? { contentHash: skill.contentHash } : {}),
-        ...(skill.capabilities ? { capabilities: skill.capabilities } : {}),
-        ...(skill.manifest ? { manifest: skill.manifest } : {}),
-        ...(dependencies.ok ? {} : { dependencyIssues: dependencies }),
-      }
-    })
-    .filter(Boolean)
-    .slice(0, 8)
+  const roots = requested.map((skillId) => {
+    const skill = available[skillId]
+    return {
+      id: skillId, name: skill.label, instructions: skill.instructions, source: skill.source ?? 'system',
+      ...(skill.version ? { version: skill.version } : {}),
+      ...(skill.contentHash ? { contentHash: skill.contentHash } : {}),
+      ...(skill.capabilities ? { capabilities: skill.capabilities } : {}),
+      ...(skill.manifest ? { manifest: skill.manifest } : {}),
+    }
+  })
+  const resolution = resolveAgentSkillDependencyClosure(roots, catalog, {
+    maxDepth: MOUNTED_SKILL_DEPENDENCY_MAX_DEPTH,
+    maxNodes: MOUNTED_SKILL_DEPENDENCY_MAX_NODES,
+  })
+  if (resolution.limitExceeded) {
+    throw new BotanicAgentSkillError(409, 'AGENT_SKILL_DEPENDENCY_LIMIT', '挂载 Skill 的依赖图超出防御边界，已停止解析。')
+  }
+  if (resolution.conflicts.length) {
+    throw new BotanicAgentSkillError(409, 'AGENT_SKILL_DEPENDENCY_CONFLICT', `同一依赖被要求为不同版本：${resolution.conflicts.join('、')}。`)
+  }
+  const broken = [...resolution.missing, ...resolution.unusable, ...resolution.cyclic]
+  if (broken.length) {
+    throw new BotanicAgentSkillError(409, 'AGENT_SKILL_BINDING_DEPENDENCY', `挂载 Skill 的依赖不可用：${broken.join('、')}。`)
+  }
+  const rootIds = new Set(requested)
+  const dependencies = resolution.closure
+    .filter((entry) => !rootIds.has(entry.id))
+    .map((entry) => ({ ...entry, role: 'dependency' }))
+  const mounted = [...dependencies, ...roots]
+  const totalTokens = mounted.reduce(
+    (sum, skill) => sum + estimateAgentContextTokens(`${skill.name ?? skill.id}\n${skill.instructions ?? ''}`),
+    0,
+  )
+  const budget = mountedSkillTokenBudget(contextPolicy)
+  if (totalTokens > budget) {
+    const names = mounted.map((skill) => skill.name ?? skill.id).join('、')
+    throw new BotanicAgentSkillError(
+      409,
+      'AGENT_SKILL_CONTEXT_TOO_LARGE',
+      `挂载 Skill（${names}）合计约 ${totalTokens} token，超出本轮 Skill 预算 ${budget} token；请减少挂载数量，正文不会被截断。`,
+    )
+  }
+  return mounted
 }
 
 /** skill_search 用的扁平目录：系统 Skill 始终在，项目 Skill 跟在后面。 */
@@ -218,20 +276,13 @@ export function botanicAgentMountedSkillBriefing(mountedSkills = [], locale = 'z
     : '用户已在输入框挂载以下 Skill。本轮必须遵守；不要再检索确认它们是否存在，工具列表里有 skill_run 时也不必再调一次。'
   const blocks = mountedSkills.map((skill) => {
     const name = typeof skill.name === 'string' ? skill.name.trim() : skill.id
-    const body = typeof skill.instructions === 'string' ? skill.instructions.trim().slice(0, 2000) : ''
-    // 依赖不可用要**明说**：不说的话 Agent 会拿着少了半截的约束照常创作，
-    // 而用户以为整套规则都在生效。
-    const broken = [
-      ...(skill.dependencyIssues?.missing ?? []),
-      ...(skill.dependencyIssues?.unusable ?? []),
-      ...(skill.dependencyIssues?.cyclic ?? []),
-    ]
-    const warning = broken.length
-      ? (english
-        ? `\n\n> Incomplete: this Skill depends on ${broken.join(', ')}, which is unavailable. Follow what is written here, and tell the user the ruleset is incomplete rather than filling the gap yourself.`
-        : `\n\n> 这条 Skill 依赖 ${broken.join('、')}，当前不可用，规则并不完整。按这里写到的执行，并如实告诉用户缺了哪一条，不要自行补足。`)
+    // 正文完整注入。解析器已按聚合预算 fail-closed（AGENT_SKILL_CONTEXT_TOO_LARGE），
+    // 这里再截断就会回到「用户以为整套规则在生效」的静默丢失。
+    const body = typeof skill.instructions === 'string' ? skill.instructions.trim() : ''
+    const dependencyNote = skill.role === 'dependency'
+      ? (english ? ' — dependency of a mounted Skill' : ' — 挂载 Skill 的依赖')
       : ''
-    return `### ${name} (${skill.id})\n${body}${warning}`
+    return `### ${name} (${skill.id})${dependencyNote}\n${body}`
   })
   return [header, ...blocks].join('\n\n')
 }

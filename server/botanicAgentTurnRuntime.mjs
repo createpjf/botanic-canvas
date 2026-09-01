@@ -165,7 +165,29 @@ export function agentTurnRequestSnapshot(request) {
   return clone(request)
 }
 
-export function createAgentTurnRecord({ id, ownerId, projectId, sessionId, requestId, idempotencyKey, request, now = Date.now() }) {
+/** Turn lifetime（H3A）：默认 600s，clamp 60–900s。与 lease 无关：lease 是执行权，这是业务时限。 */
+export const DEFAULT_AGENT_TURN_LIFETIME_MS = 600_000
+export function boundedAgentTurnLifetimeMs(value) {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return DEFAULT_AGENT_TURN_LIFETIME_MS
+  return Math.max(60_000, Math.min(parsed, 900_000))
+}
+
+/**
+ * Turn 的业务期限。deadlineAt 在 Turn 顶层、与 createdAt 同级：绝不进入 request，
+ * 因此不影响 request intent/hash；相同幂等键重试命中原 Turn 和原 deadline；
+ * reclaim 后不重置。旧 Turn 没有该字段时用 createdAt 兼容推导。
+ */
+export function agentTurnDeadlineAt(turn, lifetimeMs) {
+  const explicit = Number(turn?.deadlineAt)
+  if (Number.isSafeInteger(explicit) && explicit > 0) return explicit
+  const createdAt = Number(turn?.createdAt)
+  if (!Number.isSafeInteger(createdAt) || createdAt <= 0) return undefined
+  return createdAt + boundedAgentTurnLifetimeMs(lifetimeMs)
+}
+
+export function createAgentTurnRecord(input) {
+  const { id, ownerId, projectId, sessionId, requestId, idempotencyKey, request, now = Date.now(), lifetimeMs } = input ?? {}
   if (!id || !ownerId || !projectId || !idempotencyKey) throw new TypeError('Agent Turn 缺少幂等边界。')
   const snapshot = agentTurnRequestSnapshot(request)
   return {
@@ -183,6 +205,7 @@ export function createAgentTurnRecord({ id, ownerId, projectId, sessionId, reque
     lastSequence: 0,
     createdAt: now,
     updatedAt: now,
+    deadlineAt: now + boundedAgentTurnLifetimeMs(lifetimeMs),
   }
 }
 
@@ -190,18 +213,23 @@ export function createAgentTurnRecord({ id, ownerId, projectId, sessionId, reque
  * Turn Runtime 的唯一执行 seam。解析器可以是视觉回合、文本回合或测试替身；
  * 运行时只负责幂等、生命周期、可恢复事件和“不持久化思维链”这一边界。
  */
+/** 恢复代际上限（H3A）：generation 1–3 可进业务 resolver；4 只允许 terminal-only 收口。 */
+const MAX_AGENT_TURN_BUSINESS_GENERATION = 3
+
 export function createBotanicAgentTurnRuntime({
   productStore,
   localCancelRegistry,
   now = () => Date.now(),
   leaseMs = 120_000,
   heartbeatMs = 30_000,
+  turnLifetimeMs = DEFAULT_AGENT_TURN_LIFETIME_MS,
 } = {}) {
   if (!productStore) throw new TypeError('Agent Turn Runtime 缺少 ProductStore。')
   const activeTurns = new Map()
   const cancelledTurns = new Set()
   const boundedLeaseMs = Math.max(30_000, Math.min(Number(leaseMs) || 120_000, 900_000))
   const boundedHeartbeatMs = Math.max(10, Math.min(Number(heartbeatMs) || 30_000, Math.floor(boundedLeaseMs / 2)))
+  const boundedTurnLifetimeMs = boundedAgentTurnLifetimeMs(turnLifetimeMs)
 
   const executionError = (code, message, statusCode = 409) => Object.assign(new Error(message), { code, statusCode })
   const event = (turnId, projectId, type, payload) => ({
@@ -241,6 +269,7 @@ export function createBotanicAgentTurnRuntime({
       idempotencyKey,
       request,
       now: now(),
+      lifetimeMs: boundedTurnLifetimeMs,
     })
     const active = activeTurns.get(activeKey)
     if (active) {
@@ -282,6 +311,9 @@ export function createBotanicAgentTurnRuntime({
 
       let turn = claim.turn
       const executionGeneration = turn.execution.generation
+      // 业务期限与恢复代际（H3A）。deadline 从 Turn 顶层读取，reclaim 不重置;
+      // 旧 Turn 无该字段时按 createdAt 兼容推导。
+      const deadlineAt = agentTurnDeadlineAt(turn, boundedTurnLifetimeMs)
       // AbortController 由权威 Runtime 拥有，而不是 HTTP 连接拥有。浏览器断线只会
       // 失去观察通道；只有 durable cancel fence 或跨实例 cancel signal 才能中止 Provider。
       const controller = new AbortController()
@@ -354,6 +386,35 @@ export function createBotanicAgentTurnRuntime({
         persistedEventChain = delivery.then(() => undefined, () => undefined)
         pendingDeliveries.push(delivery)
         return delivery
+      }
+
+      // Terminal-only 收口（H3A）：generation 4 的 claim 只允许提交具名失败，
+      // 不得再调用 Provider/tool；旧 generation Worker 已无权收口的 Turn 由它终结。
+      // 任何 generation > 4 都不该出现——上一代已终态化;若出现同样只做终态。
+      if (executionGeneration > MAX_AGENT_TURN_BUSINESS_GENERATION) {
+        const resumeError = {
+          code: 'AGENT_TURN_RESUME_LIMIT_REACHED',
+          message: 'Agent 回合恢复次数已达上限，已停止执行。',
+        }
+        await commit({
+          status: 'failed',
+          error: resumeError,
+          turnEvent: event(id, projectId, 'turn.failed', resumeError),
+        })
+        throw executionError(resumeError.code, resumeError.message, 409)
+      }
+      // 业务期限（H3A）：deadline 已过时不再启动 resolver;具名失败,不伪装 Provider 错。
+      if (typeof deadlineAt === 'number' && now() >= deadlineAt) {
+        const deadlineError = {
+          code: 'AGENT_TURN_DEADLINE_EXCEEDED',
+          message: 'Agent 回合已超过本轮时限，已停止执行。',
+        }
+        await commit({
+          status: 'failed',
+          error: deadlineError,
+          turnEvent: event(id, projectId, 'turn.failed', deadlineError),
+        })
+        throw executionError(deadlineError.code, deadlineError.message, 504)
       }
 
       // 首次 accepted/started 事件与 running 状态同一 fenced commit；Store 分配 sequence。
@@ -473,6 +534,7 @@ export function createBotanicAgentTurnRuntime({
           runtimeIdentity,
           // 明确覆盖调用方可能携带的 request.signal；传输层无权拥有 Turn 生命周期。
           signal: controller.signal,
+          deadlineAt,
           onEvent: emit,
           ...(turn.checkpoint ? { resumeCheckpoint: clone(turn.checkpoint) } : {}),
           saveCheckpoint,

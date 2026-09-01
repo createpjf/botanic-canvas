@@ -228,6 +228,7 @@ console.log(`Botanic generation worker started (concurrency ${config.workerConcu
 const durableTurnRuntime = createBotanicAgentTurnRuntime({
   productStore: runtime.productStore,
   localCancelRegistry: turnCancelRegistry,
+  turnLifetimeMs: config.agentTurnLifetimeMs,
 })
 let cancelStaleAgentTurn
 let durablePlannerSubagentRunner

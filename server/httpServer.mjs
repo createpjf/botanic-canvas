@@ -444,7 +444,7 @@ const hasAgentSubagentStore = [
   'listAgentSubagentsForRootTurnPage',
 ].every((method) => typeof productStore?.[method] === 'function')
 const subagentTurnRuntime = hasAgentSubagentStore
-  ? createBotanicAgentTurnRuntime({ productStore, localCancelRegistry: localTurnCancelRegistry })
+  ? createBotanicAgentTurnRuntime({ productStore, localCancelRegistry: localTurnCancelRegistry, turnLifetimeMs: config.agentTurnLifetimeMs })
   : undefined
 const subagentRunner = hasAgentSubagentStore
   ? createAgentSubagentRunner({ runtimeConfig: config })

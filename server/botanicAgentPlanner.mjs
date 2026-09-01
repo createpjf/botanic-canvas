@@ -1,5 +1,6 @@
 import { AgentToolRuntimeError, freezeAgentStepSnapshot, runAgentToolLoop } from './agentToolRuntime.mjs'
 import {
+  BOTANIC_AGENT_MOUNTED_SKILL_LIMIT,
   botanicAgentMountedSkillBriefing,
   botanicAgentSearchableSkills,
   createBotanicAgentPlanningToolRegistry,
@@ -291,7 +292,7 @@ export function validateBotanicAgentPlanInput(raw) {
   const mountedSkillIds = input.mountedSkillIds === undefined
     ? undefined
     : (() => {
-      if (!Array.isArray(input.mountedSkillIds) || input.mountedSkillIds.length > 16) invalidRequest('已挂载 Skill 无效。')
+      if (!Array.isArray(input.mountedSkillIds) || input.mountedSkillIds.length > BOTANIC_AGENT_MOUNTED_SKILL_LIMIT) invalidRequest('已挂载 Skill 无效。')
       return [...new Set(input.mountedSkillIds.map((id, index) => requiredText(id, `第 ${index + 1} 个已挂载 Skill`, 160)))]
     })()
 
@@ -426,9 +427,10 @@ export function botanicAgentProviderConfig(runtimeConfig, requestedModel) {
     apiKey,
     model,
     genAiDevelopmentSemconv: runtimeConfig?.telemetry?.genAiDevelopmentSemconv === true,
+    // 内部 fallback 与 Runtime 注入的生产默认一致（55s），避免直调与组合根语义分叉。
     timeoutMs: Number.isFinite(Number(runtimeConfig?.agentPlannerTimeoutMs))
       ? Math.min(60_000, Math.max(1_000, Number(runtimeConfig.agentPlannerTimeoutMs)))
-      : 30_000,
+      : 55_000,
   }
 }
 
@@ -699,8 +701,13 @@ export async function planBotanicGeneration(input, runtimeConfig, options = {}) 
     botanicAgentMountedSkillBriefing(mountedSkills, input.locale),
   ].filter(Boolean).join('\n\n')
   if (options.signal?.aborted) throw new BotanicAgentPlannerError(499, 'REQUEST_CANCELLED', '生图 Agent 请求已取消。')
-  const timeoutSignal = AbortSignal.timeout(config.timeoutMs)
-  const signal = options.signal ? AbortSignal.any([options.signal, timeoutSignal]) : timeoutSignal
+  // 超时按单次模型调用计，不罩整轮 tool loop：与 Turn/Chat 同一语义（H3A）。
+  // timeout signal 不跨工具执行复用，每次 sampling 重新创建。
+  let activeCallTimeout
+  const providerCallSignal = (runtimeSignal = options.signal) => {
+    activeCallTimeout = AbortSignal.timeout(config.timeoutMs)
+    return runtimeSignal ? AbortSignal.any([runtimeSignal, activeCallTimeout]) : activeCallTimeout
+  }
   const fetchImpl = options.fetchImpl ?? fetch
   const proposedActions = []
   const webResearch = {
@@ -790,7 +797,9 @@ export async function planBotanicGeneration(input, runtimeConfig, options = {}) 
       recoverToolCall: options.recoverToolCall,
       modelContext: contextBinding.modelContext,
       maxOutputTokens: 3000,
-      callModel: async ({ messages, tools, tool_choice, step }) => {
+      signal: options.signal,
+      deadlineAt: options.deadlineAt,
+      callModel: async ({ messages, tools, tool_choice, step }, { signal: runtimeSignal } = {}) => {
         const response = await fetchImpl(`${config.baseUrl}/chat/completions`, {
           method: 'POST',
           headers: {
@@ -809,7 +818,7 @@ export async function planBotanicGeneration(input, runtimeConfig, options = {}) 
             temperature: botanicAgentProviderTemperature(config.model),
             stream: streaming,
           }),
-          signal,
+          signal: providerCallSignal(runtimeSignal),
         })
         if (!response.ok) {
           const failureBody = await response.text().catch(() => '')
@@ -871,8 +880,17 @@ export async function planBotanicGeneration(input, runtimeConfig, options = {}) 
         || caught.code.startsWith('AGENT_ACTION_'))) {
       throw new BotanicAgentPlannerError(caught.statusCode ?? 409, caught.code, caught.message)
     }
-    if (timeoutSignal.aborted) throw new BotanicAgentPlannerError(504, 'PROVIDER_TIMEOUT', '生图 Agent 规划超时，请重试。')
     if (options.signal?.aborted) throw new BotanicAgentPlannerError(499, 'REQUEST_CANCELLED', '生图 Agent 请求已取消。')
+    if (activeCallTimeout?.aborted) throw new BotanicAgentPlannerError(504, 'PROVIDER_TIMEOUT', '生图 Agent 规划超时，请重试。')
+    // TOOL_*、AGENT_SKILL_*、取消与 deadline 是具名事实（H4），不得吞成 Provider 错。
+    if (typeof caught?.code === 'string'
+      && (caught.code.startsWith('TOOL_')
+        || caught.code.startsWith('AGENT_SKILL_')
+        || caught.code === 'WEB_QUOTA_EXCEEDED'
+        || caught.code === 'REQUEST_CANCELLED'
+        || caught.code === 'AGENT_TURN_DEADLINE_EXCEEDED')) {
+      throw new BotanicAgentPlannerError(caught.statusCode ?? 422, caught.code, caught.message)
+    }
     if (caught instanceof AgentToolRuntimeError) {
       throw new BotanicAgentPlannerError(502, 'INVALID_PROVIDER_RESPONSE', '生图 Agent 返回了不允许的工具调用。')
     }

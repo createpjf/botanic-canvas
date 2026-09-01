@@ -251,7 +251,7 @@ export function createAgentRouteHandler({
   )
   // HTTP 连接只是观察者；Runtime 与跨实例取消订阅方共用这张执行句柄表。
   const cancelRegistry = localCancelRegistry ?? createLocalCancelRegistry()
-  const agentTurnRuntime = createBotanicAgentTurnRuntime({ productStore, localCancelRegistry: cancelRegistry })
+  const agentTurnRuntime = createBotanicAgentTurnRuntime({ productStore, localCancelRegistry: cancelRegistry, turnLifetimeMs: config?.agentTurnLifetimeMs })
   let agentTurnSubmissionModule
   const turnSubmission = () => {
     agentTurnSubmissionModule ??= createAgentTurnSubmission({

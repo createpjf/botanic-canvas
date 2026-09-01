@@ -519,10 +519,12 @@ test('legacy Turn 缺摘要时只恢复已存请求，不执行冲突的新 inpu
     inputMessage: { id: 'message-1', content: '生成海边主视觉' },
     messages: [{ role: 'user', content: '首次权威窗口' }],
   }
+  // legacy Turn 没有 deadlineAt：deadline 按 createdAt 兼容推导，因此活跃回合要用接近当前的时间。
+  const legacyCreatedAt = Date.now() - 1_000
   store.turns.set('turn-legacy-runtime', {
     id: 'turn-legacy-runtime', version: 2, ownerId: 'u', projectId: 'p',
     idempotencyKey: 'same', request: structuredClone(stableRequest),
-    status: 'queued', createdAt: 100, updatedAt: 100,
+    status: 'queued', createdAt: legacyCreatedAt, updatedAt: legacyCreatedAt,
   })
   const runtime = createBotanicAgentTurnRuntime({ productStore: store })
   let resolverCalls = 0
@@ -538,7 +540,7 @@ test('legacy Turn 缺摘要时只恢复已存请求，不执行冲突的新 inpu
   store.turns.set('turn-legacy-conflicting-input', {
     id: 'turn-legacy-conflicting-input', version: 2, ownerId: 'u', projectId: 'p',
     idempotencyKey: 'same-conflict', request: structuredClone(stableRequest),
-    status: 'queued', createdAt: 100, updatedAt: 100,
+    status: 'queued', createdAt: legacyCreatedAt, updatedAt: legacyCreatedAt,
   })
   await assert.rejects(
     runtime.execute({
@@ -1025,7 +1027,7 @@ test('Runtime 用 fenced commit 保存私有 checkpoint，并在接管时只交�
   const runtime = createBotanicAgentTurnRuntime({ productStore: store })
   const request = { instruction: '继续' }
   const source = createAgentTurnRecord({
-    id: 'turn-checkpoint-runtime', ownerId: 'u', projectId: 'p', idempotencyKey: 'same', request, now: 100,
+    id: 'turn-checkpoint-runtime', ownerId: 'u', projectId: 'p', idempotencyKey: 'same', request, now: Date.now() - 1_000,
   })
   source.status = 'running'
   source.execution = {
@@ -1215,4 +1217,90 @@ test('claim 前时代且无 execution 的 missing-request Turn 复读权威记�
   assert.equal(store.turns.get(legacy.id).request, undefined)
   assert.equal(store.turns.get(legacy.id).requestHash, undefined)
   assert.equal(store.turns.get(legacy.id).error.code, 'AGENT_TURN_REQUEST_MISSING')
+})
+
+test('Turn deadline 写入顶层、Store round-trip 与 claim 后不变,fake clock 下 deadline 内完成', async () => {
+  let clock = 1_000_000
+  const store = fakeStore()
+  const runtime = createBotanicAgentTurnRuntime({ productStore: store, now: () => clock, turnLifetimeMs: 600_000 })
+  let observedDeadline
+  const execution = await runtime.execute({
+    userId: 'u', projectId: 'p', id: 'turn-deadline-main', idempotencyKey: 'deadline-main',
+    request: { instruction: '生成' },
+    resolve: async ({ deadlineAt }) => {
+      observedDeadline = deadlineAt
+      // 两次采样各推进 40s(单次 < 55s 生产默认),总 80s 超过单次上限但仍低于 Turn deadline。
+      clock += 40_000
+      clock += 40_000
+      return { kind: 'chat', answer: '完成' }
+    },
+  })
+  assert.equal(execution.result.answer, '完成')
+  const stored = store.turns.get('turn-deadline-main')
+  // deadlineAt 在顶层、与 createdAt 同级,不进入 request/requestHash。
+  assert.equal(stored.deadlineAt, 1_000_000 + 600_000)
+  assert.equal(observedDeadline, stored.deadlineAt)
+  assert.equal('deadlineAt' in (stored.request ?? {}), false)
+  // round-trip + 相同幂等键重试命中原 deadline。
+  const replay = await runtime.execute({
+    userId: 'u', projectId: 'p', id: 'turn-deadline-main', idempotencyKey: 'deadline-main',
+    request: { instruction: '生成' },
+    resolve: async () => { throw new Error('replay 不应执行 resolver') },
+  })
+  assert.equal(store.turns.get('turn-deadline-main').deadlineAt, 1_000_000 + 600_000)
+  assert.equal(replay.turn.status, 'completed')
+})
+
+test('deadline 已过与 generation 4 都 terminal-only:具名失败且 resolver 不被调用', async () => {
+  let clock = 2_000_000
+  const store = fakeStore()
+  const runtime = createBotanicAgentTurnRuntime({ productStore: store, now: () => clock, turnLifetimeMs: 600_000 })
+  let resolverCalls = 0
+  // 失败一:deadline 已过。旧 Turn 无 deadlineAt,按 createdAt 兼容推导。
+  store.turns.set('turn-deadline-expired', {
+    id: 'turn-deadline-expired', version: 2, ownerId: 'u', projectId: 'p',
+    idempotencyKey: 'expired', request: { instruction: '生成' },
+    status: 'queued', createdAt: clock - 700_000, updatedAt: clock - 700_000, lastSequence: 0,
+  })
+  await assert.rejects(
+    runtime.execute({
+      userId: 'u', projectId: 'p', id: 'turn-deadline-expired', idempotencyKey: 'expired',
+      request: { instruction: '生成' },
+      resolve: async () => { resolverCalls += 1; return { kind: 'chat', answer: '不应执行' } },
+    }),
+    (caught) => caught?.code === 'AGENT_TURN_DEADLINE_EXCEEDED',
+  )
+  assert.equal(resolverCalls, 0)
+  assert.equal(store.turns.get('turn-deadline-expired').status, 'failed')
+  assert.equal(store.turns.get('turn-deadline-expired').error?.code, 'AGENT_TURN_DEADLINE_EXCEEDED')
+
+  // 失败二:stale generation 3 被 takeover 后取得 generation 4,只允许 terminal-only 收口。
+  const source = createAgentTurnRecord({
+    id: 'turn-generation-cap', ownerId: 'u', projectId: 'p', idempotencyKey: 'cap',
+    request: { instruction: '生成' }, now: clock - 1_000,
+  })
+  source.status = 'running'
+  source.execution = {
+    generation: 3, leaseToken: 'stale-lease', leaseDurationMs: 30_000,
+    leaseExpiresAt: 0, claimedAt: clock - 1_000, lastHeartbeatAt: clock - 1_000,
+  }
+  store.turns.set(source.id, structuredClone(source))
+  await assert.rejects(
+    runtime.execute({
+      userId: 'u', projectId: 'p', id: source.id, idempotencyKey: 'cap', allowTakeover: true,
+      request: { instruction: '生成' },
+      resolve: async () => { resolverCalls += 1; return { kind: 'chat', answer: '不应执行' } },
+    }),
+    (caught) => caught?.code === 'AGENT_TURN_RESUME_LIMIT_REACHED',
+  )
+  assert.equal(resolverCalls, 0)
+  const capped = store.turns.get(source.id)
+  assert.equal(capped.status, 'failed')
+  assert.equal(capped.error?.code, 'AGENT_TURN_RESUME_LIMIT_REACHED')
+  assert.equal(capped.execution.generation, 4)
+  // 旧 lease 失效后不能再 commit:旧执行者的迟到终态被 fencing 拒绝。
+  const staleCommit = await store.commitAgentTurnExecution('u', {
+    id: source.id, projectId: 'p', leaseToken: 'stale-lease', executionGeneration: 3, status: 'completed',
+  })
+  assert.equal(staleCommit.kind, 'stale')
 })

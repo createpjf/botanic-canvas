@@ -44,9 +44,9 @@ export function createBotanicAgentWebResearchTools(webResearch) {
         if (!query) throw new AgentToolRuntimeError('INVALID_TOOL_ARGUMENTS', '搜索词无效。')
         return { query }
       },
-      execute: async ({ query }) => {
+      execute: async ({ query }, executionContext) => {
         await consumeWebResearchQuota(webResearch)
-        return client.search(query)
+        return client.search(query, { signal: executionContext?.signal })
       },
     })
   }
@@ -61,9 +61,9 @@ export function createBotanicAgentWebResearchTools(webResearch) {
       required: ['url'],
     },
     validate: (raw) => ({ url: requiredText(object(raw, '网页获取').url, '网页地址', 2048) }),
-    execute: async ({ url }) => {
+    execute: async ({ url }, executionContext) => {
       await consumeWebResearchQuota(webResearch)
-      return client.extract(url)
+      return client.extract(url, { signal: executionContext?.signal })
     },
   })
   return tools

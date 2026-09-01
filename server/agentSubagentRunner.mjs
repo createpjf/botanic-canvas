@@ -324,17 +324,18 @@ export function createAgentSubagentRunner(input) {
           { role: 'system', content: subagentInstructions(contract) },
           ...activationMessages(messages, activation, contract),
         ],
-        callModel: (modelInput) => abortable(() => invoke({
+        callModel: (modelInput, runtime) => abortable(() => invoke({
           ...modelInput,
           model,
-          signal: request.signal,
-        }), request.signal),
+          signal: runtime?.signal ?? request.signal,
+        }), runtime?.signal ?? request.signal),
         toolChoice: 'auto',
         maximumSteps: budget.maximumSteps,
         maximumToolCalls: budget.maximumToolCalls,
         allowRawReasoning: false,
         genAiTelemetry: runtimeConfig?.telemetry?.genAiDevelopmentSemconv === true,
         onEvent,
+        signal: request.signal,
         context: {
           ...context,
           subagentId: descriptor?.id,

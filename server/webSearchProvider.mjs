@@ -107,8 +107,10 @@ export function createTavilyWebResearch({
   const resolvedSearchUrl = resolveTavilySearchUrl(searchUrl)
   const resolvedExtractUrl = extractUrl ? resolveTavilySearchUrl(extractUrl) : resolveTavilyExtractUrl(searchUrl)
 
-  async function request(url, body) {
-    const signal = AbortSignal.timeout(timeoutMs)
+  async function request(url, body, rootSignal) {
+    // 根 signal 与本工具 12s timeout 合并；根取消优先归因为取消，而不是 web 超时。
+    const timeoutSignal = AbortSignal.timeout(timeoutMs)
+    const signal = rootSignal ? AbortSignal.any([rootSignal, timeoutSignal]) : timeoutSignal
     let response
     try {
       response = await fetchImpl(url, {
@@ -118,7 +120,8 @@ export function createTavilyWebResearch({
         signal,
       })
     } catch (caught) {
-      if (signal.aborted) throw new AgentToolRuntimeError('WEB_SEARCH_TIMEOUT', '联网搜索超时，请稍后重试。', 504)
+      if (rootSignal?.aborted) throw new AgentToolRuntimeError('REQUEST_CANCELLED', '联网搜索已取消。', 499)
+      if (timeoutSignal.aborted) throw new AgentToolRuntimeError('WEB_SEARCH_TIMEOUT', '联网搜索超时，请稍后重试。', 504)
       throw new AgentToolRuntimeError('WEB_SEARCH_UNAVAILABLE', '联网搜索暂时不可用。', 502)
     }
     const payload = await readJson(response)
@@ -130,7 +133,7 @@ export function createTavilyWebResearch({
     get enabled() {
       return Boolean(key)
     },
-    async search(query) {
+    async search(query, { signal: rootSignal } = {}) {
       if (!key) throw new AgentToolRuntimeError('WEB_SEARCH_NOT_CONFIGURED', '尚未配置联网搜索。', 503)
       const normalizedQuery = clampWebSearchQuery(query)
       if (!normalizedQuery) throw new AgentToolRuntimeError('INVALID_TOOL_ARGUMENTS', '搜索词无效。')
@@ -139,15 +142,15 @@ export function createTavilyWebResearch({
         max_results: 5,
         include_answer: false,
         search_depth: 'basic',
-      })
+      }, rootSignal)
       const hits = normalizeWebSearchHits(payload?.results)
       return { query: normalizedQuery, hitCount: hits.length, hits }
     },
-    async extract(url) {
+    async extract(url, { signal: rootSignal } = {}) {
       const classified = await assertPublicHttpsUrl(url, { lookup, allowLocal })
       if (!classified.ok) throw new AgentToolRuntimeError('WEB_URL_NOT_ALLOWED', classified.message, 400)
       if (key) {
-        const payload = await request(resolvedExtractUrl, { urls: [classified.href] })
+        const payload = await request(resolvedExtractUrl, { urls: [classified.href] }, rootSignal)
         const page = Array.isArray(payload?.results) ? payload.results[0] : undefined
         const text = clipFetchedText(page?.raw_content ?? page?.text ?? '')
         if (!text) throw new AgentToolRuntimeError('WEB_FETCH_EMPTY', '该网页没有可读取的正文。', 502)
@@ -158,7 +161,8 @@ export function createTavilyWebResearch({
           text,
         }
       }
-      const signal = AbortSignal.timeout(timeoutMs)
+      const timeoutSignal = AbortSignal.timeout(timeoutMs)
+      const signal = rootSignal ? AbortSignal.any([rootSignal, timeoutSignal]) : timeoutSignal
       let response
       try {
         response = await readPinnedWebPage(classified, {
@@ -166,7 +170,8 @@ export function createTavilyWebResearch({
           requestImpl: pageRequestImpl ?? (classified.href.startsWith('http:') ? httpRequest : httpsRequest),
         })
       } catch (caught) {
-        if (signal.aborted) throw new AgentToolRuntimeError('WEB_FETCH_TIMEOUT', '网页获取超时，请稍后重试。', 504)
+        if (rootSignal?.aborted) throw new AgentToolRuntimeError('REQUEST_CANCELLED', '网页获取已取消。', 499)
+        if (timeoutSignal.aborted) throw new AgentToolRuntimeError('WEB_FETCH_TIMEOUT', '网页获取超时，请稍后重试。', 504)
         throw new AgentToolRuntimeError('WEB_FETCH_UNAVAILABLE', '网页暂时不可用。', 502)
       }
       if (response.status >= 300 && response.status < 400) {

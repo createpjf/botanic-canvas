@@ -472,6 +472,24 @@ test('WEB_ 工具失败回传给模型，不中断整轮对话', async () => {
   assert.equal(result.toolCalls[0].status, 'failed')
   assert.equal(result.toolCalls[0].error, '不能抓取内网或本机地址。')
   assert.deepEqual(events.map((event) => event.toolCall.status), ['running', 'failed'])
+
+  let quotaModelCalls = 0
+  const quotaRegistry = createAgentToolRegistry([{
+    name: 'web_search', label: '网页搜索', description: '搜索公开网页。', risk: 'external',
+    parameters: { type: 'object', properties: {} }, validate: (value) => value,
+    execute: async () => { throw new AgentToolRuntimeError('WEB_QUOTA_EXCEEDED', '联网额度已用完。', 429) },
+  }])
+  await assert.rejects(runAgentToolLoop({
+    registry: quotaRegistry,
+    messages: [],
+    callModel: async () => {
+      quotaModelCalls += 1
+      return { choices: [{ message: { tool_calls: [{
+        id: 'call-quota', type: 'function', function: { name: 'web_search', arguments: '{}' },
+      }] } }] }
+    },
+  }), (caught) => caught.code === 'WEB_QUOTA_EXCEEDED')
+  assert.equal(quotaModelCalls, 1, '配额错误不得回给模型继续重试')
 })
 
 test('web_search 从 hits 对象下发去重站点，字符串 sources 只用于计数', () => {
@@ -1288,4 +1306,202 @@ test('无进展计数在参数变化后重置', async () => {
   assert.equal(result.output, '完成')
   assert.equal(events.filter((event) => event.presentation?.kind === 'no_progress').length, 2)
   assert.equal(result.toolCalls.filter((call) => call.status === 'succeeded').length, 6)
+})
+
+test('根 signal 贯穿:hanging tool 收到取消后有界退出且第二个 call 不启动', async () => {
+  const controller = new AbortController()
+  let hangingSawAbort = false
+  let secondStarted = false
+  const registry = createAgentToolRegistry([
+    {
+      name: 'hanging_read', label: '挂起读取', risk: 'read',
+      description: '测试用挂起工具。',
+      parameters: { type: 'object', properties: {}, additionalProperties: false },
+      validate: () => ({}),
+      execute: (_input, context) => new Promise((_resolve, reject) => {
+        // 协作式消费根 signal:这就是 H2 的验收边界。
+        assert.equal(typeof context.signal?.addEventListener, 'function')
+        context.signal.addEventListener('abort', () => {
+          hangingSawAbort = true
+          reject(new Error('tool aborted'))
+        }, { once: true })
+      }),
+    },
+    {
+      name: 'second_read', label: '第二读取', risk: 'read',
+      description: '测试用第二工具。',
+      parameters: { type: 'object', properties: {}, additionalProperties: false },
+      validate: () => ({}),
+      execute: async () => { secondStarted = true; return { ok: true } },
+    },
+  ])
+  const loop = runAgentToolLoop({
+    registry,
+    messages: [],
+    maximumSteps: 3,
+    signal: controller.signal,
+    callModel: async () => ({
+      choices: [{ message: { tool_calls: [
+        { id: 'call-hang', type: 'function', function: { name: 'hanging_read', arguments: '{}' } },
+        { id: 'call-second', type: 'function', function: { name: 'second_read', arguments: '{}' } },
+      ] } }],
+    }),
+  })
+  setTimeout(() => controller.abort(), 20)
+  await assert.rejects(loop, (caught) => caught.code === 'REQUEST_CANCELLED' && caught.statusCode === 499)
+  assert.equal(hangingSawAbort, true, 'hanging tool 必须收到根 signal')
+  assert.equal(secondStarted, false, '取消后第二个 call 不得启动')
+
+  let modelSawDeadline = false
+  await assert.rejects(runAgentToolLoop({
+    registry,
+    messages: [],
+    deadlineAt: Date.now() + 20,
+    callModel: (_input, runtime) => new Promise((_resolve, reject) => {
+      runtime.signal.addEventListener('abort', () => {
+        modelSawDeadline = true
+        reject(new Error('model aborted'))
+      }, { once: true })
+    }),
+  }), (caught) => caught.code === 'AGENT_TURN_DEADLINE_EXCEEDED' && caught.statusCode === 504)
+  assert.equal(modelSawDeadline, true, 'deadline 必须主动中止 Provider')
+
+  let toolSawDeadline = false
+  const deadlineRegistry = createAgentToolRegistry([{
+    name: 'deadline_read', label: '期限读取', risk: 'read', description: '测试期限工具。',
+    parameters: { type: 'object', properties: {}, additionalProperties: false }, validate: () => ({}),
+    execute: (_input, runtime) => new Promise((_resolve, reject) => {
+      runtime.signal.addEventListener('abort', () => {
+        toolSawDeadline = true
+        reject(new Error('tool deadline'))
+      }, { once: true })
+    }),
+  }])
+  await assert.rejects(runAgentToolLoop({
+    registry: deadlineRegistry,
+    messages: [],
+    deadlineAt: Date.now() + 20,
+    callModel: async () => ({ choices: [{ message: { tool_calls: [{
+      id: 'call-deadline', type: 'function', function: { name: 'deadline_read', arguments: '{}' },
+    }] } }] }),
+  }), (caught) => caught.code === 'AGENT_TURN_DEADLINE_EXCEEDED')
+  assert.equal(toolSawDeadline, true, 'deadline 必须主动中止工具')
+})
+
+test('取消发生在模型调用前:归因为取消而非 Provider 错,模型不再被调用', async () => {
+  const controller = new AbortController()
+  controller.abort()
+  let modelCalls = 0
+  const registry = createAgentToolRegistry([{
+    name: 'noop_read', label: '空读取', risk: 'read',
+    description: '测试工具。',
+    parameters: { type: 'object', properties: {}, additionalProperties: false },
+    validate: () => ({}), execute: async () => ({ ok: true }),
+  }])
+  await assert.rejects(
+    runAgentToolLoop({
+      registry, messages: [], signal: controller.signal,
+      callModel: async () => { modelCalls += 1; return { choices: [{ message: { content: 'x' } }] } },
+    }),
+    (caught) => caught.code === 'REQUEST_CANCELLED' && caught.outcomeKnown === true,
+  )
+  assert.equal(modelCalls, 0)
+})
+
+test('第 N 个 action round 执行工具后仍有一次无工具最终综合,工具只执行一次且 checkpoint 可恢复', async () => {
+  const registry = createAgentToolRegistry([{
+    name: 'page_read', label: '分页读取', risk: 'read', recovery: 'reexecute',
+    description: '测试读取。',
+    parameters: { type: 'object', additionalProperties: false, properties: { page: { type: 'number' } }, required: ['page'] },
+    validate: (input) => ({ page: input.page }),
+    execute: async (input) => ({ page: input.page, rows: ['row-' + input.page] }),
+  }])
+  let toolRuns = 0
+  const checkpoints = []
+  const attempt = { id: 'attempt-h4', model: 'model-a', snapshotHash: 'hash-h4' }
+  let synthesisRequest
+  const result = await runAgentToolLoop({
+    registry,
+    messages: [],
+    maximumSteps: 2,
+    attempt,
+    saveCheckpoint: async (checkpoint) => { checkpoints.push(structuredClone(checkpoint)) },
+    callModel: async ({ tools: requestTools, tool_choice, step }) => {
+      if (step < 2) {
+        toolRuns += 1
+        return { choices: [{ message: { tool_calls: [{
+          id: 'call-' + step, type: 'function',
+          function: { name: 'page_read', arguments: JSON.stringify({ page: step }) },
+        }] } }] }
+      }
+      // budget 耗尽后的最终综合:无工具、tool_choice none。
+      synthesisRequest = { tools: requestTools, tool_choice, step }
+      return { choices: [{ message: { content: '综合:已读取 2 页。' } }] }
+    },
+  })
+  assert.equal(result.output, '综合:已读取 2 页。')
+  assert.deepEqual(synthesisRequest, { tools: [], tool_choice: 'none', step: 2 })
+  assert.equal(result.toolCalls.filter((call) => call.status === 'succeeded').length, 2)
+  const terminal = checkpoints.at(-1)
+  assert.equal(terminal.terminalContent, '综合:已读取 2 页。')
+  assert.equal(terminal.completedSteps.length, 2)
+  // terminal checkpoint 可直接恢复,不再调模型、不重跑工具。
+  const recovered = await runAgentToolLoop({
+    registry,
+    messages: [],
+    maximumSteps: 2,
+    attempt,
+    resumeCheckpoint: terminal,
+    saveCheckpoint: async () => { throw new Error('恢复 terminal 不应再写 checkpoint') },
+    callModel: async () => { throw new Error('恢复 terminal 不应再调模型') },
+  })
+  assert.equal(recovered.output, '综合:已读取 2 页。')
+})
+
+test('preflight repair 一次配对结果,同签名第二次与 A/B 环都有界终止', async () => {
+  const registry = createAgentToolRegistry([{
+    name: 'flip_read', label: '翻转读取', risk: 'read',
+    description: '测试。',
+    parameters: { type: 'object', additionalProperties: false, properties: { key: { type: 'string' } }, required: ['key'] },
+    validate: (input) => {
+      if (typeof input.key !== 'string') throw new AgentToolRuntimeError('INVALID_TOOL_ARGUMENTS', 'key 无效。')
+      return { key: input.key }
+    },
+    // volatile 字段(timestamp)不参与签名;A→B→A→B 输出构成环。
+    execute: async (input) => ({ key: input.key, timestamp: Date.now() + Math.random() }),
+  }])
+  // 失败一:同一无效批第一次得到配对修复结果,第二次同签名直接终止。
+  let invalidRounds = 0
+  await assert.rejects(
+    runAgentToolLoop({
+      registry, messages: [], maximumSteps: 6,
+      callModel: async () => {
+        invalidRounds += 1
+        return { choices: [{ message: { tool_calls: [
+          { id: 'bad-' + invalidRounds, type: 'function', function: { name: 'flip_read', arguments: JSON.stringify({ key: 7 }) } },
+          { id: 'ok-' + invalidRounds, type: 'function', function: { name: 'flip_read', arguments: JSON.stringify({ key: 'a' }) } },
+        ] } }] }
+      },
+    }),
+    (caught) => caught.code === 'INVALID_TOOL_ARGUMENTS',
+  )
+  assert.equal(invalidRounds, 2, '同签名批次只允许一次 repair round')
+
+  // 失败二:A→B→A→B 双签名环在窗口内有界终止,不烧完步数。
+  let cycleRounds = 0
+  await assert.rejects(
+    runAgentToolLoop({
+      registry, messages: [], maximumSteps: 8,
+      callModel: async () => {
+        cycleRounds += 1
+        const key = cycleRounds % 2 === 1 ? 'a' : 'b'
+        return { choices: [{ message: { tool_calls: [{
+          id: 'cycle-' + cycleRounds, type: 'function',
+          function: { name: 'flip_read', arguments: JSON.stringify({ key }) },
+        }] } }] }
+      },
+    }),
+    (caught) => caught.code === 'TOOL_NO_PROGRESS',
+  )
+  assert.equal(cycleRounds, 4, 'A→B→A→B 在第 4 个重复签名处终止')
 })

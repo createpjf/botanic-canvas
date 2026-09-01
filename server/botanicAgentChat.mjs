@@ -12,7 +12,7 @@ import {
 import { captionAgentVisionModel, nativeAgentVisionModel } from './botanicAgentVisionCapability.mjs'
 import { readStreamedChatCompletion } from './botanicAgentStream.mjs'
 import { botanicAgentContextToolSourceLabels, createBotanicAgentReadToolDefinitions } from './botanicAgentContextTools.mjs'
-import { botanicAgentMountedSkillBriefing, botanicAgentSearchableSkills, resolveBotanicAgentMountedSkills } from './botanicAgentTools.mjs'
+import { BOTANIC_AGENT_MOUNTED_SKILL_LIMIT, botanicAgentMountedSkillBriefing, botanicAgentSearchableSkills, resolveBotanicAgentMountedSkills } from './botanicAgentTools.mjs'
 import { canonicalHash } from './canonicalHash.mjs'
 import { throwIfAgentProviderContextOverflow } from './agentProviderContextOverflow.mjs'
 import { resolveAgentModelContextBinding } from './agentModelContextBinding.mjs'
@@ -95,7 +95,7 @@ export function validateBotanicAgentChatInput(raw) {
   const mountedSkillIds = input.mountedSkillIds === undefined
     ? undefined
     : (() => {
-      if (!Array.isArray(input.mountedSkillIds) || input.mountedSkillIds.length > 16) invalidRequest('已挂载 Skill 无效。')
+      if (!Array.isArray(input.mountedSkillIds) || input.mountedSkillIds.length > BOTANIC_AGENT_MOUNTED_SKILL_LIMIT) invalidRequest('已挂载 Skill 无效。')
       return [...new Set(input.mountedSkillIds.map((id, index) => requiredText(id, `第 ${index + 1} 个已挂载 Skill`, 160)))]
     })()
   return {
@@ -171,9 +171,9 @@ async function executeChatAttempt({ input, config, model, system, messages, regi
   const hasWebFetch = Boolean(registry.get('web_fetch'))
   // 超时按单次模型调用计，不罩整轮 tool loop；与 Turn 链路同一语义。
   let activeCallTimeout
-  const providerCallSignal = () => {
+  const providerCallSignal = (runtimeSignal = options.signal) => {
     activeCallTimeout = AbortSignal.timeout(config.timeoutMs)
-    return options.signal ? AbortSignal.any([options.signal, activeCallTimeout]) : activeCallTimeout
+    return runtimeSignal ? AbortSignal.any([runtimeSignal, activeCallTimeout]) : activeCallTimeout
   }
   const fetchImpl = options.fetchImpl ?? fetch
   const contextBinding = chatModelContextBinding(options, model)
@@ -208,7 +208,9 @@ async function executeChatAttempt({ input, config, model, system, messages, regi
       recoverToolCall: options.recoverToolCall,
       modelContext: contextBinding.modelContext,
       maxOutputTokens: input.mode === 'prompt' ? 2200 : 3000,
-      callModel: async ({ messages: turnMessages, tools, tool_choice, step }) => {
+      signal: options.signal,
+      deadlineAt: options.deadlineAt,
+      callModel: async ({ messages: turnMessages, tools, tool_choice, step }, { signal: runtimeSignal } = {}) => {
         const response = await fetchImpl(`${config.baseUrl}/chat/completions`, {
           method: 'POST',
           headers: {
@@ -227,7 +229,7 @@ async function executeChatAttempt({ input, config, model, system, messages, regi
             temperature: botanicAgentProviderTemperature(model),
             stream: streaming,
           }),
-          signal: providerCallSignal(),
+          signal: providerCallSignal(runtimeSignal),
         })
         if (!response.ok) {
           const failureBody = await response.text().catch(() => '')
@@ -281,6 +283,15 @@ async function executeChatAttempt({ input, config, model, system, messages, regi
     }
     if (options.signal?.aborted) throw new BotanicAgentChatError(499, 'REQUEST_CANCELLED', 'Agent 对话请求已取消。')
     if (activeCallTimeout?.aborted) throw new BotanicAgentChatError(504, 'PROVIDER_TIMEOUT', 'Agent 对话超时，请重试。')
+    // TOOL_*、AGENT_SKILL_*、取消与 deadline 是具名事实（H4），不得吞成 Provider 错。
+    if (typeof caught?.code === 'string'
+      && (caught.code.startsWith('TOOL_')
+        || caught.code.startsWith('AGENT_SKILL_')
+        || caught.code === 'WEB_QUOTA_EXCEEDED'
+        || caught.code === 'REQUEST_CANCELLED'
+        || caught.code === 'AGENT_TURN_DEADLINE_EXCEEDED')) {
+      throw new BotanicAgentChatError(caught.statusCode ?? 422, caught.code, caught.message)
+    }
     if (caught instanceof AgentToolRuntimeError) {
       throw new BotanicAgentChatError(502, 'INVALID_PROVIDER_RESPONSE', 'Agent 返回了不允许的工具调用。')
     }
@@ -323,7 +334,9 @@ export async function chatWithBotanicAgent(input, runtimeConfig, options = {}) {
   const ontology = buildBotanicAgentOntology(options.document, input.contextNodeIds)
   const memory = safeBotanicAgentMemory(options.document)
   const skills = botanicAgentSearchableSkills(options.projectSkills)
-  const mountedSkills = resolveBotanicAgentMountedSkills(input.mountedSkillIds, options.projectSkills)
+  const mountedSkills = resolveBotanicAgentMountedSkills(input.mountedSkillIds, options.projectSkills, {
+    contextPolicy: options.modelContext?.policy,
+  })
   const webResearch = options.allowWebResearch === false ? undefined : {
     apiKey: runtimeConfig?.webSearch?.apiKey,
     searchUrl: runtimeConfig?.webSearch?.searchUrl,

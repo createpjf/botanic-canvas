@@ -110,19 +110,30 @@ function intentConflict() {
   })
 }
 
-async function awaitDurableTurn(productStore, userId, candidate, execution) {
+/** HTTP observer 的本地等待上限（H3B）：不接 HTTP disconnect signal，也不传给 Runtime execution。 */
+const DURABLE_TURN_WAIT_LIMIT_MS = 5_000
+const DURABLE_TURN_POLL_BACKOFF_MS = [5, 25, 100]
+
+export async function awaitDurableTurn(productStore, userId, candidate, execution, { waitLimitMs = DURABLE_TURN_WAIT_LIMIT_MS, setTimeoutImpl = setTimeout } = {}) {
   let polling = true
+  // 独立本地 waitSignal：observer 等待有界，但 Runtime execution 不受它影响。
+  const waitSignal = AbortSignal.timeout(waitLimitMs)
   const executionOutcome = execution.then(
     (value) => ({ kind: 'resolved', value }),
     (caught) => ({ kind: 'rejected', caught }),
   )
   const durableObservation = (async () => {
-    while (polling) {
+    let attempt = 0
+    while (polling && !waitSignal.aborted) {
       const stored = await productStore.readAgentTurn(userId, candidate.id)
       if (stored) return matchingRequest(stored, candidate)
         ? { kind: 'durable', turn: stored }
         : { kind: 'conflict' }
-      await new Promise((resolve) => setTimeout(resolve, 5))
+      if (waitSignal.aborted) break
+      // 5ms → 25ms → 100ms 退避,最大保持 100ms;不再无限 5ms 空转。
+      const delay = DURABLE_TURN_POLL_BACKOFF_MS[Math.min(attempt, DURABLE_TURN_POLL_BACKOFF_MS.length - 1)]
+      attempt += 1
+      await new Promise((resolve) => setTimeoutImpl(resolve, delay))
     }
     return { kind: 'stopped' }
   })()

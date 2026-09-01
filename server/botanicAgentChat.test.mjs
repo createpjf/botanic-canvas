@@ -446,9 +446,9 @@ test('web_fetch 被守卫拒绝时对话继续，模型收到工具错误而不�
   assert.equal(result.answer, '这个地址不能打开，它指向本机。')
 })
 
-test('联网配额用尽时对话继续，模型收到 WEB_QUOTA_EXCEEDED', async () => {
+test('联网配额用尽时具名终止，不让模型继续消耗调用', async () => {
   const flockBodies = []
-  const result = await chatWithBotanicAgent({
+  await assert.rejects(chatWithBotanicAgent({
     ...input,
     messages: [{ role: 'user', content: '打开 https://www.andlight.cn/ 看看。' }],
   }, {
@@ -468,17 +468,14 @@ test('联网配额用尽时对话继续，模型收到 WEB_QUOTA_EXCEEDED', asyn
           } }],
         } }] }), { status: 200 })
       }
-      return new Response(JSON.stringify({ choices: [{ message: {
-        content: '现在检索次数用完了，请稍后再试。',
-      } }] }), { status: 200 })
+      throw new Error('配额用尽后不应继续调用模型')
     },
     webFetchImpl: async () => {
       throw new Error('配额用尽后不应再出网')
     },
-  })
+  }), (caught) => caught.code === 'WEB_QUOTA_EXCEEDED' && caught.statusCode === 429)
 
-  assert.match(flockBodies[1].messages.at(-1).content, /WEB_QUOTA_EXCEEDED/)
-  assert.equal(result.answer, '现在检索次数用完了，请稍后再试。')
+  assert.equal(flockBodies.length, 1)
 })
 
 test('Agent 对话区分 vision/text attempt，视觉越过 Checkpoint 后失败不回退文本', async () => {

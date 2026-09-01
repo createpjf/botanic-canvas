@@ -134,8 +134,25 @@ function withoutReason(rawArguments) {
 }
 
 /**
- * 检测连续相同工具调用（去掉 why）与稳定输出，避免主 Turn 在空转路径上烧完步数。
- * 诊断只暴露哈希，不把参数或结果写入事件。
+ * 注册的 volatile 输出字段（H4）：这些字段每次调用天然不同,参与签名会让「同一结果」
+ * 永远判为新进展。只忽略注册字段,不做模糊文本删除。
+ */
+const AGENT_TOOL_VOLATILE_OUTPUT_FIELDS = Object.freeze(['timestamp', 'requestId', 'traceId', 'elapsedMs'])
+
+function stableToolOutput(value) {
+  if (Array.isArray(value)) return value.map(stableToolOutput)
+  if (!value || typeof value !== 'object') return value
+  const result = {}
+  for (const [key, entry] of Object.entries(value)) {
+    if (AGENT_TOOL_VOLATILE_OUTPUT_FIELDS.includes(key)) continue
+    result[key] = stableToolOutput(entry)
+  }
+  return result
+}
+
+/**
+ * 检测连续相同工具调用（去掉 why、忽略注册 volatile 输出字段）与 A→B→A→B 双签名环，
+ * 避免主 Turn 在空转路径上烧完步数。诊断只暴露哈希，不把参数或结果写入事件。
  */
 export function createAgentToolNoProgressDetector({
   warningThreshold = AGENT_TOOL_NO_PROGRESS_WARNING,
@@ -149,12 +166,14 @@ export function createAgentToolNoProgressDetector({
   }
   let lastSignature
   let repeatCount = 0
+  // 最多 4 项的小环形窗口：识别 A→B→A→B 两轮循环。
+  const window = []
   return {
     record(observation) {
       const signature = canonicalHash({
         name: observation?.name ?? '',
         arguments: withoutReason(observation?.arguments) ?? null,
-        output: observation?.output ?? null,
+        output: stableToolOutput(observation?.output ?? null),
         isError: Boolean(observation?.isError),
       })
       if (signature === lastSignature) repeatCount += 1
@@ -162,10 +181,17 @@ export function createAgentToolNoProgressDetector({
         lastSignature = signature
         repeatCount = 1
       }
+      window.push(signature)
+      if (window.length > 4) window.shift()
+      const cycle = window.length === 4
+        && window[0] === window[2]
+        && window[1] === window[3]
+        && window[0] !== window[1]
       return {
         signature,
-        repeatCount,
-        status: repeatCount >= terminationThreshold
+        repeatCount: cycle ? Math.max(repeatCount, 2) : repeatCount,
+        cycle,
+        status: repeatCount >= terminationThreshold || cycle
           ? 'terminate'
           : repeatCount === warningThreshold
             ? 'warning'
@@ -189,8 +215,43 @@ function knownPreEffectFailure(error) {
   return error
 }
 
-function isRecoverableToolFailure(caught) {
-  return caught instanceof AgentToolRuntimeError && typeof caught.code === 'string' && caught.code.startsWith('WEB_')
+/** terminal-known 错误码（H4）：policy/approval、配额、取消、deadline、lease/checkpoint 边界,不得伪装成可修复。 */
+const TERMINAL_KNOWN_TOOL_CODES = new Set([
+  'TOOL_CONFIRMATION_REQUIRED',
+  'WEB_QUOTA_EXCEEDED',
+  'REQUEST_CANCELLED',
+  'AGENT_TURN_DEADLINE_EXCEEDED',
+])
+
+function isTerminalKnownToolFailure(caught) {
+  const code = typeof caught?.code === 'string' ? caught.code : ''
+  return TERMINAL_KNOWN_TOOL_CODES.has(code)
+    || code.startsWith('AGENT_TURN_CHECKPOINT_')
+    || code.startsWith('AGENT_TURN_')
+    || code.startsWith('AGENT_SKILL_')
+    || code.startsWith('AGENT_CONTEXT_')
+}
+
+/**
+ * 工具失败三分法（H4）。分类同时看 dispatch lifecycle（phase）、outcomeKnown 与工具风险，
+ * 不只按错误码前缀：
+ * - repairable：整批无副作用（preflight 失败）,或已知失败的只读/WEB 工具 —— 结果回给模型;
+ * - terminal-known：策略/配额/取消/deadline/lease,保留原错误码终止;
+ * - outcome-unknown：write/costly/external 调用 dispatched 后无可靠结果,禁止自动重放。
+ */
+export function classifyAgentToolFailure(caught, { phase = 'execute', tool } = {}) {
+  if (isTerminalKnownToolFailure(caught)) return 'terminal-known'
+  if (phase === 'preflight') return 'repairable'
+  if (caught instanceof AgentToolRuntimeError && typeof caught.code === 'string' && caught.code.startsWith('WEB_')) {
+    return 'repairable'
+  }
+  // 只读工具的执行失败没有副作用之忧:失败结果本身就是已知终局。
+  if (tool?.risk === 'read' || caught?.outcomeKnown === true) return 'repairable'
+  return 'outcome-unknown'
+}
+
+function isRecoverableToolFailure(caught, tool) {
+  return classifyAgentToolFailure(caught, { phase: 'execute', tool }) === 'repairable'
 }
 
 /**
@@ -226,6 +287,14 @@ function parseArguments(value) {
     return parsed
   } catch {
     throw new AgentToolRuntimeError('INVALID_TOOL_ARGUMENTS', '工具参数不是有效 JSON。')
+  }
+}
+
+function parseArgumentsSafe(value) {
+  try {
+    return parseArguments(value)
+  } catch {
+    return typeof value === 'string' ? value.slice(0, 512) : null
   }
 }
 
@@ -478,6 +547,8 @@ export async function runAgentToolLoop({
   maxOutputTokens = undefined,
   trigger = 'pre_step',
   genAiTelemetry = false,
+  signal = /** @type {AbortSignal | undefined} */ (undefined),
+  deadlineAt = /** @type {number | undefined} */ (undefined),
 }) {
   if (!Number.isInteger(maximumToolCalls) || maximumToolCalls < 1 || maximumToolCalls > MODEL_TOOL_CALL_TOTAL_LIMIT) {
     throw new TypeError(`Agent 工具调用上限必须是 1 到 ${MODEL_TOOL_CALL_TOTAL_LIMIT} 之间的整数。`)
@@ -490,10 +561,53 @@ export async function runAgentToolLoop({
     throw new TypeError('Agent Model Context 必须实现 prepare 与 observe。')
   }
   const conversation = [...messages]
+  // 冻结的取消/期限边界（H2）：根 signal 与 Turn deadline 贯穿模型调用、preflight、
+  // 每个 tool.execute 与写终态。取消在派发前发现时是 terminal-known，不是 Provider 错。
+  const assertExecutionAlive = () => {
+    if (signal?.aborted) {
+      throw knownPreEffectFailure(new AgentToolRuntimeError('REQUEST_CANCELLED', 'Agent 请求已取消。', 499))
+    }
+    if (typeof deadlineAt === 'number' && Date.now() >= deadlineAt) {
+      throw knownPreEffectFailure(new AgentToolRuntimeError('AGENT_TURN_DEADLINE_EXCEEDED', 'Agent Turn 已超过本轮时限。', 504))
+    }
+  }
+  const withinExecutionBoundary = async (operation) => {
+    assertExecutionAlive()
+    const deadlineController = typeof deadlineAt === 'number' ? new AbortController() : undefined
+    const deadlineTimer = deadlineController
+      ? setTimeout(() => deadlineController.abort(), Math.max(1, deadlineAt - Date.now()))
+      : undefined
+    const signals = [signal, deadlineController?.signal].filter(Boolean)
+    const activeSignal = signals.length > 1 ? AbortSignal.any(signals) : signals[0]
+    let onAbort
+    const aborted = activeSignal && new Promise((_, reject) => {
+      onAbort = () => reject(signal?.aborted
+        ? new AgentToolRuntimeError('REQUEST_CANCELLED', 'Agent 请求已取消。', 499)
+        : new AgentToolRuntimeError('AGENT_TURN_DEADLINE_EXCEEDED', 'Agent Turn 已超过本轮时限。', 504))
+      if (activeSignal.aborted) onAbort()
+      else activeSignal.addEventListener('abort', onAbort, { once: true })
+    })
+    try {
+      const pending = Promise.resolve().then(() => operation(activeSignal))
+      const result = await (aborted ? Promise.race([pending, aborted]) : pending)
+      assertExecutionAlive()
+      return result
+    } catch (caught) {
+      if (signal?.aborted) throw new AgentToolRuntimeError('REQUEST_CANCELLED', 'Agent 请求已取消。', 499)
+      if (deadlineController?.signal.aborted || (typeof deadlineAt === 'number' && Date.now() >= deadlineAt)) {
+        throw new AgentToolRuntimeError('AGENT_TURN_DEADLINE_EXCEEDED', 'Agent Turn 已超过本轮时限。', 504)
+      }
+      throw caught
+    } finally {
+      if (deadlineTimer) clearTimeout(deadlineTimer)
+      if (onAbort) activeSignal.removeEventListener('abort', onAbort)
+    }
+  }
+  assertExecutionAlive()
   // 工具定义在循环开始前定格一次，之后每一步都用同一份。
   const frozenTools = registry.openAITools()
   const frozenSnapshot = snapshot ?? freezeAgentStepSnapshot({ registry })
-  const invokeModel = (request) => withBotanicSpan(
+  const invokeModel = (request) => withinExecutionBoundary((activeSignal) => withBotanicSpan(
     genAiTelemetry ? `chat ${frozenSnapshot.model ?? 'unknown-model'}` : 'botanic.provider.request',
     {
       kind: 'client',
@@ -508,7 +622,7 @@ export async function runAgentToolLoop({
       },
     },
     async (span) => {
-      const response = await callModel(request)
+      const response = await callModel(request, { signal: activeSignal, deadlineAt })
       if (genAiTelemetry && span) {
         try {
           const usage = normalizeProviderUsage(response?.usage)
@@ -518,7 +632,7 @@ export async function runAgentToolLoop({
       }
       return response
     },
-  )
+  ))
   const steps = []
   const toolCalls = []
   let reasoning = []
@@ -568,7 +682,7 @@ export async function runAgentToolLoop({
 
   const persistCheckpoint = async (next) => {
     if (!checkpointing) return
-    await saveCheckpoint(next)
+    await withinExecutionBoundary(() => saveCheckpoint(next))
     checkpoint = next
   }
 
@@ -680,7 +794,7 @@ export async function runAgentToolLoop({
     return { receiptId, intentHash }
   }
 
-  const preflightModelCalls = (calls, step) => calls.map((call, index) => {
+  const preflightModelCall = (call, step, index) => {
     const name = call?.function?.name
     const tool = registry.get(name)
     if (!tool) throw knownPreEffectFailure(new AgentToolRuntimeError('TOOL_NOT_ALLOWED', `Agent 无权调用工具：${name ?? 'unknown'}。`, 403))
@@ -705,7 +819,63 @@ export async function runAgentToolLoop({
       ...(tool.recovery === 'receipt' ? receiptIdentity(tool, call, trace, rawArguments) : {}),
     }
     return { call, tool, rawArguments, validatedInput, trace, descriptor }
-  })
+  }
+
+  // 整批 preflight（H4）：逐 call 收集结果而不是第一处失败即抛。任一 call 无效时,
+  // 本批全部无副作用;terminal-known 立即终止,repairable 给每个原 call id 配对结果,
+  // 同一规范化批签名最多一次模型 repair。
+  const preflightRepairSignatures = new Set()
+  const preflightModelCalls = (calls, step) => {
+    const outcomes = calls.map((call, index) => {
+      try {
+        return { entry: preflightModelCall(call, step, index) }
+      } catch (caught) {
+        return { error: caught, call, index }
+      }
+    })
+    const failures = outcomes.filter((outcome) => outcome.error)
+    if (!failures.length) return { entries: outcomes.map((outcome) => outcome.entry) }
+    const terminal = failures.find((outcome) => classifyAgentToolFailure(outcome.error, { phase: 'preflight' }) === 'terminal-known')
+    if (terminal) throw terminal.error
+    const signature = canonicalHash(calls.map((call) => ({
+      name: call?.function?.name ?? '',
+      arguments: withoutReason(parseArgumentsSafe(call?.function?.arguments)) ?? null,
+    })))
+    if (preflightRepairSignatures.has(signature)) throw failures[0].error
+    preflightRepairSignatures.add(signature)
+    return { repair: { outcomes, failures } }
+  }
+
+  const respondPreflightRepair = (calls, outcomes, step) => {
+    // 无任何副作用发生。给每个原 call id 恰好一个结果:invalid call 返回具体失败,
+    // 已通过 preflight 的 call 返回稳定 BATCH_PREFLIGHT_ABORTED。
+    const callId = (call, index) => normalizeAgentToolCallId(
+      typeof call?.id === 'string' && call.id ? call.id : `tool-call-${step + 1}-${index + 1}`,
+    )
+    conversation.push({
+      role: 'assistant',
+      tool_calls: calls.map((call, index) => ({
+        id: callId(call, index),
+        type: 'function',
+        function: { name: call?.function?.name ?? 'unknown', arguments: typeof call?.function?.arguments === 'string' ? call.function.arguments : '{}' },
+      })),
+    })
+    for (const [index, outcome] of outcomes.entries()) {
+      const id = callId(calls[index], index)
+      const name = calls[index]?.function?.name ?? 'unknown'
+      const payload = outcome.error
+        ? { ok: false, code: outcome.error.code ?? 'INVALID_TOOL_ARGUMENTS', error: outcome.error instanceof Error ? outcome.error.message : '工具调用无效。' }
+        : { ok: false, code: 'BATCH_PREFLIGHT_ABORTED', error: '同批存在无效调用,本批全部未执行。' }
+      conversation.push({ role: 'tool', tool_call_id: id, name, content: JSON.stringify(payload) })
+      const failedTrace = {
+        id, name, label: outcome.entry?.tool?.label ?? name, risk: outcome.entry?.tool?.risk ?? 'read',
+        status: 'failed', requiresConfirmation: Boolean(outcome.entry?.tool?.requiresConfirmation),
+        error: payload.error,
+      }
+      toolCalls.push(failedTrace)
+      emit({ type: 'tool', step, toolCall: failedTrace })
+    }
+  }
 
   const assertRecoverableStep = (stepCheckpoint) => {
     for (const call of stepCheckpoint.calls) {
@@ -802,6 +972,8 @@ export async function runAgentToolLoop({
     let terminalOutput
     let terminalSucceeded = false
     for (const entry of entries) {
+      // 下一个 call 启动前的取消边界：第一项运行中取消后，第二项不得启动。
+      assertExecutionAlive()
       const { tool, trace } = entry
       entry.completedDescriptor = entry.descriptor
       entry.progressStep = step
@@ -816,7 +988,7 @@ export async function runAgentToolLoop({
       }
       let output
       try {
-        output = await withBotanicSpan(`execute_tool ${trace.name}`, {
+        output = await withinExecutionBoundary((activeSignal) => withBotanicSpan(`execute_tool ${trace.name}`, {
           kind: 'internal',
           attributes: {
             ...(genAiTelemetry ? {
@@ -835,9 +1007,34 @@ export async function runAgentToolLoop({
               context,
             })
           }
-          return tool.execute(entry.validatedInput, { ...context, toolCallId: trace.id })
-        })
+          return tool.execute(entry.validatedInput, {
+            ...context,
+            toolCallId: trace.id,
+            // 根 signal 直达工具；子任务等自带 timeout 的 context 已在各自 seam 组合过。
+            ...(activeSignal ? { signal: activeSignal } : {}),
+            ...(typeof deadlineAt === 'number' ? { deadlineAt } : {}),
+          })
+        }))
       } catch (caught) {
+        // 根取消优先归因为取消：工具因中止抛出的任何错误（含自身 timeout）不再伪装成工具失败。
+        // 该 call 已 dispatched，不标记 outcomeKnown —— 不能假设「取消 = 没执行」。
+        const terminalFailure = signal?.aborted
+          ? new AgentToolRuntimeError('REQUEST_CANCELLED', 'Agent 请求已取消。', 499)
+          : (isRecoverableToolFailure(caught, tool) ? undefined : caught)
+        if (terminalFailure) {
+          // 整批 pairing（H4）:当前 call 按证据收口为 failed,尚未启动的 call 收口为
+          // aborted + BATCH_NOT_STARTED;已 completed 的 call 不改写。
+          const failedNow = { ...trace, status: 'failed', error: terminalFailure instanceof Error ? terminalFailure.message : '工具执行失败。' }
+          toolCalls.push(failedNow)
+          if (emitEvents) emit({ type: 'tool', step, toolCall: failedNow })
+          const startedIndex = entries.indexOf(entry)
+          for (const notStarted of entries.slice(startedIndex + 1)) {
+            const abortedTrace = { ...notStarted.trace, status: 'aborted', error: 'BATCH_NOT_STARTED' }
+            toolCalls.push(abortedTrace)
+            if (emitEvents) emit({ type: 'tool', step, toolCall: abortedTrace })
+          }
+          throw terminalFailure
+        }
         const error = caught instanceof Error ? caught.message : '工具执行失败。'
         const failed = { ...trace, status: 'failed', error }
         if (emitEvents) {
@@ -846,7 +1043,6 @@ export async function runAgentToolLoop({
             ...(runningPresentation ? { presentation: runningPresentation } : {}),
           })
         }
-        if (!isRecoverableToolFailure(caught)) throw caught
         const failedOutput = { ok: false, error, code: caught.code }
         toolCalls.push(failed)
         appendToolOutput(entry, failedOutput)
@@ -930,7 +1126,7 @@ export async function runAgentToolLoop({
   }
 
   const prepareModelCall = async (step, prepareTrigger, force = false) => {
-    const preparation = await modelContext.prepare({
+    const preparation = await withinExecutionBoundary(() => modelContext.prepare({
       attempt,
       step,
       messages: conversation,
@@ -938,7 +1134,7 @@ export async function runAgentToolLoop({
       maxOutputTokens,
       trigger: prepareTrigger,
       ...(force ? { force: true } : {}),
-    })
+    }))
     if (preparation !== undefined && (
       !preparation
       || typeof preparation !== 'object'
@@ -965,6 +1161,8 @@ export async function runAgentToolLoop({
 
   const startStep = checkpoint?.completedSteps.length ?? 0
   for (let step = startStep; step < maximumSteps; step += 1) {
+    // 模型调用前的取消/期限边界：取消后不再启动下一次 sampling。
+    assertExecutionAlive()
     steps.push({ step, snapshot: frozenSnapshot })
     let response
     if (modelContext === undefined) {
@@ -1008,12 +1206,12 @@ export async function runAgentToolLoop({
           throw retryCaught
         }
       }
-      await modelContext.observe({
+      await withinExecutionBoundary(() => modelContext.observe({
         attempt,
         step,
         prepared: preparedCall.preparation?.prepared,
         responseUsage: normalizeProviderUsage(response?.usage),
-      })
+      }))
     }
     const message = response?.choices?.[0]?.message
     reasoning = appendAgentReasoning(reasoning, {
@@ -1045,9 +1243,18 @@ export async function runAgentToolLoop({
     }
     plannedToolCallCount += calls.length
 
+    // 模型响应落地后、整批 preflight 前的取消边界：取消后不进入副作用准备。
+    assertExecutionAlive()
     // 必须先完成这一步全部 call 的存在性、参数、确认与回执身份校验。
     // 不能执行完第一个工具后，才发现第二个 call 是坏的。
-    const planned = preflightModelCalls(calls, step)
+    const preflighted = preflightModelCalls(calls, step)
+    if (preflighted.repair) {
+      // repairable 批次（H4）：整批无副作用,每个原 call id 恰好一个配对结果,
+      // 同一规范化批签名最多一次 repair;下一次迭代由模型自行修复。
+      respondPreflightRepair(calls, preflighted.repair.outcomes, step)
+      continue
+    }
+    const planned = preflighted.entries
     if (checkpointing) {
       const prepared = prepareAgentTurnCheckpoint(checkpoint, {
         attempt,
@@ -1071,5 +1278,55 @@ export async function runAgentToolLoop({
       }
     }
   }
-  throw new AgentToolRuntimeError('TOOL_LOOP_LIMIT_REACHED', 'Agent 工具调用步骤过多，已停止执行。')
+
+  // Final synthesis（H4）：action budget 耗尽后不再执行工具,额外一次禁用工具的
+  // 最终综合回答。maximumSteps 只计 action steps;terminal checkpoint 允许
+  // cursor == MAX_STEPS,因为它只写 terminalContent,不创建新的 tool step。
+  assertExecutionAlive()
+  try {
+    const synthesisRequest = {
+      messages: conversation,
+      tools: [],
+      tool_choice: 'none',
+      step: maximumSteps,
+    }
+    let response
+    if (modelContext === undefined) {
+      response = await invokeModel(synthesisRequest)
+    } else {
+      const preparedCall = await prepareModelCall(maximumSteps, 'final_synthesis')
+      response = await invokeModel({ ...preparedCall.request, tools: [], tool_choice: 'none' })
+      await withinExecutionBoundary(() => modelContext.observe({
+        attempt,
+        step: maximumSteps,
+        prepared: preparedCall.preparation?.prepared,
+        responseUsage: normalizeProviderUsage(response?.usage),
+      }))
+    }
+    const message = response?.choices?.[0]?.message
+    const content = typeof message?.content === 'string' ? message.content : undefined
+    if (!content?.trim()) throw new AgentToolRuntimeError('TOOL_LOOP_LIMIT_REACHED', 'Agent 工具调用步骤过多，已停止执行。')
+    reasoning = appendAgentReasoning(reasoning, {
+      step: maximumSteps,
+      source: 'raw',
+      text: extractProviderReasoning(message, { allowRaw: allowRawReasoning }),
+    })
+    if (!checkpointing) {
+      return {
+        output: content, toolCalls,
+        entityReferences: structuredClone(entityReferences), reasoning, steps,
+      }
+    }
+    const terminal = terminalAgentTurnCheckpoint(checkpoint, { attempt, step: maximumSteps, content })
+    await persistCheckpoint(terminal)
+    return {
+      output: terminal.terminalContent, toolCalls,
+      entityReferences: structuredClone(entityReferences), reasoning, steps,
+    }
+  } catch (caught) {
+    // 综合失败回退原错误码,保留已完成工具摘要在 toolCalls 中;取消/deadline 原样透传。
+    if (caught?.code === 'REQUEST_CANCELLED' || caught?.code === 'AGENT_TURN_DEADLINE_EXCEEDED') throw caught
+    if (caught?.code === 'TOOL_LOOP_LIMIT_REACHED') throw caught
+    throw new AgentToolRuntimeError('TOOL_LOOP_LIMIT_REACHED', 'Agent 工具调用步骤过多，已停止执行。')
+  }
 }

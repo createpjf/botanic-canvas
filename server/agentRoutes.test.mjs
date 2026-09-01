@@ -1735,7 +1735,8 @@ test('提交 Turn 时由服务端会话重建历史，并以正文 Session 绑�
           { id: 'result-current', type: 'result', data: { image: targetImage } },
         ],
       } }),
-      listAgentSkills: async () => [],
+      // H1 起挂载未知 Skill fail-closed；快照里的 skill-snapshot 必须真实存在。
+      listAgentSkills: async () => [{ id: 'skill-snapshot', name: '快照规则', instructions: '按快照执行。', status: 'active' }],
       readAgentState: async () => { throw new Error('Turn 不应读取全项目 Agent 状态') },
       listAgentSessions: async () => ([{
           id: 'session-authority', title: '权威会话', executionMode: 'manual', contextNodeIds: [],

@@ -76,6 +76,9 @@ export async function runAgentSubtask({ subtask, runSubagent, registry, context,
   let current = { ...subtask, status: 'running', startedAt: now(), updatedAt: now() }
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), current.timeoutMs)
+  // 根 signal 与子任务自身 timeout 组合而不是覆盖：Stop 必须到达子任务工具链。
+  const rootSignal = context?.signal
+  const executionSignal = rootSignal ? AbortSignal.any([rootSignal, controller.signal]) : controller.signal
 
   /** 工具调用要同时受白名单与预算约束，两者都在这里执行而不是靠子 Agent 自觉。 */
   const callTool = async (name, argumentsValue) => {
@@ -95,17 +98,21 @@ export async function runAgentSubtask({ subtask, runSubagent, registry, context,
       // 子任务的工具调用带上自己的身份，日志里能区分是哪个子 Agent 发起的。
       subtaskId: current.id,
       traceId: current.traceId,
-      signal: controller.signal,
+      signal: executionSignal,
     })
   }
 
   try {
-    const raw = await runSubagent({ subtask: current, signal: controller.signal, callTool })
+    const raw = await runSubagent({ subtask: current, signal: executionSignal, callTool })
     current = { ...current, spent: { ...current.spent, steps: current.spent.steps + 1 } }
     return acceptAgentSubtaskOutput(current, raw, { now: now() })
   } catch (caught) {
     // 已经因为工具越权终止过的，保留那个更具体的原因，不要被外层覆盖成泛化的 failed。
     if (current.status === 'terminated') return current
+    // 根取消优先归因为取消，而不是子任务超时。
+    if (rootSignal?.aborted) {
+      return terminateAgentSubtask(current, { reason: 'parent_cancelled', detail: '根请求已取消。', now: now() })
+    }
     if (controller.signal.aborted) {
       return terminateAgentSubtask(current, { reason: 'timeout', detail: `超过 ${current.timeoutMs}ms。`, now: now() })
     }

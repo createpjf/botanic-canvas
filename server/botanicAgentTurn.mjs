@@ -4,7 +4,7 @@ import { BotanicAgentChatError } from './botanicAgentChat.mjs'
 import { readStreamedChatCompletion } from './botanicAgentStream.mjs'
 import { normalizeBotanicAgentLocale, readBotanicAgentInstructions } from './agentInstructions.mjs'
 import { botanicAgentContextBriefing, buildBotanicAgentOntology, safeBotanicAgentMemory } from './botanicAgentOntology.mjs'
-import { botanicAgentMountedSkillBriefing, botanicAgentSearchableSkills, resolveBotanicAgentMountedSkills } from './botanicAgentTools.mjs'
+import { BOTANIC_AGENT_MOUNTED_SKILL_LIMIT, botanicAgentMountedSkillBriefing, botanicAgentSearchableSkills, resolveBotanicAgentMountedSkills } from './botanicAgentTools.mjs'
 import {
   botanicAgentMultimodalMessages,
   botanicAgentVisionBriefing,
@@ -188,7 +188,7 @@ export function validateBotanicAgentTurnInput(raw) {
   const mountedSkillIds = input.mountedSkillIds === undefined
     ? undefined
     : (() => {
-      if (!Array.isArray(input.mountedSkillIds) || input.mountedSkillIds.length > 16) invalidRequest('已挂载 Skill 无效。')
+      if (!Array.isArray(input.mountedSkillIds) || input.mountedSkillIds.length > BOTANIC_AGENT_MOUNTED_SKILL_LIMIT) invalidRequest('已挂载 Skill 无效。')
       return [...new Set(input.mountedSkillIds.map((id, index) => requiredText(id, `第 ${index + 1} 个已挂载 Skill`, 160)))]
     })()
   let maxOutputCount = DEFAULT_MAX_OUTPUT_COUNT
@@ -872,9 +872,9 @@ async function executeTurnAttempt({ config, model, system, messages, registry, o
   // 30s 整轮预算，被整体掐死后用户只看到「响应超时」。单步卡死仍在 timeoutMs 内中止；
   // 步数由 maximumSteps 封顶，工具各有自己的超时。
   let activeCallTimeout
-  const providerCallSignal = () => {
+  const providerCallSignal = (runtimeSignal = options.signal) => {
     activeCallTimeout = AbortSignal.timeout(config.timeoutMs)
-    return options.signal ? AbortSignal.any([options.signal, activeCallTimeout]) : activeCallTimeout
+    return runtimeSignal ? AbortSignal.any([runtimeSignal, activeCallTimeout]) : activeCallTimeout
   }
   const fetchImpl = options.fetchImpl ?? fetch
   // 有实时通道时才向提供方请求流式；工具步仍以 loop emit 为准，禁止客户端预插成功。
@@ -903,7 +903,9 @@ async function executeTurnAttempt({ config, model, system, messages, registry, o
       recoverToolCall: options.recoverToolCall,
       modelContext: options.modelContext,
       maxOutputTokens: 3000,
-      callModel: async ({ messages: turnMessages, tools, tool_choice, step }) => {
+      signal: options.signal,
+      deadlineAt: options.deadlineAt,
+      callModel: async ({ messages: turnMessages, tools, tool_choice, step }, { signal: runtimeSignal } = {}) => {
         const requestProvider = (requestMessages) => fetchImpl(`${config.baseUrl}/chat/completions`, {
             method: 'POST',
             headers: {
@@ -922,7 +924,7 @@ async function executeTurnAttempt({ config, model, system, messages, registry, o
               temperature: botanicAgentProviderTemperature(model),
               stream: streaming,
             }),
-            signal: providerCallSignal(),
+            signal: providerCallSignal(runtimeSignal),
           })
         let response = await requestProvider(turnMessages)
         if (!response.ok) {
@@ -1030,6 +1032,16 @@ async function executeTurnAttempt({ config, model, system, messages, registry, o
     }
     if (options.signal?.aborted) throw new BotanicAgentChatError(499, 'REQUEST_CANCELLED', 'Agent 请求已取消。')
     if (activeCallTimeout?.aborted) throw new BotanicAgentChatError(504, 'PROVIDER_TIMEOUT', 'Agent 响应超时，请重试。')
+    // TOOL_*、AGENT_SKILL_*、取消与 deadline 是具名事实（H4），不得吞成 Provider 错;
+    // INVALID_PROVIDER_RESPONSE 只在 Provider payload 本身不可解析时使用。
+    if (typeof caught?.code === 'string'
+      && (caught.code.startsWith('TOOL_')
+        || caught.code.startsWith('AGENT_SKILL_')
+        || caught.code === 'WEB_QUOTA_EXCEEDED'
+        || caught.code === 'REQUEST_CANCELLED'
+        || caught.code === 'AGENT_TURN_DEADLINE_EXCEEDED')) {
+      throw new BotanicAgentChatError(caught.statusCode ?? 422, caught.code, caught.message, { cause: caught })
+    }
     if (caught instanceof AgentToolRuntimeError) {
       throw new BotanicAgentChatError(502, 'INVALID_PROVIDER_RESPONSE', 'Agent 返回了不允许的工具调用。', { cause: caught })
     }
@@ -1051,9 +1063,12 @@ export async function resolveBotanicAgentTurn(input, runtimeConfig, options = {}
     || videoModels(input.generationModels).length > 0
   const baseSystem = await turnInstructions(input.locale, { canGenerate })
   const situation = turnSituationBriefing(input, input.locale)
-  const mountedSkills = resolveBotanicAgentMountedSkills(input.mountedSkillIds, options.projectSkills)
-  const mountedBriefing = botanicAgentMountedSkillBriefing(mountedSkills, input.locale)
   const contextV2 = turnThreadContextV2(input.threadContextSnapshot, config.model)
+  // Skill 子预算来自同一冻结 Context policy（H1）：不在简报旁另造口径。
+  const mountedSkills = resolveBotanicAgentMountedSkills(input.mountedSkillIds, options.projectSkills, {
+    contextPolicy: contextV2?.modelPolicy ?? options.modelContext?.policy,
+  })
+  const mountedBriefing = botanicAgentMountedSkillBriefing(mountedSkills, input.locale)
   const immutableThreadContext = input.threadContextSnapshot?.version === 1
     && Array.isArray(input.threadContextSnapshot.messages)
     ? input.threadContextSnapshot
