@@ -43,7 +43,7 @@ export function pruneAgentComposerPendingPastes(instruction: string, pendingPast
 }
 
 export function expandAgentComposerPastes(instruction: string, pendingPastes: AgentComposerPendingPastes) {
-  return Object.entries(pendingPastes).reduce(
+  return Object.entries(pendingPastes).sort(([left], [right]) => right.length - left.length).reduce(
     (expanded, [placeholder, content]) => expanded.split(placeholder).join(content),
     instruction,
   )

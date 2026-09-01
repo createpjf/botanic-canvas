@@ -406,9 +406,11 @@ export function useCanvasAgentExecutionBridge({
    * 对话/回合看图读的是服务端文档。聊天框刚放下的参考图还只在本机 data URL 里，
    * 不先入库并冲刷，视觉模型只能拿到节点名，只能猜画面。
    */
-  const prepareConversationVisionContext = useCallback(async (sessionId: string) => {
+  const prepareConversationVisionContext = useCallback(async (sessionId: string, requestedContextNodeIds?: string[]) => {
     const activeDocument = useCanvasStore.getState().document
-    const contextNodeIds = activeDocument.agentSessions.find((item) => item.id === sessionId)?.contextNodeIds ?? []
+    const contextNodeIds = requestedContextNodeIds
+      ?? activeDocument.agentSessions.find((item) => item.id === sessionId)?.contextNodeIds
+      ?? []
     if (!serverPersistenceEnabled || !contextNodeIds.length) return contextNodeIds
     const sources = collectAgentVisionMediaSources(activeDocument, contextNodeIds)
     if (!sources.length) return contextNodeIds

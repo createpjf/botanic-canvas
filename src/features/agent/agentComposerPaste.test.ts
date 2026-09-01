@@ -21,6 +21,7 @@ test('大粘贴替换选区为唯一placeholder,提交展开原文且caret对应
     pasted, pendingPastes: first.pendingPastes, locale: 'zh-CN',
   })!
   assert.equal(Object.keys(second.pendingPastes).some((key) => key.endsWith('#2')), true)
+  assert.equal(expandAgentComposerPastes(second.instruction, second.pendingPastes), `前${pasted}${pasted}后`)
 })
 
 test('小粘贴走浏览器原生输入;删除placeholder会清映射', () => {

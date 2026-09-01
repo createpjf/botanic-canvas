@@ -1,9 +1,12 @@
-import type {
-  BotanicAgentExecutionMode,
-  BotanicAgentIntent,
-  BotanicAgentMessageMention,
-  BotanicAgentRuntimePhase,
+import {
+  botanicAgentComposerGroupRole,
+  normalizeBotanicAgentContextNodeIds,
+  type BotanicAgentExecutionMode,
+  type BotanicAgentIntent,
+  type BotanicAgentMessageMention,
+  type BotanicAgentRuntimePhase,
 } from '../../domain/agent.ts'
+import type { AssetGroup } from '../../domain/canvas.ts'
 import type { GenerationSizeOverride } from '../../domain/generationOutputSize.ts'
 import type { AgentContextItem, AgentDockTarget } from './agentWorkspace.types.ts'
 
@@ -54,6 +57,24 @@ export function agentQueuedInstructionPreview(item: AgentQueuedInstruction, maxi
 
 
 export type AgentResolvedInstructionExecutionContext = AgentInstructionExecutionSnapshot & { target?: AgentDockTarget }
+
+export function agentInstructionExecutionContextNodeIds(
+  snapshot: Pick<AgentInstructionExecutionSnapshot, 'sessionContextNodeIds'>,
+  mentions: readonly BotanicAgentMessageMention[],
+) {
+  return normalizeBotanicAgentContextNodeIds([
+    ...mentions.flatMap((mention) => mention.kind === 'reference' ? [mention.id] : []),
+    ...snapshot.sessionContextNodeIds,
+  ])
+}
+
+export function resolveAgentInstructionAssetGroup(
+  groups: readonly AssetGroup[],
+  snapshot: Pick<AgentInstructionExecutionSnapshot, 'groupId' | 'intent'>,
+) {
+  const role = botanicAgentComposerGroupRole(snapshot.intent)
+  return groups.find((group) => group.id === snapshot.groupId && group.role === role && group.assetIds.length)
+}
 
 export function resolveAgentInstructionExecutionContext(input: {
   snapshot?: AgentInstructionExecutionSnapshot

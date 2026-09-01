@@ -151,7 +151,7 @@ import {
   type AgentInstructionRetryOptions,
 } from './agentComposerState'
 import { useAgentComposerState } from './useAgentComposerState'
-import { resolveAgentInstructionExecutionContext, type AgentInstructionExecutionSnapshot, type AgentResolvedInstructionExecutionContext } from './agentComposerQueue'
+import { agentInstructionExecutionContextNodeIds, resolveAgentInstructionAssetGroup, resolveAgentInstructionExecutionContext, type AgentInstructionExecutionSnapshot, type AgentResolvedInstructionExecutionContext } from './agentComposerQueue'
 import { useAgentInstructionQueue } from './useAgentInstructionQueue'
 import { expandAgentComposerPastes } from './agentComposerPaste'
 import { executeAgentComposerLocalCommand, type AgentComposerLocalCommandId } from './agentComposerCommands'
@@ -373,7 +373,7 @@ export default function AgentWorkspace({
     },
   ) => Promise<BotanicAgentActionResult>
   onUploadImages: (uploads: UploadedAssetInput[]) => void
-  onPrepareVisionContext?: (sessionId: string) => Promise<string[]>
+  onPrepareVisionContext?: (sessionId: string, contextNodeIds?: string[]) => Promise<string[]>
   /** 按 Turn 快照中的稳定 nodeId 解析父结果；禁止用当前选中猜测。 */
   onResolveTarget: (nodeId: string) => AgentDockTarget | undefined
   onAppendMessage: (sessionId: string, message: BotanicAgentMessage) => void
@@ -1599,7 +1599,10 @@ export default function AgentWorkspace({
   ): Promise<BotanicAgentPlan | BotanicAgentClarificationResponse | null> => {
     const planTarget = executionContext?.target ?? target
     if (!session || !planTarget || !isCurrentAgentProject()) return null
-    const assetGroup = compatibleGroups.find((group) => group.id === (executionContext?.groupId ?? groupId))
+    const assetGroup = resolveAgentInstructionAssetGroup(
+      groups,
+      executionContext ?? { groupId, intent },
+    )
     const planContextItems = executionContext?.contextItems ?? contextItems
     const planModel = executionContext?.plannerModel ?? plannerModel
     const planMountedSkillIds = executionContext?.mountedSkillIds ?? session.mountedSkillIds
@@ -1959,10 +1962,14 @@ export default function AgentWorkspace({
       generationOverrides: options.generationOverrides,
       resolveTarget: (nodeId) => resolveBotanicAgentContinuationTarget(nodeId, onResolveTarget),
     })
+    const retrySourceMentions = resolveAgentRetrySourceMessage(session.messages, options.sourceMessageId)?.mentions
     const mentions = options.mentions?.length
       ? options.mentions
-      : snapshotBotanicAgentComposerMentions({ references: instructionExecutionContext.contextItems })
+      : retrySourceMentions?.length
+        ? retrySourceMentions
+        : snapshotBotanicAgentComposerMentions({ references: instructionExecutionContext.contextItems })
     if (mentions.length) options = { ...options, mentions }
+    const executionContextNodeIds = agentInstructionExecutionContextNodeIds(instructionExecutionContext, mentions)
     let instructionTarget = instructionExecutionContext.target
     if (!options.executionSnapshot && intent) setIntent(undefined)
     const appendedUserMessageCreatedAt = options.appendUser !== undefined ? Date.now() : undefined
@@ -2195,14 +2202,9 @@ export default function AgentWorkspace({
         createdAt: appendedUserMessageCreatedAt ?? Date.now(),
       }
       try {
-        const preparedContextIds = onPrepareVisionContext
-          ? await onPrepareVisionContext(session.id)
-          : []
-        const contextNodeIds = normalizeBotanicAgentContextNodeIds([
-          ...(turnInputMessage.mentions ?? []).filter((item) => item.kind === 'reference').map((item) => item.id),
-          ...instructionExecutionContext.sessionContextNodeIds,
-          ...preparedContextIds,
-        ])
+        const contextNodeIds = onPrepareVisionContext
+          ? await onPrepareVisionContext(session.id, executionContextNodeIds)
+          : executionContextNodeIds
         const turnRequest = {
           projectId,
           sessionId: session.id,
@@ -2579,13 +2581,9 @@ export default function AgentWorkspace({
         // 实时通道只改变“回答什么时候到”：思考与工具进入时间线，回答增量写入气泡正文。
         // 完整回答仍等 done 一次性落成消息，避免半截内容进入对话记录。
         // 工具步进只来自服务端 execute 前后的真实 emit，不做 rAF 假进度。
-        const preparedContextIds = onPrepareVisionContext
-          ? await onPrepareVisionContext(session.id)
-          : []
-        const contextNodeIds = normalizeBotanicAgentContextNodeIds([
-          ...instructionExecutionContext.sessionContextNodeIds,
-          ...preparedContextIds,
-        ])
+        const contextNodeIds = onPrepareVisionContext
+          ? await onPrepareVisionContext(session.id, executionContextNodeIds)
+          : executionContextNodeIds
         const existingInputMessage = appendedUserMessageId
           ? undefined
           : resolveAgentRetrySourceMessage(session.messages, options.sourceMessageId)
@@ -2702,7 +2700,7 @@ export default function AgentWorkspace({
       return
     }
     if (decision.kind !== 'generation') return
-    const variationGroup = compatibleGroups.find((group) => group.id === instructionExecutionContext.groupId)
+    const variationGroup = resolveAgentInstructionAssetGroup(groups, instructionExecutionContext)
     const draft = prepareBotanicAgentGenerationDraft({
       instruction: cleanInstruction,
       locale,

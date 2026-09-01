@@ -2,10 +2,12 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   AGENT_COMPOSER_QUEUE_LIMIT,
+  agentInstructionExecutionContextNodeIds,
   agentInstructionQueueSettlement,
   agentQueuedInstructionPreview,
   enqueueAgentInstruction,
   removeAgentQueuedInstruction,
+  resolveAgentInstructionAssetGroup,
   resolveAgentInstructionExecutionContext,
   shiftAgentQueuedInstruction,
   type AgentInstructionExecutionSnapshot,
@@ -52,4 +54,13 @@ test('settlement 只在 completed 执行,failed/idle空输入弹回;快照覆盖
   assert.deepEqual(resolved.mountedSkillIds, ['skill-a'])
   assert.equal(resolved.target, undefined)
   assert.equal(resolved.targetNodeId, null)
+  assert.deepEqual(agentInstructionExecutionContextNodeIds(snapshot, [
+    { kind: 'reference', id: 'node-b', label: '显式引用' },
+    { kind: 'skill', id: 'skill-a', name: '技能' },
+  ]), ['node-b', 'node-a'])
+  const groups = [{
+    id: 'group-a', name: '场景组', role: '场景' as const, assetIds: ['asset-a'], createdAt: 1, updatedAt: 1,
+  }]
+  assert.equal(resolveAgentInstructionAssetGroup(groups, { ...snapshot, intent: 'replace_scene' })?.id, 'group-a')
+  assert.equal(resolveAgentInstructionAssetGroup(groups, { ...snapshot, intent: 'replace_person' }), undefined)
 })
