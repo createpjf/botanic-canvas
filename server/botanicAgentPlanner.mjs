@@ -802,6 +802,7 @@ export async function planBotanicGeneration(input, runtimeConfig, options = {}) 
       resumeCheckpoint: options.resumeCheckpoint,
       saveCheckpoint: options.saveCheckpoint,
       recoverToolCall: options.recoverToolCall,
+      recoverJournalResult: options.recoverJournalResult,
       modelContext: contextBinding.modelContext,
       maxOutputTokens: 3000,
       signal: options.signal,

@@ -191,6 +191,7 @@ export function createAgentSubagentProcessor({
             resumeCheckpoint: runtimeOptions.resumeCheckpoint,
             saveCheckpoint: runtimeOptions.saveCheckpoint,
             recoverToolCall: runtimeOptions.recoverToolCall,
+            recoverJournalResult: runtimeOptions.recoverJournalResult,
             context: {
               ownerId: descriptor.ownerId,
               projectId: descriptor.projectId,

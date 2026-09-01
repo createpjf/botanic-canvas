@@ -1,6 +1,7 @@
 // @ts-check
 import { canonicalHash } from './canonicalHash.mjs'
 import { validateAgentToolEntityReferences } from './agentEntityReferences.mjs'
+import { classifyPublicHttpUrl } from './agentWebResearch.mjs'
 
 const CHECKPOINT_VERSION = 1
 /** Checkpoint V2（H6A，ADR 0004/0008 2026-09-01 修订）：每 call lifecycle 与安全 result envelope。 */
@@ -160,7 +161,13 @@ function validateSafeJson(value, path = 'arguments', depth = 0, ancestors = new 
   }
 }
 
-/** V2 result envelope：与实际送给模型的字符串完全一致;拒绝 raw/reasoning/媒体/Data URL/私有 URL。 */
+export function agentTurnCheckpointResultEnvelopeUrls(value) {
+  if (typeof value !== 'string') return []
+  const decoded = value.replace(/\\\//gu, '/')
+  return [...decoded.matchAll(/\bhttps?:\/\/[^\s"'<>\\{}]+/giu)].map((match) => match[0])
+}
+
+/** V2 result envelope：与实际送给模型的字符串完全一致;拒绝 raw/reasoning/媒体/Data URL/非公开 URL。 */
 function validateResultEnvelope(value, name) {
   if (typeof value !== 'string' || !value.trim()) invalid(`${name} result envelope 无效。`)
   if (Buffer.byteLength(value, 'utf8') > MAX_RESULT_ENVELOPE_BYTES) {
@@ -168,10 +175,10 @@ function validateResultEnvelope(value, name) {
   }
   if (/data:(?:image|video|audio|application)\//iu.test(value)) invalid(`${name} result envelope 不得包含媒体 Data URL。`)
   if (/"(?:reasoning|reasoning_content|analysis)"\s*:/iu.test(value)) invalid(`${name} result envelope 不得包含原始推理。`)
-  if (/\bhttps?:\/\/(?:localhost|127\.|10\.|172\.(?:1[6-9]|2\d|3[01])\.|192\.168\.)/iu.test(value)) {
-    invalid(`${name} result envelope 不得包含私网地址。`)
+  for (const url of agentTurnCheckpointResultEnvelopeUrls(value)) {
+    const classified = classifyPublicHttpUrl(url)
+    if (!classified.ok) invalid(`${name} result envelope ${classified.message}`)
   }
-  if (/\bhttp:\/\//iu.test(value)) invalid(`${name} result envelope 只允许公开 HTTPS 链接。`)
   return value
 }
 

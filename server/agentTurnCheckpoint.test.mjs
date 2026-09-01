@@ -309,6 +309,8 @@ test('Checkpoint V2 拒绝 raw/私网/媒体/推理与超预算 result', () => {
   assert.throws(() => validateAgentTurnCheckpoint(withEnvelope('{"reasoning":"隐藏推理"}')), /原始推理/u)
   assert.throws(() => validateAgentTurnCheckpoint(withEnvelope('{"url":"http://10.0.0.8/internal"}')))
   assert.throws(() => validateAgentTurnCheckpoint(withEnvelope('{"url":"http://example.com"}')), /HTTPS/u)
+  assert.throws(() => validateAgentTurnCheckpoint(withEnvelope('{"url":"https://[::1]/internal"}')), /私网|本机/u)
+  assert.throws(() => validateAgentTurnCheckpoint(withEnvelope('{"url":"https://2130706433/internal"}')), /私网|本机/u)
   // 单 call >8KiB
   assert.throws(
     () => validateAgentTurnCheckpoint(withEnvelope(JSON.stringify({ text: 'x'.repeat(9 * 1024) }))),

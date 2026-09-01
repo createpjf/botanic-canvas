@@ -567,8 +567,20 @@ test('Skill Loader V2:冻结 catalog 恢复时命中原版本,历史缺失或 ha
   assert.equal(pinned[0].contentHash, 'hash-v1')
   const mounted = resolveBotanicAgentMountedSkills(['brand-rules'], pinned, { builtIn: frozen.builtIn })
   assert.equal(mounted[0].instructions, 'V1 正文')
+  const deprecated = pinnedBotanicAgentProjectSkills(frozen, [{ ...publishedV1, status: 'deprecated' }])
+  assert.equal(deprecated[0].status, 'active', '冻结回合仍可读取已下线 Skill 的历史版本')
+  assert.equal(resolveBotanicAgentMountedSkills(['brand-rules'], deprecated)[0].instructions, 'V1 正文')
   // 旧 Turn 没有 V2 字段:保留旧 reader,当前目录原样通过。
   assert.deepEqual(pinnedBotanicAgentProjectSkills(undefined, [publishedV2]), [publishedV2])
+
+  assert.throws(
+    () => freezeBotanicAgentSkillCatalog([{ ...publishedV1, version: undefined, contentHash: undefined }]),
+    (caught) => caught.code === 'AGENT_SKILL_SNAPSHOT_MISMATCH',
+  )
+  assert.throws(
+    () => pinnedBotanicAgentProjectSkills({ version: 2, builtIn: {}, project: [] }, [publishedV2]),
+    (caught) => caught.code === 'AGENT_SKILL_SNAPSHOT_MISMATCH',
+  )
 
   // 失败路径:历史版本丢失(新对象只有 V2 历史)→ Provider 调用前具名失败。
   const lostHistory = { ...publishedV2, versions: [publishedV2.versions[1]] }

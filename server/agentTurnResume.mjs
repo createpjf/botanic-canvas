@@ -263,6 +263,37 @@ export function createAgentTurnResumer({
       throw new AgentTurnResumeError('AGENT_ACTION_RECEIPT_STATE_INVALID', '行动回执状态无效，Turn 无法安全恢复。')
     }
 
+    const recoverJournalResult = async ({ resultRef }) => {
+      if (resultRef?.kind === 'receipt') {
+        if (typeof productStore.readAgentActionReceipt !== 'function') {
+          throw new AgentTurnResumeError('AGENT_TURN_RESULT_REF_READ_UNAVAILABLE', '当前部署缺少结果引用读取能力，请稍后恢复。', 503)
+        }
+        let receipt
+        try { receipt = await productStore.readAgentActionReceipt(turn.ownerId, resultRef.id) } catch {
+          throw new AgentTurnResumeError('AGENT_TURN_RESULT_REF_READ_FAILED', '结果引用暂时无法读取，请稍后恢复。', 503)
+        }
+        if (!receipt || receipt.id !== resultRef.id || receipt.ownerId !== turn.ownerId || receipt.projectId !== turn.projectId) {
+          throw new AgentTurnResumeError('AGENT_TURN_RESULT_REF_SCOPE_MISMATCH', '结果引用与当前用户或项目不匹配。')
+        }
+        if (receipt.status !== 'succeeded') throw new AgentTurnResumeError('AGENT_TURN_RESULT_REF_STATE_INVALID', '结果引用尚未形成可恢复结果。')
+        return safeReceiptResult(receipt.result)
+      }
+      if (resultRef?.kind === 'artifact') {
+        if (typeof productStore.listAgentArtifacts !== 'function') {
+          throw new AgentTurnResumeError('AGENT_TURN_RESULT_REF_READ_UNAVAILABLE', '当前部署缺少结果引用读取能力，请稍后恢复。', 503)
+        }
+        // ponytail: resultRef 只会指向刚落库产物；若未来允许旧产物引用，再补 readAgentArtifact。
+        let artifacts
+        try { artifacts = await productStore.listAgentArtifacts(turn.ownerId, turn.projectId, { limit: 200 }) ?? [] } catch {
+          throw new AgentTurnResumeError('AGENT_TURN_RESULT_REF_READ_FAILED', '结果引用暂时无法读取，请稍后恢复。', 503)
+        }
+        const artifact = artifacts.find((item) => item?.id === resultRef.id)
+        if (!artifact) throw new AgentTurnResumeError('AGENT_TURN_RESULT_REF_NOT_FOUND', '未找到该 Artifact，无法恢复工具结果。')
+        return { artifactId: artifact.id, kind: artifact.kind, label: artifact.label }
+      }
+      throw new AgentTurnResumeError('AGENT_TURN_RESULT_REF_INVALID', '工具结果引用无效。')
+    }
+
     const access = await productStore.projectAccess(turn.ownerId, turn.projectId)
     const project = await productStore.readProject(turn.ownerId, turn.projectId)
     if (!project?.document) {
@@ -329,6 +360,7 @@ export function createAgentTurnResumer({
         ...(immutableThreadSummary ? { threadSummary: immutableThreadSummary } : {}),
         signal: controller.signal,
         recoverToolCall,
+        recoverJournalResult,
         // Worker 恢复不能绕过 API 的联网配额。缺少共享配额服务时 fail closed，
         // 让模型改走非联网路径或明确失败，绝不无计量重放外部检索。
         consumeWebResearchQuota: async () => {

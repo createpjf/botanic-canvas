@@ -264,6 +264,7 @@ export function createAgentSubagentRunner(input) {
       resumeCheckpoint,
       saveCheckpoint,
       recoverToolCall,
+      recoverJournalResult,
     } = runInput ?? {}
     const contract = descriptor ?? subtask
     const descriptorModel = typeof descriptor?.model === 'string' ? descriptor.model.trim() : ''
@@ -320,6 +321,7 @@ export function createAgentSubagentRunner(input) {
         resumeCheckpoint,
         saveCheckpoint,
         recoverToolCall,
+        recoverJournalResult,
         messages: [
           { role: 'system', content: subagentInstructions(contract) },
           ...activationMessages(messages, activation, contract),

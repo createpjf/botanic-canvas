@@ -177,6 +177,90 @@ export function resolveBotanicAgentAvailableSkills(projectSkills = [], { builtIn
 const AGENT_SKILL_CATALOG_MAX_ITEMS = 128
 const AGENT_SKILL_SNAPSHOT_MAX_BYTES = 64 * 1024
 
+function invalidFrozenSkillCatalog(message, code = 'AGENT_SKILL_SNAPSHOT_MISMATCH') {
+  throw new BotanicAgentSkillError(409, code, message)
+}
+
+function frozenCatalogObject(value, name) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) invalidFrozenSkillCatalog(`${name}无效。`)
+  const prototype = Object.getPrototypeOf(value)
+  if (prototype !== Object.prototype && prototype !== null) invalidFrozenSkillCatalog(`${name}必须是普通对象。`)
+  return value
+}
+
+function frozenCatalogKeys(value, allowed, name) {
+  for (const key of Object.keys(value)) {
+    if (!allowed.has(key)) invalidFrozenSkillCatalog(`${name}包含不允许的字段：${key}。`)
+  }
+}
+
+function frozenCatalogText(value, name, maximumLength) {
+  if (typeof value !== 'string' || !value.trim() || value.length > maximumLength) invalidFrozenSkillCatalog(`${name}无效。`)
+  return value
+}
+
+function validateFrozenSkillCatalog(value) {
+  const raw = frozenCatalogObject(value, 'Skill 冻结目录')
+  frozenCatalogKeys(raw, new Set(['version', 'builtIn', 'project']), 'Skill 冻结目录')
+  if (raw.version !== 1) invalidFrozenSkillCatalog('Skill 冻结目录版本无效。')
+  let serialized
+  try { serialized = JSON.stringify(raw) } catch { invalidFrozenSkillCatalog('Skill 冻结目录无法序列化。') }
+  if (Buffer.byteLength(serialized, 'utf8') > AGENT_SKILL_SNAPSHOT_MAX_BYTES) {
+    invalidFrozenSkillCatalog('Skill 目录冻结快照过大。', 'AGENT_SKILL_SNAPSHOT_TOO_LARGE')
+  }
+  const builtIn = frozenCatalogObject(raw.builtIn, '内置 Skill 冻结目录')
+  if (!Array.isArray(raw.project)) invalidFrozenSkillCatalog('项目 Skill 冻结目录无效。')
+  const ids = new Set()
+  const normalizedBuiltIn = {}
+  for (const [id, value] of Object.entries(builtIn)) {
+    frozenCatalogText(id, '内置 Skill 标识', 160)
+    const skill = frozenCatalogObject(value, `内置 Skill ${id}`)
+    frozenCatalogKeys(skill, new Set(['name', 'instructions', 'version', 'contentHash', 'capabilities']), `内置 Skill ${id}`)
+    if (!Number.isSafeInteger(skill.version) || skill.version < 1) invalidFrozenSkillCatalog(`内置 Skill ${id} 版本无效。`)
+    if (!Array.isArray(skill.capabilities)) invalidFrozenSkillCatalog(`内置 Skill ${id} 能力无效。`)
+    let capabilities
+    try { capabilities = normalizeBotanicAgentSkillCapabilities(skill.capabilities) } catch { invalidFrozenSkillCatalog(`内置 Skill ${id} 能力无效。`) }
+    normalizedBuiltIn[id] = {
+      name: frozenCatalogText(skill.name, `内置 Skill ${id} 名称`, 80),
+      instructions: frozenCatalogText(skill.instructions, `内置 Skill ${id} 规则`, 12_000),
+      version: skill.version,
+      contentHash: frozenCatalogText(skill.contentHash, `内置 Skill ${id} 内容摘要`, 200),
+      capabilities,
+    }
+    ids.add(id)
+  }
+  const project = raw.project.map((value, index) => {
+    const binding = frozenCatalogObject(value, `项目 Skill 冻结绑定 ${index + 1}`)
+    frozenCatalogKeys(binding, new Set(['id', 'name', 'version', 'contentHash', 'capabilities', 'manifest']), `项目 Skill 冻结绑定 ${index + 1}`)
+    const id = frozenCatalogText(binding.id, '项目 Skill 标识', 160)
+    if (ids.has(id)) invalidFrozenSkillCatalog(`Skill 冻结目录标识重复：${id}。`)
+    if (!Number.isSafeInteger(binding.version) || binding.version < 1) invalidFrozenSkillCatalog(`项目 Skill ${id} 版本无效。`)
+    if (!Array.isArray(binding.capabilities)) invalidFrozenSkillCatalog(`项目 Skill ${id} 能力无效。`)
+    let capabilities
+    let manifest
+    try {
+      capabilities = normalizeBotanicAgentSkillCapabilities(binding.capabilities)
+      if (binding.manifest !== undefined) {
+        frozenCatalogKeys(frozenCatalogObject(binding.manifest, `项目 Skill ${id} Manifest`), new Set(['version', 'kind', 'outputSchema', 'toolAllowlist', 'dependencies']), `项目 Skill ${id} Manifest`)
+        manifest = normalizeAgentSkillManifest(binding.manifest)
+      }
+    } catch { invalidFrozenSkillCatalog(`项目 Skill ${id} 冻结绑定无效。`) }
+    ids.add(id)
+    return {
+      id,
+      name: frozenCatalogText(binding.name, `项目 Skill ${id} 名称`, 80),
+      version: binding.version,
+      contentHash: frozenCatalogText(binding.contentHash, `项目 Skill ${id} 内容摘要`, 200),
+      capabilities,
+      ...(manifest ? { manifest } : {}),
+    }
+  })
+  if (ids.size > AGENT_SKILL_CATALOG_MAX_ITEMS) {
+    invalidFrozenSkillCatalog(`Skill 目录超过 ${AGENT_SKILL_CATALOG_MAX_ITEMS} 项，无法冻结。`, 'AGENT_SKILL_CATALOG_TOO_LARGE')
+  }
+  return { version: 1, builtIn: normalizedBuiltIn, project }
+}
+
 /**
  * 在 Turn 创建时冻结 Skill catalog（H5）：
  * - 内置 Skill 没有版本历史,完整语义 snapshot 一次冻结（不整体注入 prompt）;
@@ -195,6 +279,9 @@ export function freezeBotanicAgentSkillCatalog(projectSkills = []) {
   const project = []
   for (const [id, skill] of entries) {
     if ((skill.source ?? 'system') === 'project') {
+      if (!Number.isSafeInteger(skill.version) || skill.version < 1 || typeof skill.contentHash !== 'string' || !skill.contentHash.trim()) {
+        invalidFrozenSkillCatalog(`项目 Skill ${id} 缺少不可变版本身份。`)
+      }
       project.push({
         id,
         name: skill.label,
@@ -213,11 +300,7 @@ export function freezeBotanicAgentSkillCatalog(projectSkills = []) {
       }
     }
   }
-  const frozen = { version: 1, builtIn, project }
-  if (JSON.stringify(frozen).length > AGENT_SKILL_SNAPSHOT_MAX_BYTES) {
-    throw new BotanicAgentSkillError(409, 'AGENT_SKILL_SNAPSHOT_TOO_LARGE', 'Skill 目录冻结快照过大。')
-  }
-  return frozen
+  return validateFrozenSkillCatalog({ version: 1, builtIn, project })
 }
 
 /**
@@ -226,23 +309,23 @@ export function freezeBotanicAgentSkillCatalog(projectSkills = []) {
  * 在 Provider 调用前失败。返回形如 projectSkills 的数组供既有解析器消费。
  */
 export function pinnedBotanicAgentProjectSkills(frozenCatalog, currentProjectSkills = []) {
-  const frozen = frozenCatalog && typeof frozenCatalog === 'object' ? frozenCatalog : undefined
-  if (!frozen || !Array.isArray(frozen.project)) return currentProjectSkills
+  if (frozenCatalog === undefined || frozenCatalog === null) return currentProjectSkills
+  const frozen = validateFrozenSkillCatalog(frozenCatalog)
   const byId = new Map((Array.isArray(currentProjectSkills) ? currentProjectSkills : []).filter((skill) => skill?.id).map((skill) => [skill.id, skill]))
   return frozen.project.map((binding) => {
     const current = byId.get(binding.id)
     if (!current) {
       throw new BotanicAgentSkillError(409, 'AGENT_SKILL_SNAPSHOT_MISMATCH', `项目 Skill ${binding.id} 已不存在，无法按原回合恢复。`)
     }
-    const currentMatches = (binding.version === undefined || Number(current.version) === binding.version)
-      && (binding.contentHash === undefined || current.contentHash === binding.contentHash)
-    if (currentMatches) return current
+    const currentMatches = Number(current.version) === binding.version && current.contentHash === binding.contentHash
+    if (currentMatches) return { ...current, status: 'active' }
     const snapshot = agentSkillVersion(current, binding.version)
     if (!snapshot || (binding.contentHash && snapshot.contentHash !== binding.contentHash)) {
       throw new BotanicAgentSkillError(409, 'AGENT_SKILL_SNAPSHOT_MISMATCH', `项目 Skill ${binding.id}@${binding.version ?? '?'} 的历史版本缺失或内容不一致。`)
     }
     return {
       ...current,
+      status: 'active',
       name: typeof snapshot.name === 'string' ? snapshot.name : current.name,
       instructions: snapshot.instructions,
       version: binding.version,

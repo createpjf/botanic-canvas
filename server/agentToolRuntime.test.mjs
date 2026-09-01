@@ -1539,6 +1539,7 @@ test('journal 恢复:post-result 崩溃后复用 durable envelope,fetch 只发�
   const recovered = await runAgentToolLoop({
     registry, messages: [], maximumSteps: 2, attempt,
     resumeCheckpoint: durable,
+    checkpointUrlLookup: async () => ['93.184.216.34'],
     saveCheckpoint: async (checkpoint) => { checkpoints.push(structuredClone(checkpoint)) },
     callModel: async ({ messages }) => {
       modelSawEnvelope = messages.find((message) => message.role === 'tool')?.content
@@ -1548,6 +1549,37 @@ test('journal 恢复:post-result 崩溃后复用 durable envelope,fetch 只发�
   assert.equal(recovered.output, '综合完成')
   assert.equal(fetches, 1, '恢复不得第二次 fetch')
   assert.equal(modelSawEnvelope, envelope, '模型 history 与 checkpoint 使用同一字符串')
+
+  await assert.rejects(runAgentToolLoop({
+    registry, messages: [], maximumSteps: 2, attempt,
+    resumeCheckpoint: durable,
+    checkpointUrlLookup: async () => ['10.0.0.8'],
+    saveCheckpoint: async () => {},
+    callModel: async () => { throw new Error('私网结果不得进入模型') },
+  }), (caught) => caught.code === 'AGENT_TURN_CHECKPOINT_INVALID')
+  assert.equal(fetches, 1, '私网解析失败时也不得重放工具')
+
+  let recoveredRef
+  const refAttempt = { id: 'attempt-ref', model: 'model-a', snapshotHash: 'hash-ref' }
+  const refResult = await runAgentToolLoop({
+    registry, messages: [], maximumSteps: 2, attempt: refAttempt,
+    resumeCheckpoint: {
+      version: 2, attempt: refAttempt,
+      completedSteps: [{ step: 0, calls: [{
+        id: 'call-ref', name: 'web_probe_read', risk: 'external', recovery: 'journal', terminal: false,
+        phase: 'completed', arguments: { url: 'https://example.com/ref' }, resultRef: { kind: 'artifact', id: 'artifact-1' },
+      }] }],
+    },
+    recoverJournalResult: async ({ resultRef }) => ({ artifactId: resultRef.id, kind: resultRef.kind }),
+    saveCheckpoint: async () => {},
+    callModel: async ({ messages }) => {
+      recoveredRef = JSON.parse(messages.find((message) => message.role === 'tool').content)
+      return { choices: [{ message: { content: '引用恢复完成' } }] }
+    },
+  })
+  assert.equal(refResult.output, '引用恢复完成')
+  assert.deepEqual(recoveredRef, { artifactId: 'artifact-1', kind: 'artifact' })
+  assert.equal(fetches, 1, 'resultRef 恢复不得执行原工具')
 })
 
 test('journal 恢复:pre-dispatch 可重执行,post-dispatch 无结果收口 outcome-unknown 且不再 fetch', async () => {

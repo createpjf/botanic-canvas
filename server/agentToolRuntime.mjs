@@ -2,11 +2,13 @@ import { agentToolCallSummary, appendAgentReasoning, extractProviderReasoning } 
 import { presentationWebSources } from './agentWebResearch.mjs'
 import {
   completeAgentTurnCheckpoint,
+  agentTurnCheckpointResultEnvelopeUrls,
   journalAgentTurnCheckpointCall,
   prepareAgentTurnCheckpoint,
   terminalAgentTurnCheckpoint,
   validateAgentTurnCheckpoint,
 } from './agentTurnCheckpoint.mjs'
+import { assertPublicHttpsUrl } from './webEgressGuard.mjs'
 import { canonicalHash } from './canonicalHash.mjs'
 import { estimateAgentContextTokens, truncateAgentContextText } from './agentContextBudget.mjs'
 import { extractAgentEntityReferences, mergeAgentEntityReferences } from './agentEntityReferences.mjs'
@@ -544,6 +546,8 @@ export async function runAgentToolLoop({
   resumeCheckpoint,
   saveCheckpoint,
   recoverToolCall,
+  recoverJournalResult,
+  checkpointUrlLookup = /** @type {((hostname: string) => Promise<string[]>) | undefined} */ (undefined),
   modelContext = undefined,
   maxOutputTokens = undefined,
   trigger = 'pre_step',
@@ -911,6 +915,13 @@ export async function runAgentToolLoop({
           409,
         )
       }
+      if (call.recovery === 'journal' && call.phase === 'completed' && call.resultRef && typeof recoverJournalResult !== 'function') {
+        throw new AgentToolRuntimeError(
+          'AGENT_TURN_NOT_REPLAYABLE',
+          `Agent 工具 ${call.name} 缺少结果引用恢复能力。`,
+          409,
+        )
+      }
     }
   }
 
@@ -927,6 +938,19 @@ export async function runAgentToolLoop({
         if (call.phase === 'completed' && typeof call.resultEnvelope === 'string') {
           const trace = traceFor(tool, { id: call.id }, stepCheckpoint.step, index, call.arguments)
           return { tool, rawArguments: call.arguments, trace, descriptor: call, recovering: true, referencesFromCheckpoint, reuseEnvelope: call.resultEnvelope }
+        }
+        if (call.phase === 'completed' && call.resultRef) {
+          const trace = traceFor(tool, { id: call.id }, stepCheckpoint.step, index, call.arguments)
+          return { tool, rawArguments: call.arguments, trace, descriptor: call, recovering: true, referencesFromCheckpoint, recoverResultRef: true }
+        }
+        if (call.phase === 'failed' || call.phase === 'aborted') {
+          const trace = traceFor(tool, { id: call.id }, stepCheckpoint.step, index, call.arguments)
+          const aborted = call.phase === 'aborted'
+          return {
+            tool, rawArguments: call.arguments, trace, descriptor: call, recovering: true, referencesFromCheckpoint,
+            reuseEnvelope: JSON.stringify({ ok: false, code: aborted ? 'AGENT_TOOL_ABORTED' : 'AGENT_TOOL_FAILED', error: aborted ? '工具调用已中止。' : '工具执行失败。' }),
+            reuseStatus: call.phase,
+          }
         }
         if (call.phase === undefined || call.phase === 'prepared') {
           const rawArguments = structuredClone(call.arguments)
@@ -1024,7 +1048,16 @@ export async function runAgentToolLoop({
       }
       // journal completed 恢复:复用 durable envelope,不再执行工具、不重新扣配额。
       if (entry.reuseEnvelope !== undefined) {
-        const reused = { ...trace, status: 'succeeded' }
+        for (const url of agentTurnCheckpointResultEnvelopeUrls(entry.reuseEnvelope)) {
+          const classified = await withinExecutionBoundary(() => assertPublicHttpsUrl(
+            url,
+            checkpointUrlLookup ? { lookup: checkpointUrlLookup } : {},
+          ))
+          if (!classified.ok) {
+            throw new AgentToolRuntimeError('AGENT_TURN_CHECKPOINT_INVALID', classified.message, 409)
+          }
+        }
+        const reused = { ...trace, status: entry.reuseStatus ?? 'succeeded' }
         toolCalls.push(reused)
         appendPreparedToolOutput(entry, {
           content: entry.reuseEnvelope,
@@ -1032,6 +1065,17 @@ export async function runAgentToolLoop({
           compact: false,
           serialized: entry.reuseEnvelope,
         })
+        continue
+      }
+      if (entry.recoverResultRef) {
+        const output = await withinExecutionBoundary(() => recoverJournalResult({
+          step,
+          resultRef: structuredClone(entry.descriptor.resultRef),
+          toolCall: structuredClone(entry.descriptor),
+          context,
+        }))
+        toolCalls.push({ ...trace, status: 'succeeded' })
+        appendToolOutput(entry, output)
         continue
       }
       // journal（H6B）:请求交给 client 前先 durable 写 dispatched;此后不能再假设「没执行」。

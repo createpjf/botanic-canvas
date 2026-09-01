@@ -923,6 +923,7 @@ async function executeTurnAttempt({ config, model, system, messages, registry, o
       resumeCheckpoint: options.resumeCheckpoint,
       saveCheckpoint: options.saveCheckpoint,
       recoverToolCall: options.recoverToolCall,
+      recoverJournalResult: options.recoverJournalResult,
       modelContext: options.modelContext,
       maxOutputTokens: 3000,
       signal: options.signal,

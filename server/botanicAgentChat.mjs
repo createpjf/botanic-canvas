@@ -206,6 +206,7 @@ async function executeChatAttempt({ input, config, model, system, messages, regi
       resumeCheckpoint: options.resumeCheckpoint,
       saveCheckpoint: options.saveCheckpoint,
       recoverToolCall: options.recoverToolCall,
+      recoverJournalResult: options.recoverJournalResult,
       modelContext: contextBinding.modelContext,
       maxOutputTokens: input.mode === 'prompt' ? 2200 : 3000,
       signal: options.signal,
