@@ -129,6 +129,20 @@ Runtime 或新目录，而是一组已实现、可验证的控制面不变量，
 有意不复制 Codex 的部分：无 hard loop cap 的做法、特定条件下的无界重连、固定 100ms cancel grace、把
 compaction 当可靠性边界、平台 sandbox/Guardian。Botanic 的 durable Turn/lease/Receipt/深取消语义保持权威。
 
+### 外层平台收口(2026-09-01 第二阶段)
+
+对照完整 Codex workspace(145 crate)后补齐的四个外层,均沿既有 seam,不新建 Runtime:
+
+| 层 | 模块 | 对应 Codex | 语义 |
+| --- | --- | --- | --- |
+| Model Provider | `botanicAgentModelProvider.mjs` | `model-provider` | 唯一 Agent 采样传输 seam:`sample()` 隐藏 URL/鉴权/trace header/per-call timeout/SSE 归一化/错误分类/overflow 识别/call_timeout 事件;不做 transport retry(H3C Gate);architectureBoundaries 禁止 10 个 caller 再持有 `/chat/completions` |
+| Protocol v1 | `agentProtocol.mjs` + `scripts/generateAgentProtocol.mjs` | `app-server-protocol` | 公共 Turn 状态/SSE 事件/ToolCall 状态/错误码单一 catalog;生成前端类型与 JSON Schema,build 前 `--check` 防漂移;缺版本按 v1 兼容,显式未知版本 fail closed |
+| Metrics/Diagnostics | `agentTelemetryMetrics.mjs` + `agentRuntimeDiagnostics.mjs` | `otel`/`diagnostics` | 语义事件旁路成低基数 OTel 指标(标识一律丢弃),content-free gauges(active turns/pending cancel acks/内存);exporter 故障 fail-open |
+| Connector Gate | ADR 0011(未采纳) | `connectors`/`secrets` | 只冻结未来 seam 与四个进入门槛;Gate 前继续 operator MCP env 配置 |
+
+同阶段收口的 Core 事实:web 工具 journal 语义贯穿根 Turn/Subagent(不再按入口分叉为 never);
+`cancel_observed`/`duplicate_dispatch` 有生产 emit;Turn/Chat/Planner 透传 `AGENT_TOOL_*` 具名错误。
+
 ## Agent Turn Runtime 与恢复
 
 `server/botanicAgentTurnRuntime.mjs` 是回合控制权的唯一入口。Turn 先以 `queued` 持久化，再由 ProductStore 原子
