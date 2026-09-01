@@ -107,6 +107,28 @@ API 重启后用快照与增量重建房间；累计 64 条后压缩，避免日
 
 迁移阶段不删除 `CanvasDocument.agentSessions / agentMemory / agentRuns`。Supabase 迁移完成、历史数据 Backfill 和双设备门禁通过后，才能停止旧字段写入。
 
+## Bob Agent Core（Agent Harness 控制面）
+
+Bob Agent Core 是对现有 Agent 控制面（`agentToolRuntime.mjs` + `botanicAgentTurnRuntime.mjs` +
+`agentTurnCheckpoint.mjs` 及其 Skill/取消/恢复 seam）在 2026-09-01 可靠性升级后的命名。它不是第二套
+Runtime 或新目录，而是一组已实现、可验证的控制面不变量，对应 OpenAI Codex core
+（`rust-v0.152.0@316795b3` / 研究快照 `633ab199`）的公开工程不变量：
+
+| 不变量 | Codex core 对应 | Bob Agent Core 实现 |
+| --- | --- | --- |
+| Immutable step snapshot | 同一步模型可见 context/tools 与实际 dispatch 共用冻结快照 | `freezeAgentStepSnapshot`；Skill catalog 随 durable request 冻结（`skillCatalogSnapshot`），恢复按 binding pin 版本 |
+| 严格 Skill binding | metadata catalog → selection → dependency → body 渐进加载 | 挂载 fail-closed（`AGENT_SKILL_*`）、依赖 closure 拓扑注入、聚合预算、`AGENT_SKILL_SNAPSHOT_MISMATCH` |
+| Call/result pairing | history 中每个 call 恰好一个 output，缺失合成 aborted | 整批 preflight 逐 call 配对（`BATCH_PREFLIGHT_ABORTED`）、执行期 fatal 收口未启动 call（`BATCH_NOT_STARTED`） |
+| Cancellation scope | cancel token 贯穿 task/provider/tool | 根 signal + deadlineAt 冻结进 `runAgentToolLoop`,在模型调用/preflight/每个 execute/终态前检查;web 与子任务组合而非覆盖 |
+| Deadline 层次 | per-call timeout 与 turn 生命周期分离 | Provider call timeout（每 sampling 重建）、Turn 顶层 `deadlineAt`（600s 默认）、lease 独立 |
+| Bounded repair/loop | RespondToModel 错误回给模型;正常终止由预算控制 | 错误三分法（repairable/terminal-known/outcome-unknown）、同签名一次 repair、volatile 字段忽略 + A→B→A→B 环窗、action budget 不变 |
+| Final synthesis | budget 耗尽后仍给出最终回答 | 一次 `tools: [] / tool_choice: none` 综合;terminal checkpoint cursor 允许 =MAX_STEPS |
+| External-read lifecycle recovery | rollout append/terminal flush 与 reconstruction 分离 | Checkpoint V2 journal call：prepared/dispatched/completed/failed/unknown 逐 call durable;completed 复用同一 envelope,dispatched 无结果禁止重放 |
+| Observability | 事件驱动指标 | `botanic.agent.harness.lifecycle` 语义事件 + `agentOperationalMetrics` harness 族（零容忍计数、null≠0%） |
+
+有意不复制 Codex 的部分：无 hard loop cap 的做法、特定条件下的无界重连、固定 100ms cancel grace、把
+compaction 当可靠性边界、平台 sandbox/Guardian。Botanic 的 durable Turn/lease/Receipt/深取消语义保持权威。
+
 ## Agent Turn Runtime 与恢复
 
 `server/botanicAgentTurnRuntime.mjs` 是回合控制权的唯一入口。Turn 先以 `queued` 持久化，再由 ProductStore 原子
