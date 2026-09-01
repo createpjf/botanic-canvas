@@ -11,7 +11,7 @@
     "test:e2e": "playwright test",
     "check:architecture": "node scripts/architectureBoundaries.mjs",
     "check:security": "node scripts/securityGate.mjs",
-    "build": "tsc -b && vite build",
+    "build": "node scripts/generateAgentProtocol.mjs --check && tsc -b && vite build",
     "preview": "vite preview",
     "check:evals": "node scripts/evalGate.mjs && npm run check:intent-evals",
     "check:intent-evals": "node --test server/botanicAgentTurn.test.mjs && node --experimental-strip-types --test src/domain/agentChatContract.test.ts src/domain/agentInstructionRouting.test.ts src/domain/agentTurnObservation.test.ts",

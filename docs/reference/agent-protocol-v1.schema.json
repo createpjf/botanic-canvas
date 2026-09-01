@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://botanic.internal/agent-protocol-v1.schema.json",
+  "title": "Botanic Agent Protocol v1",
+  "description": "公共 Turn/Event/Error 枚举目录。source of truth: server/agentProtocol.mjs。",
+  "protocolVersion": 1,
+  "$defs": {
+    "AgentTurnPublicStatus": {
+      "type": "string",
+      "enum": [
+        "queued",
+        "running",
+        "waiting_user",
+        "cancelling",
+        "completed",
+        "failed",
+        "cancelled"
+      ]
+    },
+    "AgentStreamEventType": {
+      "type": "string",
+      "enum": [
+        "accepted",
+        "handoff",
+        "reasoning",
+        "answer",
+        "tool",
+        "done",
+        "error"
+      ]
+    },
+    "AgentToolCallPublicStatus": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "running",
+        "awaiting_confirmation",
+        "succeeded",
+        "failed",
+        "aborted"
+      ]
+    },
+    "AgentToolCallPublicRisk": {
+      "type": "string",
+      "enum": [
+        "read",
+        "write",
+        "costly",
+        "external"
+      ]
+    },
+    "AgentPublicErrorCode": {
+      "type": "string",
+      "enum": [
+        "INVALID_REQUEST",
+        "INVALID_IDEMPOTENCY_KEY",
+        "AGENT_TURN_INTENT_CONFLICT",
+        "AGENT_THREAD_CONTEXT_REQUIRED",
+        "AGENT_TURN_PREPARATION_FAILED",
+        "AGENT_TURN_CANCELLED",
+        "AGENT_TURN_FAILED",
+        "AGENT_TURN_RESULT_MISSING",
+        "AGENT_TURN_NOT_REPLAYABLE",
+        "AGENT_TURN_DEADLINE_EXCEEDED",
+        "AGENT_TURN_RESUME_LIMIT_REACHED",
+        "AGENT_TURN_DURABILITY_UNAVAILABLE",
+        "REQUEST_CANCELLED",
+        "TOOL_LOOP_LIMIT_REACHED",
+        "TOOL_NO_PROGRESS",
+        "TOOL_CALL_LIMIT_REACHED",
+        "AGENT_TOOL_OUTCOME_UNKNOWN",
+        "AGENT_TOOL_DUPLICATE_DISPATCH",
+        "AGENT_SKILL_BINDING_UNKNOWN",
+        "AGENT_SKILL_BINDING_DEPENDENCY",
+        "AGENT_SKILL_BINDING_LIMIT",
+        "AGENT_SKILL_DEPENDENCY_CONFLICT",
+        "AGENT_SKILL_DEPENDENCY_LIMIT",
+        "AGENT_SKILL_CONTEXT_TOO_LARGE",
+        "AGENT_SKILL_SNAPSHOT_MISMATCH",
+        "PROVIDER_NOT_CONFIGURED",
+        "PROVIDER_TIMEOUT",
+        "PROVIDER_AUTH_FAILED",
+        "PROVIDER_RATE_LIMITED",
+        "PROVIDER_UNAVAILABLE",
+        "PROVIDER_REJECTED",
+        "INVALID_PROVIDER_RESPONSE",
+        "AGENT_CONTEXT_OVERFLOW"
+      ]
+    },
+    "AgentTurnTerminalStatus": {
+      "type": "string",
+      "enum": [
+        "completed",
+        "failed",
+        "cancelled"
+      ]
+    }
+  }
+}
