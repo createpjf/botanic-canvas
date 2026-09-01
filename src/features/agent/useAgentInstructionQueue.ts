@@ -29,8 +29,10 @@ export function useAgentInstructionQueue(input: {
 }) {
   const executeRef = useRef(input.execute)
   const applySnapshotRef = useRef(input.applySnapshot)
-  executeRef.current = input.execute
-  applySnapshotRef.current = input.applySnapshot
+  useEffect(() => {
+    executeRef.current = input.execute
+    applySnapshotRef.current = input.applySnapshot
+  }, [input.applySnapshot, input.execute])
   const flushingRef = useRef(false)
   const queue = input.state.queuedInstructions
 

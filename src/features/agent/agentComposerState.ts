@@ -221,7 +221,11 @@ export function navigateAgentComposerHistory(input: {
   text: string
   caret: number
 }): AgentComposerHistoryNavigation {
-  const entries = input.entries.map((entry) => entry.trim()).filter(Boolean)
+  const entries: string[] = []
+  for (const value of input.entries) {
+    const entry = value.trim()
+    if (entry) entries.push(entry)
+  }
   if (!entries.length) return { handled: false, state: input.state }
   const browsing = input.state.cursor !== undefined
   if (input.text) {

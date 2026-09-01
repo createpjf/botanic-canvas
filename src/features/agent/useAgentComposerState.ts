@@ -83,6 +83,16 @@ export function useAgentComposerState(
     return () => window.clearTimeout(timer)
   }, [expandedCaret, expandedDraft, storageKey])
 
+  // 浏览器reload/关闭不保证React cleanup执行;pagehide在debounce前同步flush最后草稿。
+  useEffect(() => {
+    if (!storageKey) return
+    const flush = () => writeAgentComposerDraft(browserSessionStorage(), storageKey, {
+      instruction: expandedDraft, caret: Math.min(expandedDraft.length, expandedCaret),
+    })
+    window.addEventListener('pagehide', flush)
+    return () => window.removeEventListener('pagehide', flush)
+  }, [expandedCaret, expandedDraft, storageKey])
+
   // Session switch/unmount can happen inside the debounce window; flush that session's latest draft.
   useEffect(() => {
     if (!storageKey) return
