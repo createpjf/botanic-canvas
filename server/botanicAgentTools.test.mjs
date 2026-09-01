@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { executeConfirmedAgentAction, runAgentToolLoop } from './agentToolRuntime.mjs'
 import { createConfiguredMcpRuntime, parseMcpToolConfigurations } from './mcpClient.mjs'
+import { createBotanicAgentReadToolDefinitions } from './botanicAgentContextTools.mjs'
 import {
   botanicAgentMountedSkillBriefing,
   botanicAgentSearchableSkills,
@@ -49,7 +50,7 @@ function mcpRuntime(handler = async () => ({ matches: 2 })) {
   })
 }
 
-test('系统 Skill 目录包含交付配方，Composer 挂载后能解析到正文', () => {
+test('系统 Skill 目录包含交付配方，Composer 挂载后能解析到正文', async () => {
   const systemSkills = botanicAgentSystemSkills()
   const ids = systemSkills.map((skill) => skill.id)
   assert.deepEqual(ids.includes('ecommerce_listing'), true)
@@ -80,6 +81,20 @@ test('系统 Skill 目录包含交付配方，Composer 挂载后能解析到正�
   }])
   assert.ok(searchable.some((skill) => skill.id === 'platform_pack'))
   assert.ok(searchable.some((skill) => skill.id === 'skill-scene-campaign'))
+  // 渐进式披露:searchable 目录仍带正文供服务端 skill_run/挂载消费,但 skill_search
+  // 工具结果只暴露 metadata + 摘要,完整正文归第三级。见 botanicAgentContextTools。
+  const searchExecute = createBotanicAgentReadToolDefinitions({
+    ontology: { project: {}, nodes: [], edges: [], assetGroups: [], contextNodeIds: [] },
+    memory: [],
+    skills: botanicAgentSearchableSkills([]),
+  }).find((tool) => tool.name === 'skill_search')
+  const searchResult = await searchExecute.execute({ query: '套图' })
+  assert.ok(searchResult.skills.length > 0)
+  for (const entry of searchResult.skills) {
+    assert.equal(entry.instructions, undefined, 'skill_search 不得回传完整正文')
+    assert.equal(typeof entry.summary, 'string')
+    assert.ok(entry.summary.length <= 160)
+  }
   const systemSearch = searchable.find((skill) => skill.id === 'platform_pack')
   const systemCatalog = systemSkills.find((skill) => skill.id === 'platform_pack')
   assert.equal(systemSearch.version, systemCatalog.version)
