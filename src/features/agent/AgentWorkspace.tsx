@@ -1,4 +1,4 @@
-import { type ClipboardEvent, type DragEvent, useCallback, useEffect, useId, useMemo, useReducer, useRef, useState } from 'react'
+import { type ClipboardEvent, type DragEvent, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import {
   botanicAgentComposerGroupRole,
   botanicAgentCanResumeManualRetry,
@@ -15,7 +15,6 @@ import {
   normalizeBotanicAgentContextNodeIds,
   prepareBotanicAgentComposerSubmission,
   snapshotBotanicAgentComposerMentions,
-  readBotanicAgentMentionQuery,
   resolveBotanicAgentExecutionDecision,
   BOTANIC_AGENT_MAX_SINGLE_OUTPUT,
   botanicAgentPendingConfirmationCount,
@@ -145,13 +144,12 @@ import {
   agentRuntimeStepStatusLabel,
 } from './AgentWorkspaceParts'
 import {
-  agentComposerStateReducer,
   applyAgentSessionContextChange,
-  initialAgentComposerState,
   resolveAgentRetrySourceMessage,
   type AgentFailedInstruction,
   type AgentInstructionRetryOptions,
 } from './agentComposerState'
+import { useAgentComposerState } from './useAgentComposerState'
 import { useAgentMessageDelivery } from './useAgentMessageDelivery'
 import {
   persistBotanicAgentActionMessageUpdate,
@@ -477,17 +475,25 @@ export default function AgentWorkspace({
   const plannerModel = plannerModels.includes(session?.plannerModel ?? '')
     ? session!.plannerModel!
     : plannerModels[0] ?? defaultAgentPlannerModels[0]
-  const [composerState, updateComposerState] = useReducer(agentComposerStateReducer, initialAgentComposerState)
+  const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null)
+  const {
+    state: composerState,
+    update: updateComposerState,
+    setInstruction,
+    setInstructionAt,
+    changeInstruction,
+    clickInstruction,
+    dismissMention,
+  } = useAgentComposerState(projectId, session?.id, composerTextareaRef)
   const { instruction, error, lastFailedInstruction, lastFailedCommand, lastFailedPlanMessageId, mentionQuery, pendingGenerationOverrides, pendingRecoveryContextSnapshot } = composerState
-  const setInstruction = useCallback((value: string) => updateComposerState({ instruction: value }), [])
-  const setError = useCallback((value: string) => updateComposerState({ error: value }), [])
+  const setError = useCallback((value: string) => updateComposerState({ error: value }), [updateComposerState])
   const setLastFailedInstruction = useCallback((value: string) => updateComposerState({
     lastFailedInstruction: value,
     ...(!value ? { lastFailedCommand: undefined } : {}),
-  }), [])
-  const setLastFailedPlanMessageId = useCallback((value: string) => updateComposerState({ lastFailedPlanMessageId: value }), [])
-  const setMentionQuery = useCallback((value?: BotanicAgentMentionQuery) => updateComposerState({ mentionQuery: value }), [])
-  const setPendingGenerationOverrides = useCallback((value: GenerationSizeOverride) => updateComposerState({ pendingGenerationOverrides: value }), [])
+  }), [updateComposerState])
+  const setLastFailedPlanMessageId = useCallback((value: string) => updateComposerState({ lastFailedPlanMessageId: value }), [updateComposerState])
+  const setMentionQuery = useCallback((value?: BotanicAgentMentionQuery) => updateComposerState({ mentionQuery: value }), [updateComposerState])
+  const setPendingGenerationOverrides = useCallback((value: GenerationSizeOverride) => updateComposerState({ pendingGenerationOverrides: value }), [updateComposerState])
   const rememberFailedInstruction = useCallback((command: AgentFailedInstruction) => updateComposerState({
     lastFailedInstruction: command.instruction,
     lastFailedCommand: command,
@@ -670,7 +676,6 @@ export default function AgentWorkspace({
   const lastReadingAnchorRef = useRef(session?.readingAnchorMessageId ?? '')
   const locatedMessageTimerRef = useRef<number | null>(null)
   const [locatedMessageId, setLocatedMessageId] = useState('')
-  const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null)
   const agentFileInputRef = useRef<HTMLInputElement | null>(null)
   const historyTriggerRef = useRef<HTMLButtonElement | null>(null)
   const utilityMenuButtonRef = useRef<HTMLButtonElement | null>(null)
@@ -1525,8 +1530,8 @@ export default function AgentWorkspace({
     if (!session.contextNodeIds.includes(item.id)
       && !changeSessionContext([...session.contextNodeIds, item.id])) return
     const consumed = consumeBotanicAgentMention(instruction, mentionQuery)
-    setInstruction(consumed.value)
-    setMentionQuery(undefined)
+    setInstructionAt(consumed.value, consumed.caret)
+    updateComposerState({ mentionQuery: undefined, dismissedMention: undefined })
     requestAnimationFrame(() => {
       composerTextareaRef.current?.focus()
       composerTextareaRef.current?.setSelectionRange(consumed.caret, consumed.caret)
@@ -1538,9 +1543,9 @@ export default function AgentWorkspace({
     // 服务端 16 上限 fail-closed;超限在挂载点直接拒绝,不等提交时报错。
     if (next.length > BOTANIC_AGENT_MOUNTED_SKILL_LIMIT) return
     const consumed = consumeBotanicAgentMention(instruction, mentionQuery)
-    setInstruction(consumed.value)
+    setInstructionAt(consumed.value, consumed.caret)
     onSkillsChange(session.id, next)
-    setMentionQuery(undefined)
+    updateComposerState({ mentionQuery: undefined, dismissedMention: undefined })
     requestAnimationFrame(() => {
       composerTextareaRef.current?.focus()
       composerTextareaRef.current?.setSelectionRange(consumed.caret, consumed.caret)
@@ -3229,8 +3234,7 @@ export default function AgentWorkspace({
     })
     if (!prepared) return
     sendingInstructionRef.current = true
-    setInstruction('')
-    setMentionQuery(undefined)
+    updateComposerState({ instruction: '', caret: 0, mentionQuery: undefined, dismissedMention: undefined })
     setLastFailedPlanMessageId('')
     const generationOverrides = pendingGenerationOverrides
     const recoveryContextSnapshot = pendingRecoveryContextSnapshot
@@ -3800,9 +3804,9 @@ export default function AgentWorkspace({
         onSelectMention={selectMention}
         onSelectSkill={selectSkill}
         onCreateSkill={openSkillCreation}
-        onDismissMention={() => setMentionQuery(undefined)}
-        onInstructionChange={(value, caret) => { setInstruction(value); setIntent(undefined); setMentionQuery(readBotanicAgentMentionQuery(value, caret)); setError(''); setLastFailedInstruction(''); setLastFailedPlanMessageId('') }}
-        onInstructionClick={(caret) => setMentionQuery(readBotanicAgentMentionQuery(instruction, caret))}
+        onDismissMention={() => dismissMention(instruction)}
+        onInstructionChange={(value, caret) => { changeInstruction(value, caret); setIntent(undefined) }}
+        onInstructionClick={(caret) => clickInstruction(instruction, caret)}
         onRetry={lastFailedPlanMessageId ? retryLastFailedPlan : retryLastInstruction}
         onImportFiles={(files) => void importImageFiles(files)}
         onToggleContextMenu={() => setContextMenuOpen((open) => !open)}
