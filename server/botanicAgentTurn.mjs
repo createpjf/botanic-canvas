@@ -4,7 +4,7 @@ import { BotanicAgentChatError } from './botanicAgentChat.mjs'
 import { readStreamedChatCompletion } from './botanicAgentStream.mjs'
 import { normalizeBotanicAgentLocale, readBotanicAgentInstructions } from './agentInstructions.mjs'
 import { botanicAgentContextBriefing, buildBotanicAgentOntology, safeBotanicAgentMemory } from './botanicAgentOntology.mjs'
-import { botanicAgentMountedSkillBriefing, botanicAgentSearchableSkills, resolveBotanicAgentMountedSkills } from './botanicAgentTools.mjs'
+import { BOTANIC_AGENT_MOUNTED_SKILL_LIMIT, botanicAgentMountedSkillBriefing, botanicAgentSearchableSkills, resolveBotanicAgentMountedSkills } from './botanicAgentTools.mjs'
 import {
   botanicAgentMultimodalMessages,
   botanicAgentVisionBriefing,
@@ -188,7 +188,7 @@ export function validateBotanicAgentTurnInput(raw) {
   const mountedSkillIds = input.mountedSkillIds === undefined
     ? undefined
     : (() => {
-      if (!Array.isArray(input.mountedSkillIds) || input.mountedSkillIds.length > 16) invalidRequest('已挂载 Skill 无效。')
+      if (!Array.isArray(input.mountedSkillIds) || input.mountedSkillIds.length > BOTANIC_AGENT_MOUNTED_SKILL_LIMIT) invalidRequest('已挂载 Skill 无效。')
       return [...new Set(input.mountedSkillIds.map((id, index) => requiredText(id, `第 ${index + 1} 个已挂载 Skill`, 160)))]
     })()
   let maxOutputCount = DEFAULT_MAX_OUTPUT_COUNT
@@ -1051,9 +1051,12 @@ export async function resolveBotanicAgentTurn(input, runtimeConfig, options = {}
     || videoModels(input.generationModels).length > 0
   const baseSystem = await turnInstructions(input.locale, { canGenerate })
   const situation = turnSituationBriefing(input, input.locale)
-  const mountedSkills = resolveBotanicAgentMountedSkills(input.mountedSkillIds, options.projectSkills)
-  const mountedBriefing = botanicAgentMountedSkillBriefing(mountedSkills, input.locale)
   const contextV2 = turnThreadContextV2(input.threadContextSnapshot, config.model)
+  // Skill 子预算来自同一冻结 Context policy（H1）：不在简报旁另造口径。
+  const mountedSkills = resolveBotanicAgentMountedSkills(input.mountedSkillIds, options.projectSkills, {
+    contextPolicy: contextV2?.modelPolicy ?? options.modelContext?.policy,
+  })
+  const mountedBriefing = botanicAgentMountedSkillBriefing(mountedSkills, input.locale)
   const immutableThreadContext = input.threadContextSnapshot?.version === 1
     && Array.isArray(input.threadContextSnapshot.messages)
     ? input.threadContextSnapshot

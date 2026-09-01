@@ -519,16 +519,37 @@ export function assertAgentSkillManifestConsistent(skill, riskOf) {
  * @param {any[]} catalog
  */
 export function resolveAgentSkillDependencies(skill, catalog = []) {
+  const closure = resolveAgentSkillDependencyClosure([skill], catalog)
+  return { ok: !closure.missing.length && !closure.unusable.length && !closure.cyclic.length, missing: closure.missing, unusable: closure.unusable, cyclic: closure.cyclic }
+}
+
+/**
+ * 解析一组挂载 root 的完整依赖 closure（fail-closed 版本）。
+ *
+ * 与 `resolveAgentSkillDependencies` 的差别：除了指出坏依赖，它还返回
+ * dependency-first 拓扑顺序的 closure 节点（diamond 只出现一次）、同一依赖被
+ * 要求为不同版本时的 `conflicts`，以及超出防御边界时的 `limitExceeded`。
+ * 递归前固定边界：越界直接停，不产出巨型 closure 再由调用方裁剪。
+ */
+export function resolveAgentSkillDependencyClosure(rootSkills, catalog = [], { maxDepth = 8, maxNodes = 64 } = {}) {
   const byId = new Map((catalog ?? []).filter((entry) => entry?.id).map((entry) => [entry.id, entry]))
   const missing = []
   const unusable = []
   const cyclic = []
+  const conflicts = []
   const completed = new Set()
+  const resolvedVersionById = new Map()
+  const closure = []
+  let limitExceeded
+  const roots = (Array.isArray(rootSkills) ? rootSkills : []).filter((entry) => entry?.id)
+  const distinctNodes = new Set(roots.map((entry) => entry.id))
   const pushUnique = (list, value) => { if (!list.includes(value)) list.push(value) }
 
-  const visit = (dependency, stack) => {
+  const visit = (dependency, stack, depth) => {
+    if (limitExceeded) return
     const dependencyId = dependency?.skillId
     if (!dependencyId) return
+    if (depth > maxDepth) { limitExceeded = 'depth'; return }
     // `stack` 只表示当前 DFS 路径。不能用全局 seen 当环判定：
     // top -> left -> shared 和 top -> right -> shared 是合法 diamond，不是环。
     if (stack.has(dependencyId)) {
@@ -553,22 +574,53 @@ export function resolveAgentSkillDependencies(skill, catalog = []) {
       pushUnique(missing, resolvedVersion ? `${dependencyId}@${resolvedVersion}` : dependencyId)
       return
     }
-    const nodeKey = `${dependencyId}@${resolvedVersion ?? 'current'}`
+    // 同一依赖被两个 root/上游要求为不同版本时不能猜一个：closure 里每个 id 只有一份正文。
+    const versionKey = resolvedVersion ?? 'current'
+    const previousVersion = resolvedVersionById.get(dependencyId)
+    if (previousVersion !== undefined && previousVersion !== versionKey) {
+      pushUnique(conflicts, dependencyId)
+      return
+    }
+    resolvedVersionById.set(dependencyId, versionKey)
+    const nodeKey = `${dependencyId}@${versionKey}`
     if (completed.has(nodeKey)) return
+    if (!distinctNodes.has(dependencyId)) {
+      if (distinctNodes.size >= maxNodes) { limitExceeded = 'nodes'; return }
+      distinctNodes.add(dependencyId)
+    }
 
     stack.add(dependencyId)
     // 新版本快照有自己的 Manifest；存量快照没有时才回退当前 Manifest。
     const completePinnedSnapshot = typeof pinnedSnapshot?.name === 'string'
       && Array.isArray(pinnedSnapshot?.capabilities)
     const nestedManifest = completePinnedSnapshot ? pinnedSnapshot.manifest : target.manifest
-    for (const nested of nestedManifest?.dependencies ?? []) visit(nested, stack)
+    for (const nested of nestedManifest?.dependencies ?? []) visit(nested, stack, depth + 1)
     stack.delete(dependencyId)
+    if (limitExceeded) return
     completed.add(nodeKey)
+    // 依赖在自己的全部依赖之后入列（post-order）即 dependency-first。
+    const body = completePinnedSnapshot ? pinnedSnapshot : target
+    closure.push({
+      id: dependencyId,
+      ...(resolvedVersion !== undefined ? { version: resolvedVersion } : {}),
+      ...(resolvedHash ? { contentHash: resolvedHash } : {}),
+      ...(typeof body.name === 'string' ? { name: body.name } : {}),
+      ...(typeof body.instructions === 'string' ? { instructions: body.instructions } : {}),
+      ...(Array.isArray(body.capabilities) ? { capabilities: [...body.capabilities] } : {}),
+      ...(body.manifest ? { manifest: body.manifest } : {}),
+      ...(typeof target.source === 'string' ? { source: target.source } : {}),
+    })
   }
 
-  const stack = new Set(skill?.id ? [skill.id] : [])
-  for (const dependency of skill?.manifest?.dependencies ?? []) visit(dependency, stack)
-  return { ok: !missing.length && !unusable.length && !cyclic.length, missing, unusable, cyclic }
+  for (const root of roots) {
+    const stack = new Set([root.id])
+    for (const dependency of root?.manifest?.dependencies ?? []) visit(dependency, stack, 1)
+  }
+  return {
+    ok: !missing.length && !unusable.length && !cyclic.length && !conflicts.length && !limitExceeded,
+    missing, unusable, cyclic, conflicts, closure,
+    ...(limitExceeded ? { limitExceeded } : {}),
+  }
 }
 
 export function validateAgentSkillCreation(body) {

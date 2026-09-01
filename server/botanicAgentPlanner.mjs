@@ -1,5 +1,6 @@
 import { AgentToolRuntimeError, freezeAgentStepSnapshot, runAgentToolLoop } from './agentToolRuntime.mjs'
 import {
+  BOTANIC_AGENT_MOUNTED_SKILL_LIMIT,
   botanicAgentMountedSkillBriefing,
   botanicAgentSearchableSkills,
   createBotanicAgentPlanningToolRegistry,
@@ -291,7 +292,7 @@ export function validateBotanicAgentPlanInput(raw) {
   const mountedSkillIds = input.mountedSkillIds === undefined
     ? undefined
     : (() => {
-      if (!Array.isArray(input.mountedSkillIds) || input.mountedSkillIds.length > 16) invalidRequest('已挂载 Skill 无效。')
+      if (!Array.isArray(input.mountedSkillIds) || input.mountedSkillIds.length > BOTANIC_AGENT_MOUNTED_SKILL_LIMIT) invalidRequest('已挂载 Skill 无效。')
       return [...new Set(input.mountedSkillIds.map((id, index) => requiredText(id, `第 ${index + 1} 个已挂载 Skill`, 160)))]
     })()
 

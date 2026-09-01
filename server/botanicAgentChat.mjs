@@ -12,7 +12,7 @@ import {
 import { captionAgentVisionModel, nativeAgentVisionModel } from './botanicAgentVisionCapability.mjs'
 import { readStreamedChatCompletion } from './botanicAgentStream.mjs'
 import { botanicAgentContextToolSourceLabels, createBotanicAgentReadToolDefinitions } from './botanicAgentContextTools.mjs'
-import { botanicAgentMountedSkillBriefing, botanicAgentSearchableSkills, resolveBotanicAgentMountedSkills } from './botanicAgentTools.mjs'
+import { BOTANIC_AGENT_MOUNTED_SKILL_LIMIT, botanicAgentMountedSkillBriefing, botanicAgentSearchableSkills, resolveBotanicAgentMountedSkills } from './botanicAgentTools.mjs'
 import { canonicalHash } from './canonicalHash.mjs'
 import { throwIfAgentProviderContextOverflow } from './agentProviderContextOverflow.mjs'
 import { resolveAgentModelContextBinding } from './agentModelContextBinding.mjs'
@@ -95,7 +95,7 @@ export function validateBotanicAgentChatInput(raw) {
   const mountedSkillIds = input.mountedSkillIds === undefined
     ? undefined
     : (() => {
-      if (!Array.isArray(input.mountedSkillIds) || input.mountedSkillIds.length > 16) invalidRequest('已挂载 Skill 无效。')
+      if (!Array.isArray(input.mountedSkillIds) || input.mountedSkillIds.length > BOTANIC_AGENT_MOUNTED_SKILL_LIMIT) invalidRequest('已挂载 Skill 无效。')
       return [...new Set(input.mountedSkillIds.map((id, index) => requiredText(id, `第 ${index + 1} 个已挂载 Skill`, 160)))]
     })()
   return {
@@ -323,7 +323,9 @@ export async function chatWithBotanicAgent(input, runtimeConfig, options = {}) {
   const ontology = buildBotanicAgentOntology(options.document, input.contextNodeIds)
   const memory = safeBotanicAgentMemory(options.document)
   const skills = botanicAgentSearchableSkills(options.projectSkills)
-  const mountedSkills = resolveBotanicAgentMountedSkills(input.mountedSkillIds, options.projectSkills)
+  const mountedSkills = resolveBotanicAgentMountedSkills(input.mountedSkillIds, options.projectSkills, {
+    contextPolicy: options.modelContext?.policy,
+  })
   const webResearch = options.allowWebResearch === false ? undefined : {
     apiKey: runtimeConfig?.webSearch?.apiKey,
     searchUrl: runtimeConfig?.webSearch?.searchUrl,
