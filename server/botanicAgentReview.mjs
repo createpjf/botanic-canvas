@@ -1,4 +1,5 @@
 import { resolveBotanicAgentImageDataUrl } from './botanicAgentVision.mjs'
+import { createBotanicAgentModelProvider } from './botanicAgentModelProvider.mjs'
 import { normalizeBotanicAgentLocale } from './agentInstructions.mjs'
 
 /**
@@ -83,9 +84,8 @@ export async function reviewBotanicAgentRunResults({
   const model = typeof runtimeConfig?.agentVisionModel === 'string' ? runtimeConfig.agentVisionModel.trim() : ''
   const apiKey = typeof runtimeConfig?.flockApiKey === 'string' ? runtimeConfig.flockApiKey.trim() : ''
   if (!model || !apiKey) return undefined
-  const baseUrl = typeof runtimeConfig?.flockApiBaseUrl === 'string' && runtimeConfig.flockApiBaseUrl.trim()
-    ? runtimeConfig.flockApiBaseUrl.trim().replace(/\/+$/, '')
-    : 'https://api.flock.io/v1'
+  // 传输差异由 Model Provider 拥有;评审保持 fail-open——任何采样失败都返回 undefined。
+  const provider = createBotanicAgentModelProvider(runtimeConfig, { fetchImpl })
 
   const candidates = botanicAgentReviewCandidates(run, document)
   if (!candidates.length) return undefined
@@ -99,16 +99,9 @@ export async function reviewBotanicAgentRunResults({
   const instruction = typeof run.plan?.instruction === 'string' ? run.plan.instruction.slice(0, 1000) : ''
   const prompt = typeof run.plan?.prompt === 'string' ? run.plan.prompt.slice(0, 2000) : ''
   const legend = resolved.map((item, index) => `${index + 1}=「${item.branchLabel}」`).join(' ')
-  const timeoutSignal = AbortSignal.timeout(REVIEW_TIMEOUT_MS)
-  const requestSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal
-  const response = await fetchImpl(`${baseUrl}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'x-litellm-api-key': apiKey,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
+  let payload
+  try {
+    payload = await provider.sample({
       model,
       messages: [
         { role: 'system', content: reviewInstructions(locale) },
@@ -125,13 +118,15 @@ export async function reviewBotanicAgentRunResults({
           ],
         },
       ],
-      max_tokens: 800,
+      maxOutputTokens: 800,
       temperature: 0.2,
-    }),
-    signal: requestSignal,
-  })
-  if (!response.ok) return undefined
-  const parsed = parseProviderJson(providerText(await response.json().catch(() => null)))
+      timeoutMs: REVIEW_TIMEOUT_MS,
+      signal,
+    })
+  } catch {
+    return undefined
+  }
+  const parsed = parseProviderJson(providerText(payload))
   if (!parsed) return undefined
 
   const items = (Array.isArray(parsed.items) ? parsed.items : []).flatMap((item) => {

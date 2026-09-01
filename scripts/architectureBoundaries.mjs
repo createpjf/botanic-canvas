@@ -26,6 +26,12 @@ const ownershipPolicies = Object.freeze({
   'server/botanicAgentChat.mjs': { forbidden: agentSamplingTransportForbidden },
   'server/botanicAgentPlanner.mjs': { forbidden: agentSamplingTransportForbidden },
   'server/agentSubagentRunner.mjs': { forbidden: agentSamplingTransportForbidden },
+  'server/botanicAgentVision.mjs': { forbidden: agentSamplingTransportForbidden },
+  'server/agentReviewVision.mjs': { forbidden: agentSamplingTransportForbidden },
+  'server/agentReviewSkillEvaluator.mjs': { forbidden: agentSamplingTransportForbidden },
+  'server/agentContextSummarizer.mjs': { forbidden: agentSamplingTransportForbidden },
+  'server/promptRefinementProvider.mjs': { forbidden: agentSamplingTransportForbidden },
+  'server/botanicAgentReview.mjs': { forbidden: agentSamplingTransportForbidden },
   'src/features/agent/AgentWorkspace.tsx': {
     maxLines: 3853,
     forbidden: [

@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { createBotanicAgentModelProvider } from './botanicAgentModelProvider.mjs'
 
 /**
  * 受控看图：用网关上的视觉模型（默认 Gemini Flash）识别用户引用的画布图片，
@@ -162,9 +163,8 @@ export async function describeBotanicAgentContextImages({
   const model = typeof runtimeConfig?.agentVisionModel === 'string' ? runtimeConfig.agentVisionModel.trim() : ''
   const apiKey = typeof runtimeConfig?.flockApiKey === 'string' ? runtimeConfig.flockApiKey.trim() : ''
   if (!model || !apiKey) return []
-  const baseUrl = typeof runtimeConfig?.flockApiBaseUrl === 'string' && runtimeConfig.flockApiBaseUrl.trim()
-    ? runtimeConfig.flockApiBaseUrl.trim().replace(/\/+$/, '')
-    : 'https://api.flock.io/v1'
+  // 传输差异由 Model Provider 拥有;单图失败继续 fail-open,只影响它自己。
+  const provider = createBotanicAgentModelProvider(runtimeConfig, { fetchImpl })
   const candidates = botanicAgentVisionCandidates(document, contextNodeIds)
   if (!candidates.length) return []
   const resolvedCandidates = await resolveVisionCandidateDataUrls(candidates, resolveMedia, signal)
@@ -173,16 +173,9 @@ export async function describeBotanicAgentContextImages({
     const key = cacheKey(model, candidate.image)
     const cached = cache.get(key)
     if (cached) return { ...candidate, description: cached }
-    const timeoutSignal = AbortSignal.timeout(VISION_TIMEOUT_MS)
-    const requestSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal
-    const response = await fetchImpl(`${baseUrl}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'x-litellm-api-key': apiKey,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
+    let payload
+    try {
+      payload = await provider.sample({
         model,
         messages: [
           { role: 'system', content: VISION_INSTRUCTIONS },
@@ -194,13 +187,15 @@ export async function describeBotanicAgentContextImages({
             ],
           },
         ],
-        max_tokens: 400,
+        maxOutputTokens: 400,
         temperature: 0.2,
-      }),
-      signal: requestSignal,
-    })
-    if (!response.ok) return undefined
-    const description = providerText(await response.json().catch(() => null)).slice(0, VISION_DESCRIPTION_LIMIT)
+        timeoutMs: VISION_TIMEOUT_MS,
+        signal,
+      })
+    } catch {
+      return undefined
+    }
+    const description = providerText(payload).slice(0, VISION_DESCRIPTION_LIMIT)
     if (!description) return undefined
     rememberDescription(cache, key, description)
     return { ...candidate, description }

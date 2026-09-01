@@ -57,6 +57,13 @@ function boundedTimeoutMs(value, fallback = 55_000) {
   return Math.min(60_000, Math.max(1_000, parsed))
 }
 
+/** 每次请求的超时预算由调用方拥有(视觉/摘要/润色各不相同),只设护栏上下限。 */
+function boundedRequestTimeoutMs(value, fallback) {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback
+  return Math.min(60_000, parsed)
+}
+
 /**
  * 解析一次 Agent 模型配置。requestedModel 必须在目录内;缺 key/model 具名 503。
  * 与旧 botanicAgentProviderConfig 同语义,错误类型换成 Provider 模块自己的。
@@ -122,7 +129,7 @@ export function createBotanicAgentModelProvider(runtimeConfig, { fetchImpl = fet
     if (!Array.isArray(request?.messages) || !request.messages.length) invalidRequest('Agent 采样缺少消息。')
     if (!apiKey) throw new BotanicAgentModelProviderError(503, 'PROVIDER_NOT_CONFIGURED', 'Agent 模型服务尚未配置。')
     const stream = request.stream === true
-    const timeoutMs = boundedTimeoutMs(request.timeoutMs, defaultTimeoutMs)
+    const timeoutMs = boundedRequestTimeoutMs(request.timeoutMs, defaultTimeoutMs)
     // per-call timeout 每次采样重建;根 signal 只组合,不被覆盖。
     const callTimeout = AbortSignal.timeout(timeoutMs)
     const signal = request.signal ? AbortSignal.any([request.signal, callTimeout]) : callTimeout
@@ -161,7 +168,7 @@ export function createBotanicAgentModelProvider(runtimeConfig, { fetchImpl = fet
     }
     try {
       if (!stream) {
-        const parsed = /** @type {{ choices?: unknown } | null} */ (await response.json())
+        const parsed = /** @type {{ choices?: unknown } | null} */ (await response.json().catch(() => null))
         if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.choices)) {
           throw new BotanicAgentModelProviderError(502, 'INVALID_PROVIDER_RESPONSE', 'Agent 模型返回了无法解析的响应。')
         }

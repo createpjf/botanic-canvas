@@ -1,5 +1,5 @@
 // @ts-check
-import { outboundAgentTraceHeaders } from './agentTraceContext.mjs'
+import { createBotanicAgentModelProvider } from './botanicAgentModelProvider.mjs'
 
 /**
  * 评审第 2 层：视觉模型语义判定（ADR 0006 / Epic 5）。
@@ -105,26 +105,16 @@ export function reviewVisionInstructions(requiredCriteria = [], brandCriteria = 
 export function createAgentReviewVisionJudge({ runtimeConfig, resolveMedia, callModel, fetchImpl = fetch } = {}) {
   const model = typeof runtimeConfig?.agentVisionModel === 'string' ? runtimeConfig.agentVisionModel.trim() : ''
   const apiKey = typeof runtimeConfig?.flockApiKey === 'string' ? runtimeConfig.flockApiKey.trim() : ''
-  const invoke = callModel ?? (model && apiKey
+  // 传输差异由 Model Provider 拥有;评审保留自己的失败收口(REVIEW_MODEL_UNAVAILABLE)。
+  const provider = model && apiKey ? createBotanicAgentModelProvider(runtimeConfig, { fetchImpl }) : undefined
+  const invoke = callModel ?? (provider
     ? async ({ messages, signal }) => {
-      const baseUrl = typeof runtimeConfig?.flockApiBaseUrl === 'string' && runtimeConfig.flockApiBaseUrl.trim()
-        ? runtimeConfig.flockApiBaseUrl.trim().replace(/\/+$/, '')
-        : 'https://api.flock.io/v1'
-      const response = await fetchImpl(`${baseUrl}/chat/completions`, {
-        method: 'POST',
-        headers: {
-          ...outboundAgentTraceHeaders(),
-          Authorization: `Bearer ${apiKey}`,
-          'x-litellm-api-key': apiKey,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ model, messages, max_tokens: 600, temperature: 0.2 }),
-        signal,
-      })
-      if (!response.ok) {
-        throw new AgentReviewVisionError('REVIEW_MODEL_UNAVAILABLE', `视觉评审模型返回 ${response.status}。`)
+      try {
+        return await provider.sample({ model, messages, maxOutputTokens: 600, temperature: 0.2, signal })
+      } catch (caught) {
+        if (/** @type {any} */ (caught)?.code === 'REQUEST_CANCELLED') throw caught
+        throw new AgentReviewVisionError('REVIEW_MODEL_UNAVAILABLE', '视觉评审模型暂时不可用。')
       }
-      return response.json().catch(() => null)
     }
     : undefined)
   if (!invoke) return undefined
