@@ -131,55 +131,61 @@ export function createBotanicAgentModelProvider(runtimeConfig, { fetchImpl = fet
     const stream = request.stream === true
     const timeoutMs = boundedRequestTimeoutMs(request.timeoutMs, defaultTimeoutMs)
     // per-call timeout 每次采样重建;根 signal 只组合,不被覆盖。
-    const callTimeout = AbortSignal.timeout(timeoutMs)
+    const timeoutController = new AbortController()
+    const timeoutId = setTimeout(() => timeoutController.abort(), timeoutMs)
+    const callTimeout = timeoutController.signal
     const signal = request.signal ? AbortSignal.any([request.signal, callTimeout]) : callTimeout
     const startedAt = now()
-    let response
     try {
-      response = await fetchImpl(`${baseUrl}/chat/completions`, {
-        method: 'POST',
-        headers: {
-          ...outboundAgentTraceHeaders(),
-          Authorization: `Bearer ${apiKey}`,
-          'x-litellm-api-key': apiKey,
-          Accept: stream ? 'text/event-stream' : 'application/json',
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          model,
-          messages: request.messages,
-          ...(request.tools !== undefined ? { tools: request.tools } : {}),
-          ...(request.toolChoice !== undefined ? { tool_choice: request.toolChoice } : {}),
-          ...(Number.isFinite(Number(request.maxOutputTokens)) ? { max_tokens: Number(request.maxOutputTokens) } : {}),
-          temperature: Number.isFinite(Number(request.temperature)) ? Number(request.temperature) : agentModelProviderTemperature(model),
-          ...(request.responseFormat !== undefined ? { response_format: request.responseFormat } : {}),
-          stream,
-        }),
-        signal,
-      })
-    } catch (caught) {
-      throw classifyTransportFailure(caught, { rootSignal: request.signal, callTimeout, startedAt })
-    }
-    if (!response.ok) {
-      // overflow 判定需要 body;判定后丢弃,不进入错误对象。
-      const failureBody = await response.text().catch(() => '')
-      throwIfAgentProviderContextOverflow(response.status, failureBody)
-      throw agentModelProviderResponseError(response.status)
-    }
-    try {
-      if (!stream) {
-        const parsed = /** @type {{ choices?: unknown } | null} */ (await response.json().catch(() => null))
-        if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.choices)) {
-          throw new BotanicAgentModelProviderError(502, 'INVALID_PROVIDER_RESPONSE', 'Agent 模型返回了无法解析的响应。')
-        }
-        return parsed
+      let response
+      try {
+        response = await fetchImpl(`${baseUrl}/chat/completions`, {
+          method: 'POST',
+          headers: {
+            ...outboundAgentTraceHeaders(),
+            Authorization: `Bearer ${apiKey}`,
+            'x-litellm-api-key': apiKey,
+            Accept: stream ? 'text/event-stream' : 'application/json',
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            model,
+            messages: request.messages,
+            ...(request.tools !== undefined ? { tools: request.tools } : {}),
+            ...(request.toolChoice !== undefined ? { tool_choice: request.toolChoice } : {}),
+            ...(Number.isFinite(Number(request.maxOutputTokens)) ? { max_tokens: Number(request.maxOutputTokens) } : {}),
+            temperature: Number.isFinite(Number(request.temperature)) ? Number(request.temperature) : agentModelProviderTemperature(model),
+            ...(request.responseFormat !== undefined ? { response_format: request.responseFormat } : {}),
+            stream,
+          }),
+          signal,
+        })
+      } catch (caught) {
+        throw classifyTransportFailure(caught, { rootSignal: request.signal, callTimeout, startedAt })
       }
-      return await readStreamedChatCompletion(response.body, {
-        onEvent: typeof request.onEvent === 'function' ? request.onEvent : undefined,
-      })
-    } catch (caught) {
-      if (caught instanceof BotanicAgentModelProviderError) throw caught
-      throw classifyTransportFailure(caught, { rootSignal: request.signal, callTimeout, startedAt })
+      if (!response.ok) {
+        // overflow 判定需要 body;判定后丢弃,不进入错误对象。
+        const failureBody = await response.text().catch(() => '')
+        throwIfAgentProviderContextOverflow(response.status, failureBody)
+        throw agentModelProviderResponseError(response.status)
+      }
+      try {
+        if (!stream) {
+          const parsed = /** @type {{ choices?: unknown } | null} */ (await response.json().catch(() => null))
+          if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.choices)) {
+            throw new BotanicAgentModelProviderError(502, 'INVALID_PROVIDER_RESPONSE', 'Agent 模型返回了无法解析的响应。')
+          }
+          return parsed
+        }
+        return await readStreamedChatCompletion(response.body, {
+          onEvent: typeof request.onEvent === 'function' ? request.onEvent : undefined,
+        })
+      } catch (caught) {
+        if (caught instanceof BotanicAgentModelProviderError) throw caught
+        throw classifyTransportFailure(caught, { rootSignal: request.signal, callTimeout, startedAt })
+      }
+    } finally {
+      clearTimeout(timeoutId)
     }
   }
 
