@@ -11,6 +11,7 @@ import {
   type AgentQueuedInstruction,
 } from './agentComposerQueue.ts'
 import type { AgentContextItem, AgentSkillOption } from './agentWorkspace.types.ts'
+import { expandAgentComposerPastes } from './agentComposerPaste.ts'
 
 export function useAgentInstructionQueue(input: {
   state: AgentComposerState
@@ -35,7 +36,7 @@ export function useAgentInstructionQueue(input: {
 
   const enqueue = useCallback(() => {
     const prepared = prepareBotanicAgentComposerSubmission({
-      instruction: input.state.instruction,
+      instruction: expandAgentComposerPastes(input.state.instruction, input.state.pendingPastes),
       mountedSkills: input.mountedSkills,
       contextItems: input.contextItems,
       locale: input.locale,
@@ -63,6 +64,7 @@ export function useAgentInstructionQueue(input: {
       mentionQuery: undefined,
       dismissedMention: undefined,
       pendingGenerationOverrides: {},
+      pendingPastes: {},
       error: '',
     })
     input.onQueued()
@@ -80,6 +82,7 @@ export function useAgentInstructionQueue(input: {
       mentionQuery: undefined,
       dismissedMention: undefined,
       pendingGenerationOverrides: { ...item.snapshot.generationOverrides },
+      pendingPastes: {},
       error: '',
     })
     input.applySnapshot(item)
@@ -100,7 +103,7 @@ export function useAgentInstructionQueue(input: {
       void executeRef.current(item).finally(() => { flushingRef.current = false })
       return
     }
-    input.updateState({ queuedInstructions: rest, instruction: item.content, caret: item.content.length })
+    input.updateState({ queuedInstructions: rest, instruction: item.content, caret: item.content.length, pendingPastes: {} })
     applySnapshotRef.current(item)
   }, [input.planning, input.runtimePhase, input.state.instruction, input.updateState, queue])
 

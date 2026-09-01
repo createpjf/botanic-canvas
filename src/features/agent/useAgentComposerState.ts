@@ -9,6 +9,7 @@ import {
   writeAgentComposerDraft,
   type AgentComposerState,
 } from './agentComposerState.ts'
+import { expandAgentComposerPasteCaret, expandAgentComposerPastes, insertAgentComposerLargePaste, pruneAgentComposerPendingPastes } from './agentComposerPaste.ts'
 
 function browserSessionStorage(): Storage | undefined {
   try { return typeof window === 'undefined' ? undefined : window.sessionStorage } catch { return undefined }
@@ -30,12 +31,14 @@ export function useAgentComposerState(
   const [states, dispatch] = useReducer(reduceAgentComposerStates, {})
   const state = states[stateKey] ?? base
   const latestDraftsRef = useRef(new Map<string, { instruction: string; caret: number }>())
-  latestDraftsRef.current.set(storageKey, { instruction: state.instruction, caret: state.caret })
+  const expandedDraft = expandAgentComposerPastes(state.instruction, state.pendingPastes)
+  const expandedCaret = expandAgentComposerPasteCaret(state.instruction, state.caret, state.pendingPastes)
+  latestDraftsRef.current.set(storageKey, { instruction: expandedDraft, caret: Math.min(expandedDraft.length, expandedCaret) })
 
   const update = useCallback((patch: Partial<AgentComposerState>) => {
     dispatch({ key: stateKey, base, patch })
   }, [base, stateKey])
-  const setInstruction = useCallback((value: string) => update({ instruction: value, caret: value.length }), [update])
+  const setInstruction = useCallback((value: string) => update({ instruction: value, caret: value.length, pendingPastes: {} }), [update])
   const setInstructionAt = useCallback((value: string, caret: number) => update({ instruction: value, caret }), [update])
   const changeInstruction = useCallback((value: string, caret: number) => {
     const mention = resolveAgentComposerMention(value, caret, state.dismissedMention)
@@ -44,12 +47,13 @@ export function useAgentComposerState(
       caret,
       mentionQuery: mention.mentionQuery,
       dismissedMention: mention.dismissedMention,
+      pendingPastes: pruneAgentComposerPendingPastes(value, state.pendingPastes),
       error: '',
       lastFailedInstruction: '',
       lastFailedCommand: undefined,
       lastFailedPlanMessageId: '',
     })
-  }, [state.dismissedMention, update])
+  }, [state.dismissedMention, state.pendingPastes, update])
   const clickInstruction = useCallback((value: string, caret: number) => {
     const mention = resolveAgentComposerMention(value, caret, state.dismissedMention)
     update({ caret, mentionQuery: mention.mentionQuery, dismissedMention: mention.dismissedMention })
@@ -58,18 +62,26 @@ export function useAgentComposerState(
     mentionQuery: undefined,
     dismissedMention: dismissAgentComposerMention(value, state.mentionQuery),
   }), [state.mentionQuery, update])
+  const pasteLargeText = useCallback((pasted: string, start: number, end: number, locale: 'zh-CN' | 'en') => {
+    const next = insertAgentComposerLargePaste({
+      instruction: state.instruction, start, end, pasted, pendingPastes: state.pendingPastes, locale,
+    })
+    if (!next) return false
+    update({ ...next, mentionQuery: undefined, dismissedMention: undefined })
+    return true
+  }, [state.instruction, state.pendingPastes, update])
 
   // Debounced refresh recovery; state/error/mentions/context/recovery snapshots never enter storage.
   useEffect(() => {
     if (!storageKey) return
     const timer = window.setTimeout(() => {
       writeAgentComposerDraft(browserSessionStorage(), storageKey, {
-        instruction: state.instruction,
-        caret: state.caret,
+        instruction: expandedDraft,
+        caret: Math.min(expandedDraft.length, expandedCaret),
       })
     }, 250)
     return () => window.clearTimeout(timer)
-  }, [state.caret, state.instruction, storageKey])
+  }, [expandedCaret, expandedDraft, storageKey])
 
   // Session switch/unmount can happen inside the debounce window; flush that session's latest draft.
   useEffect(() => {
@@ -100,5 +112,6 @@ export function useAgentComposerState(
     changeInstruction,
     clickInstruction,
     dismissMention,
+    pasteLargeText,
   }
 }

@@ -9,6 +9,7 @@ import {
 import type { BotanicAgentInstructionOptions } from '../../domain/agentInstructionRouting'
 import type { GenerationSizeOverride } from '../../domain/generationOutputSize'
 import type { AgentQueuedInstruction } from './agentComposerQueue.ts'
+import type { AgentComposerPendingPastes } from './agentComposerPaste.ts'
 
 /** 指令选项的形状由路由领域模块拥有；这里只是重试命令沿用的别名。 */
 export type AgentInstructionRetryOptions = BotanicAgentInstructionOptions
@@ -70,6 +71,7 @@ export type AgentComposerState = {
   mentionQuery?: BotanicAgentMentionQuery
   dismissedMention?: AgentDismissedMention
   queuedInstructions: AgentQueuedInstruction[]
+  pendingPastes: AgentComposerPendingPastes
   pendingGenerationOverrides: GenerationSizeOverride
   /** 失败 Run 恢复暂存的权威快照引用；下一次发送随指令结构化下发后清空。 */
   pendingRecoveryContextSnapshot?: BotanicAgentContextSnapshot[]
@@ -83,6 +85,7 @@ export const initialAgentComposerState: AgentComposerState = {
   lastFailedCommand: undefined,
   lastFailedPlanMessageId: '',
   queuedInstructions: [],
+  pendingPastes: {},
   pendingGenerationOverrides: {},
 }
 
@@ -133,7 +136,8 @@ export function writeAgentComposerDraft(
       storage.removeItem(key)
       return true
     }
-    const instruction = draft.instruction.slice(0, AGENT_COMPOSER_DRAFT_MAX_CHARS)
+    if (draft.instruction.length > AGENT_COMPOSER_DRAFT_MAX_CHARS) return false
+    const instruction = draft.instruction
     const caret = Math.max(0, Math.min(instruction.length, Number(draft.caret) || 0))
     storage.setItem(key, JSON.stringify({ instruction, caret }))
     return true

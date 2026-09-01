@@ -1,11 +1,11 @@
 import { useEffect, useId, useRef, useState } from 'react'
-import type { ChangeEvent, KeyboardEvent, RefObject } from 'react'
+import type { ChangeEvent, ClipboardEvent, KeyboardEvent, RefObject } from 'react'
 import { botanicAgentExecutionModeLabel, type BotanicAgentMentionQuery, type BotanicAgentSession } from '../../domain/agent'
 import type { AssetGroup } from '../../domain/canvas'
 import { imageUploadAccept } from '../../domain/mediaFormats'
 import { AgentPlannerProviderIcon } from '../../components/AgentPlannerProviderIcon'
 import { BotanicSelect } from '../../components/BotanicSelect'
-import { AutoRunIcon, ChecklistIcon, ChevronDownIcon, CloseIcon, ListTodoIcon, PlusIcon, SparkleIcon, UploadIcon } from '../../components/BotanicIcons'
+import { AutoRunIcon, BookmarkIcon, ChecklistIcon, ChevronDownIcon, ClockIcon, CloseIcon, ImageIcon, ListTodoIcon, PlusIcon, SparkleIcon, TaskCardIcon, UploadIcon } from '../../components/BotanicIcons'
 import {
   botanicMotion,
   Flip,
@@ -18,7 +18,8 @@ import {
 import { agentPlannerModelLabel, agentPlannerModelShortLabel } from '../../components/generationModelPresentation'
 import type { AgentContextItem, AgentSkillOption } from './agentWorkspace.types'
 import { AGENT_COMPOSER_QUEUE_LIMIT, agentQueuedInstructionPreview, type AgentQueuedInstruction } from './agentComposerQueue'
-import { initialAgentComposerHistoryState, navigateAgentComposerHistory, nextAgentSuggestionIndex } from './agentComposerState'
+import { initialAgentComposerHistoryState, navigateAgentComposerHistory, nextAgentSuggestionIndex, rankAgentSuggestions } from './agentComposerState'
+import { agentComposerLocalCommands, type AgentComposerLocalCommand, type AgentComposerLocalCommandId } from './agentComposerCommands'
 import { BOTANIC_AGENT_MOUNTED_SKILL_LIMIT } from './agentSkillForm'
 import { useProductI18n, useProductMessages } from '../../i18n/react'
 
@@ -55,10 +56,12 @@ type AgentComposerProps = {
   onRemoveMountedSkill: (skillId: string) => void
   onSelectMention: (item: AgentContextItem) => void
   onSelectSkill: (skill: AgentSkillOption) => void
+  onSelectCommand: (id: AgentComposerLocalCommandId) => void
   onCreateSkill: () => void
   onDismissMention: () => void
   onInstructionChange: (value: string, caret: number) => void
   onInstructionClick: (caret: number) => void
+  onLargePaste: (text: string, start: number, end: number) => boolean
   onRetry: () => void
   onImportFiles: (files: File[]) => void
   onToggleContextMenu: () => void
@@ -74,6 +77,15 @@ type AgentComposerProps = {
   onCancelPlanning: () => void
   onToggleImageContext: (itemId: string, selected: boolean) => void
   onExecutionModeChange: (mode: 'manual' | 'auto') => void
+}
+
+function localCommandIcon(command: AgentComposerLocalCommand) {
+  if (command.icon === 'plus') return <PlusIcon />
+  if (command.icon === 'clock') return <ClockIcon />
+  if (command.icon === 'sparkle') return <SparkleIcon />
+  if (command.icon === 'tasks') return <TaskCardIcon />
+  if (command.icon === 'image') return <ImageIcon />
+  return <BookmarkIcon />
 }
 
 export function AgentComposer({
@@ -109,10 +121,12 @@ export function AgentComposer({
   onRemoveMountedSkill,
   onSelectMention,
   onSelectSkill,
+  onSelectCommand,
   onCreateSkill,
   onDismissMention,
   onInstructionChange,
   onInstructionClick,
+  onLargePaste,
   onRetry,
   onImportFiles,
   onToggleContextMenu,
@@ -132,10 +146,10 @@ export function AgentComposer({
   const { locale } = useProductI18n()
   const copy = useProductMessages({
     'zh-CN': {
-      input: 'Agent 输入', referenced: '已引用', remove: '移除', mounted: '已挂载', callSkill: '挂载 Skill', systemSkill: '系统 Skill', projectSkill: '项目 Skill', createSkill: '创建项目 Skill', saveRules: '保存一组可复用规则', referenceCanvas: '引用画布节点或图片视频', description: '补充描述', asset: '素材', result: '结果', video: '视频', noMatch: '没有匹配项，按 Esc 关闭', noSkillMatch: '没有匹配的 Skill，按 Esc 关闭', placeholder: '例如：更冷的晨光，服装和商品保持', message: 'Agent 消息', promptField: '提示词', retry: '重试', addImages: '添加图像素材', executionMode: '执行模式', manual: '计划模式', auto: '自动模式', manualTitle: '计划模式：出图先给计划，确认后再提交', autoTitle: '自动模式：单张设置完整后直接提交，多张或外部行动仍需确认', model: 'Agent 模型', assetGroup: '素材组', single: '单张', group: '组', send: '发送给 Agent', stop: '停止', queue: '加入队列', queued: '已排队', editQueued: '编辑排队消息', removeQueued: '移除排队消息', closeImages: '关闭添加图像素材', chooseImages: '从电脑选择图片', dragHint: '也可以直接拖入 Agent 面板', noImages: '暂无图像素材，可从电脑选择或直接拖入。', manualHelp: '出图需确认后再提交', autoHelp: '单张可直接提交；多张仍需确认', rawReasoning: '模型推理原文（实验）', rawReasoningHelp: '当前会话 · 不保存 · 取决于模型支持', textKind: '文字',
+      input: 'Agent 输入', commands: '命令', referenced: '已引用', remove: '移除', mounted: '已挂载', callSkill: '挂载 Skill', systemSkill: '系统 Skill', projectSkill: '项目 Skill', createSkill: '创建项目 Skill', saveRules: '保存一组可复用规则', referenceCanvas: '引用画布节点或图片视频', description: '补充描述', asset: '素材', result: '结果', video: '视频', noMatch: '没有匹配项，按 Esc 关闭', noSkillMatch: '没有匹配的 Skill，按 Esc 关闭', placeholder: '例如：更冷的晨光，服装和商品保持', message: 'Agent 消息', promptField: '提示词', retry: '重试', addImages: '添加图像素材', executionMode: '执行模式', manual: '计划模式', auto: '自动模式', manualTitle: '计划模式：出图先给计划，确认后再提交', autoTitle: '自动模式：单张设置完整后直接提交，多张或外部行动仍需确认', model: 'Agent 模型', assetGroup: '素材组', single: '单张', group: '组', send: '发送给 Agent', stop: '停止', queue: '加入队列', queued: '已排队', editQueued: '编辑排队消息', removeQueued: '移除排队消息', closeImages: '关闭添加图像素材', chooseImages: '从电脑选择图片', dragHint: '也可以直接拖入 Agent 面板', noImages: '暂无图像素材，可从电脑选择或直接拖入。', manualHelp: '出图需确认后再提交', autoHelp: '单张可直接提交；多张仍需确认', rawReasoning: '模型推理原文（实验）', rawReasoningHelp: '当前会话 · 不保存 · 取决于模型支持', textKind: '文字',
     },
     en: {
-      input: 'Agent input', referenced: 'Referenced', remove: 'Remove', mounted: 'Mounted', callSkill: 'Mount Skill', systemSkill: 'System Skill', projectSkill: 'Project Skill', createSkill: 'Create project Skill', saveRules: 'Save a reusable set of rules', referenceCanvas: 'Reference canvas nodes or media', description: 'Description', asset: 'Asset', result: 'Result', video: 'Video', noMatch: 'No matches. Press Esc to close.', noSkillMatch: 'No matching Skill. Press Esc to close.', placeholder: 'e.g. Cooler morning light — keep clothes and product', message: 'Agent message', promptField: 'Prompt', retry: 'Retry', addImages: 'Add images', executionMode: 'Execution mode', manual: 'Plan mode', auto: 'Auto mode', manualTitle: 'Plan mode: review image plans before generating', autoTitle: 'Auto mode: submit one complete image job directly; batches and external actions still need confirmation', model: 'Agent model', assetGroup: 'Asset group', single: 'Single', group: 'Group', send: 'Send to Agent', stop: 'Stop', queue: 'Queue', queued: 'Queued', editQueued: 'Edit queued message', removeQueued: 'Remove queued message', closeImages: 'Close image picker', chooseImages: 'Choose images', dragHint: 'Or drop images into the Agent panel', noImages: 'No images yet. Choose files or drop them here.', manualHelp: 'Confirm image plans before submit', autoHelp: 'Single images submit directly; batches still need confirmation', rawReasoning: 'Model reasoning text (experimental)', rawReasoningHelp: 'Current session · not saved · model dependent', textKind: 'Text',
+      input: 'Agent input', commands: 'Commands', referenced: 'Referenced', remove: 'Remove', mounted: 'Mounted', callSkill: 'Mount Skill', systemSkill: 'System Skill', projectSkill: 'Project Skill', createSkill: 'Create project Skill', saveRules: 'Save a reusable set of rules', referenceCanvas: 'Reference canvas nodes or media', description: 'Description', asset: 'Asset', result: 'Result', video: 'Video', noMatch: 'No matches. Press Esc to close.', noSkillMatch: 'No matching Skill. Press Esc to close.', placeholder: 'e.g. Cooler morning light — keep clothes and product', message: 'Agent message', promptField: 'Prompt', retry: 'Retry', addImages: 'Add images', executionMode: 'Execution mode', manual: 'Plan mode', auto: 'Auto mode', manualTitle: 'Plan mode: review image plans before generating', autoTitle: 'Auto mode: submit one complete image job directly; batches and external actions still need confirmation', model: 'Agent model', assetGroup: 'Asset group', single: 'Single', group: 'Group', send: 'Send to Agent', stop: 'Stop', queue: 'Queue', queued: 'Queued', editQueued: 'Edit queued message', removeQueued: 'Remove queued message', closeImages: 'Close image picker', chooseImages: 'Choose images', dragHint: 'Or drop images into the Agent panel', noImages: 'No images yet. Choose files or drop them here.', manualHelp: 'Confirm image plans before submit', autoHelp: 'Single images submit directly; batches still need confirmation', rawReasoning: 'Model reasoning text (experimental)', rawReasoningHelp: 'Current session · not saved · model dependent', textKind: 'Text',
     },
   })
   const composerErrorId = useId()
@@ -169,12 +183,18 @@ export function AgentComposer({
     .filter((entry, index, entries) => index === 0 || entry !== entries[index - 1])
   const latestHistoryMessageId = [...(session?.messages ?? [])].reverse().find((message) => message.role === 'user')?.id ?? ''
   const historyStateRef = useRef(initialAgentComposerHistoryState)
+  const commandOptions = skillMenuOpen
+    ? rankAgentSuggestions(agentComposerLocalCommands(locale), mentionQuery?.query ?? '', (command) => [command.name, command.label])
+    : []
   const skillOptionUnavailable = (skill: AgentSkillOption) => skillLimitReached && !mountedSkillIds.has(skill.id)
+  const skillSuggestionOffset = commandOptions.length
+  const createSkillSuggestionIndex = skillSuggestionOffset + skillOptions.length
   // Composite listbox:方向键只走可用 option;active(键盘高亮)与 selected(已挂载)是两件事。
   const selectableSuggestionIndexes = skillMenuOpen
     ? [
-        ...skillOptions.flatMap((skill, index) => skillOptionUnavailable(skill) ? [] : [index]),
-        ...(skillLimitReached ? [] : [skillOptions.length]),
+        ...commandOptions.map((_, index) => index),
+        ...skillOptions.flatMap((skill, index) => skillOptionUnavailable(skill) ? [] : [skillSuggestionOffset + index]),
+        ...(skillLimitReached ? [] : [createSkillSuggestionIndex]),
       ]
     : canvasMenuOpen
       ? mentionOptions.map((_, index) => index)
@@ -215,13 +235,17 @@ export function AgentComposer({
       }
     }
     if (event.key === 'Enter' && mentionQuery) {
-      if (skillMenuOpen && skillOptions[selectedSuggestionIndex]) {
+      if (skillMenuOpen && selectedSuggestionIndex < skillSuggestionOffset && commandOptions[selectedSuggestionIndex]) {
+        event.preventDefault(); onSelectCommand(commandOptions[selectedSuggestionIndex].id); return
+      }
+      const skillIndex = selectedSuggestionIndex - skillSuggestionOffset
+      if (skillMenuOpen && skillOptions[skillIndex]) {
         event.preventDefault()
-        const selected = skillOptions[selectedSuggestionIndex]
+        const selected = skillOptions[skillIndex]
         if (!skillOptionUnavailable(selected)) onSelectSkill(selected)
         return
       }
-      if (skillMenuOpen && selectedSuggestionIndex === skillOptions.length) {
+      if (skillMenuOpen && selectedSuggestionIndex === createSkillSuggestionIndex) {
         event.preventDefault()
         if (!skillLimitReached) onCreateSkill()
         return
@@ -237,6 +261,11 @@ export function AgentComposer({
       if (planning) onQueue()
       else onSend()
     }
+  }
+  const handleTextPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
+    const text = event.clipboardData.getData('text/plain')
+    if (!text || !onLargePaste(text, event.currentTarget.selectionStart, event.currentTarget.selectionEnd)) return
+    event.preventDefault()
   }
   const handleFiles = (event: ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(event.currentTarget.files ?? [])
@@ -320,13 +349,15 @@ export function AgentComposer({
       </div> : null}
     </div> : null}
     {skillMenuOpen ? <div id={suggestionListId} className="agent-composer__mention-menu" role="listbox" aria-multiselectable="true" aria-label={copy.callSkill} onPointerDown={(event) => event.stopPropagation()}>
+      {commandOptions.length ? <div className="agent-composer__mention-section" role="group" aria-label={copy.commands}><strong>{copy.commands}</strong>{commandOptions.map((command, index) => <button id={`${suggestionListId}-option-${index}`} key={`command-${command.id}`} type="button" role="option" tabIndex={-1} aria-selected={false} className={selectedSuggestionIndex === index ? 'is-active' : undefined} aria-label={command.label} onMouseEnter={() => setActiveSuggestionIndex(index)} onMouseDown={(event) => event.preventDefault()} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onSelectCommand(command.id) }}>{localCommandIcon(command)}<b>{command.label}</b><small>{command.detail}</small></button>)}</div> : null}
       {skillOptions.length ? <div className="agent-composer__mention-section" role="group" aria-label={copy.callSkill}><strong>{copy.callSkill}<span className="agent-composer__mention-count">{mountedSkills.length}/{BOTANIC_AGENT_MOUNTED_SKILL_LIMIT}</span></strong>{skillOptions.map((skill, index) => {
+        const optionIndex = skillSuggestionOffset + index
         const mounted = mountedSkillIds.has(skill.id)
         const unavailable = skillOptionUnavailable(skill)
-        return <button id={`${suggestionListId}-option-${index}`} key={`skill-${skill.id}`} type="button" role="option" tabIndex={-1} disabled={unavailable} aria-disabled={unavailable} aria-selected={mounted} className={selectedSuggestionIndex === index ? 'is-active' : undefined} aria-label={`${copy.callSkill} ${skill.name}`} onMouseEnter={() => { if (!unavailable) setActiveSuggestionIndex(index) }} onMouseDown={(event) => event.preventDefault()} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); if (!unavailable) onSelectSkill(skill) }}><SparkleIcon /><b>{skill.name}</b><small>{skill.source === 'system' ? copy.systemSkill : copy.projectSkill}{mounted ? ' · ✓' : ''}</small></button>
+        return <button id={`${suggestionListId}-option-${optionIndex}`} key={`skill-${skill.id}`} type="button" role="option" tabIndex={-1} disabled={unavailable} aria-disabled={unavailable} aria-selected={mounted} className={selectedSuggestionIndex === optionIndex ? 'is-active' : undefined} aria-label={`${copy.callSkill} ${skill.name}`} onMouseEnter={() => { if (!unavailable) setActiveSuggestionIndex(optionIndex) }} onMouseDown={(event) => event.preventDefault()} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); if (!unavailable) onSelectSkill(skill) }}><SparkleIcon /><b>{skill.name}</b><small>{skill.source === 'system' ? copy.systemSkill : copy.projectSkill}{mounted ? ' · ✓' : ''}</small></button>
       })}</div> : null}
-      <button id={`${suggestionListId}-option-${skillOptions.length}`} type="button" role="option" tabIndex={-1} disabled={skillLimitReached} aria-disabled={skillLimitReached} aria-selected={false} className={`agent-composer__create-skill${selectedSuggestionIndex === skillOptions.length ? ' is-active' : ''}`} aria-label={copy.createSkill} onMouseEnter={() => { if (!skillLimitReached) setActiveSuggestionIndex(skillOptions.length) }} onMouseDown={(event) => event.preventDefault()} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); if (!skillLimitReached) onCreateSkill() }}><PlusIcon /><b>{copy.createSkill}</b><small>{copy.saveRules}</small></button>
-      {!skillOptions.length ? <p>{copy.noSkillMatch}</p> : null}
+      <button id={`${suggestionListId}-option-${createSkillSuggestionIndex}`} type="button" role="option" tabIndex={-1} disabled={skillLimitReached} aria-disabled={skillLimitReached} aria-selected={false} className={`agent-composer__create-skill${selectedSuggestionIndex === createSkillSuggestionIndex ? ' is-active' : ''}`} aria-label={copy.createSkill} onMouseEnter={() => { if (!skillLimitReached) setActiveSuggestionIndex(createSkillSuggestionIndex) }} onMouseDown={(event) => event.preventDefault()} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); if (!skillLimitReached) onCreateSkill() }}><PlusIcon /><b>{copy.createSkill}</b><small>{copy.saveRules}</small></button>
+      {!commandOptions.length && !skillOptions.length ? <p>{copy.noSkillMatch}</p> : null}
     </div> : null}
     {canvasMenuOpen ? <div id={suggestionListId} className="agent-composer__mention-menu" role="listbox" aria-label={copy.referenceCanvas} onPointerDown={(event) => event.stopPropagation()}>
       {mentionOptions.length ? <div className="agent-composer__mention-section" role="group" aria-label={copy.referenceCanvas}><strong>{copy.referenceCanvas}</strong>{mentionOptions.map((item, index) => <button id={`${suggestionListId}-option-${index}`} key={item.id} type="button" role="option" tabIndex={-1} aria-selected={selectedSuggestionIndex === index} aria-label={`${copy.referenceCanvas} ${item.label}`} title={item.content ?? item.label} onMouseEnter={() => setActiveSuggestionIndex(index)} onMouseDown={(event) => event.preventDefault()} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onSelectMention(item) }}>{mentionBadge(item)}<b>{item.label}</b><small>{mentionMeta(item)}</small></button>)}</div> : <p>{copy.noMatch}</p>}
@@ -340,6 +371,7 @@ export function AgentComposer({
       }}
       onClick={(event) => onInstructionClick(event.currentTarget.selectionStart ?? instruction.length)}
       onKeyDown={handleKeyDown}
+      onPaste={handleTextPaste}
       placeholder={copy.placeholder}
       role="combobox"
       aria-autocomplete="list"

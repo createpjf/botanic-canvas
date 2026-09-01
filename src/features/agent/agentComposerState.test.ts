@@ -68,6 +68,7 @@ test('sessionStorage 草稿只保存 instruction+caret,坏 JSON/越界内容 fai
   assert.equal(readAgentComposerDraft(storage, key), undefined)
   values.set(key, JSON.stringify({ instruction: 'x', caret: 99 }))
   assert.equal(readAgentComposerDraft(storage, key), undefined)
+  assert.equal(writeAgentComposerDraft(storage, key, { instruction: 'x'.repeat(9_000), caret: 9_000 }), false)
   writeAgentComposerDraft(storage, key, { instruction: '', caret: 0 })
   assert.equal(values.has(key), false)
 })

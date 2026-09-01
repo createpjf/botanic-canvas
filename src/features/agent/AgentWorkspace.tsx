@@ -153,6 +153,8 @@ import {
 import { useAgentComposerState } from './useAgentComposerState'
 import { resolveAgentInstructionExecutionContext, type AgentInstructionExecutionSnapshot, type AgentResolvedInstructionExecutionContext } from './agentComposerQueue'
 import { useAgentInstructionQueue } from './useAgentInstructionQueue'
+import { expandAgentComposerPastes } from './agentComposerPaste'
+import { executeAgentComposerLocalCommand, type AgentComposerLocalCommandId } from './agentComposerCommands'
 import { useAgentTimelineContinuation } from './useAgentTimelineContinuation'
 import { useAgentMessageDelivery } from './useAgentMessageDelivery'
 import {
@@ -489,9 +491,9 @@ export default function AgentWorkspace({
     setInstructionAt,
     changeInstruction,
     clickInstruction,
-    dismissMention,
+    dismissMention, pasteLargeText,
   } = useAgentComposerState(projectId, session?.id, composerTextareaRef)
-  const { instruction, error, lastFailedInstruction, lastFailedCommand, lastFailedPlanMessageId, mentionQuery, queuedInstructions, pendingGenerationOverrides, pendingRecoveryContextSnapshot } = composerState
+  const { instruction, error, lastFailedInstruction, lastFailedCommand, lastFailedPlanMessageId, mentionQuery, queuedInstructions, pendingPastes, pendingGenerationOverrides, pendingRecoveryContextSnapshot } = composerState
   const setError = useCallback((value: string) => updateComposerState({ error: value }), [updateComposerState])
   const setLastFailedInstruction = useCallback((value: string) => updateComposerState({
     lastFailedInstruction: value,
@@ -1538,6 +1540,14 @@ export default function AgentWorkspace({
   }, [onFocusNodes, onResolveRunNodes, runs])
   const changeSessionContext = (nodeIds: string[]) => applyAgentSessionContextChange({
     session, nodeIds, locale, onChange: onContextChange, onError: setError })
+  const selectLocalCommand = (id: AgentComposerLocalCommandId) => {
+    if (!mentionQuery) return
+    const consumed = consumeBotanicAgentMention(instruction, mentionQuery)
+    setInstructionAt(consumed.value, consumed.caret); updateComposerState({ mentionQuery: undefined, dismissedMention: undefined })
+    executeAgentComposerLocalCommand(id, {
+      newSession: () => { onNewSession(); setHistoryOpen(false) }, openHistory: () => { setUtilityPanel(null); setHistoryOpen(true) }, openPanel: openUtilityPanel,
+    })
+  }
   const selectMention = (item: AgentContextItem) => {
     if (!session || !mentionQuery) return
     if (!session.contextNodeIds.includes(item.id)
@@ -3254,23 +3264,13 @@ export default function AgentWorkspace({
   }
 
   const instructionQueue = useAgentInstructionQueue({
-    state: composerState,
-    updateState: updateComposerState,
-    mountedSkills: mountedSkillOptions,
-    contextItems,
-    locale,
-    planning,
-    runtimePhase,
+    state: composerState, updateState: updateComposerState,
+    mountedSkills: mountedSkillOptions, contextItems, locale, planning, runtimePhase,
     currentSnapshot: {
-      plannerModel,
-      executionMode: session?.executionMode ?? 'manual',
-      mountedSkillIds: [...(session?.mountedSkillIds ?? [])],
-      sessionContextNodeIds: [...(session?.contextNodeIds ?? [])],
-      contextItems,
-      targetNodeId: target?.id ?? null,
-      groupId,
-      ...(intent ? { intent } : {}),
-      generationOverrides: pendingGenerationOverrides,
+      plannerModel, executionMode: session?.executionMode ?? 'manual',
+      mountedSkillIds: [...(session?.mountedSkillIds ?? [])], sessionContextNodeIds: [...(session?.contextNodeIds ?? [])],
+      contextItems, targetNodeId: target?.id ?? null, groupId,
+      ...(intent ? { intent } : {}), generationOverrides: pendingGenerationOverrides,
     },
     execute: (item) => runInstruction(item.instruction, {
       appendUser: item.content, mentions: structuredClone(item.mentions),
@@ -3289,18 +3289,17 @@ export default function AgentWorkspace({
     onQueued: () => setIntent(undefined),
     onFull: () => setError(flowCopy.queueFull),
   })
-
   const sendInstruction = async () => {
     if (!session || planning || sendingInstructionRef.current) return
     const prepared = prepareBotanicAgentComposerSubmission({
-      instruction,
+      instruction: expandAgentComposerPastes(instruction, pendingPastes),
       mountedSkills: mountedSkillOptions,
       contextItems,
       locale,
     })
     if (!prepared) return
     sendingInstructionRef.current = true
-    updateComposerState({ instruction: '', caret: 0, mentionQuery: undefined, dismissedMention: undefined })
+    updateComposerState({ instruction: '', caret: 0, mentionQuery: undefined, dismissedMention: undefined, pendingPastes: {} })
     setLastFailedPlanMessageId('')
     const generationOverrides = pendingGenerationOverrides
     const recoveryContextSnapshot = pendingRecoveryContextSnapshot
@@ -3873,10 +3872,12 @@ export default function AgentWorkspace({
         onRemoveMountedSkill={(skillId) => session && onSkillsChange(session.id, (session.mountedSkillIds ?? []).filter((id) => id !== skillId))}
         onSelectMention={selectMention}
         onSelectSkill={selectSkill}
+        onSelectCommand={selectLocalCommand}
         onCreateSkill={openSkillCreation}
         onDismissMention={() => dismissMention(instruction)}
         onInstructionChange={(value, caret) => { changeInstruction(value, caret); setIntent(undefined) }}
         onInstructionClick={(caret) => clickInstruction(instruction, caret)}
+        onLargePaste={(text, start, end) => pasteLargeText(text, start, end, locale)}
         onRetry={lastFailedPlanMessageId ? retryLastFailedPlan : retryLastInstruction}
         onImportFiles={(files) => void importImageFiles(files)}
         onToggleContextMenu={() => setContextMenuOpen((open) => !open)}
