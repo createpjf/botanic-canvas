@@ -457,7 +457,7 @@ test('tool-call accordion：按到达顺序追加，进行中展开，耗时与�
     status: row.status,
     error: row.error,
   })), [
-    { id: 'read-1', verb: '已在 1s 内运行', callCount: undefined, status: 'succeeded', error: undefined },
+    { id: 'quiet-reads:read-1', verb: '已读取 1 项', callCount: 1, status: 'succeeded', error: undefined },
     {
       id: 'mcp-1+mcp-2',
       verb: '已获取',
@@ -703,4 +703,34 @@ test('aborted 工具是中性未执行终态,时间线与 accordion 都不显示
   assert.equal(accordion?.groups[0]?.status, 'aborted')
   assert.equal(accordion?.groups[0]?.rows[0]?.status, 'aborted')
   assert.equal(accordion?.groups[0]?.rows[0]?.verb, '未执行')
+})
+
+test('本地 read 延迟300ms显示、可见后稳定600ms,快速成功折叠但外部调用不隐藏', () => {
+  let timeline = reduceAgentTimeline(createAgentTimeline(1_000), {
+    type: 'tool', step: 0,
+    toolCall: toolCall('read-1', 'ontology_read', '读取项目本体', 'running'),
+    presentation: { kind: 'read', title: '读取项目本体' }, receivedAt: 1_000,
+  })
+  const pending = presentAgentToolAccordion(timeline, 'zh-CN', 1_200)
+  assert.equal(pending?.groups.length, 0)
+  assert.equal(pending?.nextUpdateAt, 1_300)
+  assert.equal(presentAgentToolAccordion(timeline, 'zh-CN', 1_301)?.groups[0]?.rows[0]?.status, 'running')
+
+  timeline = reduceAgentTimeline(timeline, {
+    type: 'tool', step: 0,
+    toolCall: toolCall('read-1', 'ontology_read', '读取项目本体', 'succeeded'),
+    presentation: { kind: 'read', title: '读取项目本体' }, receivedAt: 1_400,
+  })
+  const lingering = presentAgentToolAccordion(timeline, 'zh-CN', 1_500)
+  assert.equal(lingering?.groups[0]?.rows[0]?.toolName, 'ontology_read')
+  assert.equal(lingering?.nextUpdateAt, 1_900)
+  const grouped = presentAgentToolAccordion(timeline, 'zh-CN', 1_901)
+  assert.equal(grouped?.groups[0]?.rows[0]?.toolName, 'quiet_reads')
+  assert.equal(grouped?.groups[0]?.rows[0]?.verb, '已读取 1 项')
+  assert.equal(grouped?.groups[0]?.rows[0]?.calls?.[0]?.toolName, 'ontology_read')
+
+  const external = presentAgentToolAccordionFromCalls([{
+    ...toolCall('external-1', 'web_fetch', '网页获取', 'succeeded'), risk: 'external',
+  }], 'zh-CN')
+  assert.equal(external?.groups[0]?.rows[0]?.toolName, 'web_fetch')
 })

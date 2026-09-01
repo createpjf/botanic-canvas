@@ -610,6 +610,8 @@ export type AgentToolAccordionGroup = {
 export type AgentToolAccordionView = {
   elapsedMs: number
   groups: AgentToolAccordionGroup[]
+  /** Pending reveal / quiet linger 的下一次纯展示重算时间。 */
+  nextUpdateAt?: number
 }
 
 function isMcpToolName(name: string) {
@@ -767,6 +769,52 @@ function aggregateAccordionStatus(statuses: AgentToolAccordionRowStatus[]): Agen
   if (statuses.some((status) => status === 'running')) return 'running'
   if (statuses.some((status) => status === 'aborted')) return 'aborted'
   return 'succeeded'
+}
+
+const AGENT_READ_REVEAL_DELAY_MS = 300
+const AGENT_READ_MIN_VISIBLE_MS = 600
+
+type QuietReadDisposition = { kind: 'pending' | 'visible' | 'aggregate'; nextUpdateAt?: number }
+
+function quietReadDisposition(
+  call: AgentToolCallTrace,
+  row: AgentToolAccordionRow,
+  timing: { startedAt?: number; endedAt?: number } | undefined,
+  now: number,
+): QuietReadDisposition {
+  const eligible = call.risk === 'read'
+    && (row.kind === 'read' || row.kind === 'read_skill')
+    && !call.error?.trim()
+  if (!eligible || timing?.startedAt === undefined) return { kind: 'visible' }
+  const revealAt = timing.startedAt + AGENT_READ_REVEAL_DELAY_MS
+  if (row.status === 'running') {
+    return now < revealAt ? { kind: 'pending', nextUpdateAt: revealAt } : { kind: 'visible' }
+  }
+  if (row.status !== 'succeeded') return { kind: 'visible' }
+  const endedAt = timing.endedAt ?? timing.startedAt
+  // 完成早于 reveal:从未闪现,直接并入摘要。
+  if (endedAt < revealAt) return { kind: 'aggregate' }
+  // 已经画出来的 quiet success 至少稳定600ms,避免同帧消失。
+  const removalAt = revealAt + AGENT_READ_MIN_VISIBLE_MS
+  return now < removalAt
+    ? { kind: 'visible', nextUpdateAt: removalAt }
+    : { kind: 'aggregate' }
+}
+
+function quietReadSummaryRow(rows: AgentToolAccordionRow[], locale: string): AgentToolAccordionRow | undefined {
+  if (!rows.length) return undefined
+  const count = rows.length
+  const verb = locale === 'en' ? `Read ${count} item${count === 1 ? '' : 's'}` : `已读取 ${count} 项`
+  return {
+    id: `quiet-reads:${rows.map((row) => row.id).join('+')}`,
+    kind: 'read',
+    toolName: 'quiet_reads',
+    verb,
+    detail: verb,
+    status: 'succeeded',
+    callCount: count,
+    calls: rows,
+  }
 }
 
 function buildToolAccordionRow(
@@ -971,22 +1019,35 @@ export function presentAgentToolAccordion(
 
   if (!orderedCalls.length) return null
 
-  const rows = mergeMcpAccordionRows(
-    orderedCalls.map((call) => buildToolAccordionRow(call, timingByToolId.get(call.id), locale)),
-    locale,
-  )
+  const visibleRows: AgentToolAccordionRow[] = []
+  const quietRows: AgentToolAccordionRow[] = []
+  let quietInsertIndex: number | undefined
+  let nextUpdateAt: number | undefined
+  for (const call of orderedCalls) {
+    const timing = timingByToolId.get(call.id)
+    const row = buildToolAccordionRow(call, timing, locale)
+    const disposition = quietReadDisposition(call, row, timing, now)
+    if (disposition.nextUpdateAt !== undefined) {
+      nextUpdateAt = nextUpdateAt === undefined ? disposition.nextUpdateAt : Math.min(nextUpdateAt, disposition.nextUpdateAt)
+    }
+    if (disposition.kind === 'pending') continue
+    if (disposition.kind === 'aggregate') {
+      quietInsertIndex ??= visibleRows.length
+      quietRows.push(row)
+      continue
+    }
+    visibleRows.push(row)
+  }
+  const quietSummary = quietReadSummaryRow(quietRows, locale)
+  if (quietSummary) visibleRows.splice(quietInsertIndex ?? visibleRows.length, 0, quietSummary)
+  const rows = mergeMcpAccordionRows(visibleRows, locale)
+  if (!rows.length) return { elapsedMs: timelineElapsedMs(timeline, now), groups: [], ...(nextUpdateAt ? { nextUpdateAt } : {}) }
   const status = aggregateAccordionStatus(rows.map((row) => row.status))
   const focusStep = steps.find((step) => step.status === 'running') ?? steps.at(-1)
-  const group: AgentToolAccordionGroup = {
-    id: 'tools',
-    title: accordionGroupTitle(focusStep, rows, locale),
-    status,
-    open: status === 'running',
-    rows,
-  }
   return {
     elapsedMs: timelineElapsedMs(timeline, now),
-    groups: [group],
+    groups: [{ id: 'tools', title: accordionGroupTitle(focusStep, rows, locale), status, open: status === 'running', rows }],
+    ...(nextUpdateAt ? { nextUpdateAt } : {}),
   }
 }
 

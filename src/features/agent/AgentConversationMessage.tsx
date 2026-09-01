@@ -574,20 +574,23 @@ function timelineStepTitle(block: Extract<TimelineBlock, { type: 'step' }>, loca
 
 function AgentMessageTimeline({ timeline }: { timeline: AgentTimelineState }) {
   const { locale } = useProductI18n()
-  const accordion = presentAgentToolAccordion(timeline, locale)
+  const [now, setNow] = useState(() => Date.now())
+  const accordion = presentAgentToolAccordion(timeline, locale, now)
   const toolLive = accordion?.groups.some((group) => group.status === 'running') ?? false
   const thinkingLive = timeline.blocks.some((block) => block.type === 'thinking' && block.status === 'running')
-  const [now, setNow] = useState(() => Date.now())
   const toolItems = timeline.blocks.find((block) => block.type === 'raw_group')?.items ?? []
-  const liveAccordion = toolLive || thinkingLive
-    ? presentAgentToolAccordion(timeline, locale, now)
-    : accordion
+  const liveAccordion = accordion
 
   useEffect(() => {
-    if (!toolLive && !thinkingLive) return
-    const timer = window.setInterval(() => setNow(Date.now()), 1_000)
-    return () => window.clearInterval(timer)
-  }, [toolLive, thinkingLive])
+    if (toolLive || thinkingLive) {
+      const timer = window.setInterval(() => setNow(Date.now()), 1_000)
+      return () => window.clearInterval(timer)
+    }
+    if (accordion?.nextUpdateAt !== undefined && accordion.nextUpdateAt > now) {
+      const timer = window.setTimeout(() => setNow(Date.now()), accordion.nextUpdateAt - now + 1)
+      return () => window.clearTimeout(timer)
+    }
+  }, [accordion?.nextUpdateAt, now, thinkingLive, toolLive])
 
   const renderBlock = (block: TimelineBlock) => {
     if (block.type === 'thinking') {
