@@ -427,9 +427,10 @@ export function botanicAgentProviderConfig(runtimeConfig, requestedModel) {
     apiKey,
     model,
     genAiDevelopmentSemconv: runtimeConfig?.telemetry?.genAiDevelopmentSemconv === true,
+    // 内部 fallback 与 Runtime 注入的生产默认一致（55s），避免直调与组合根语义分叉。
     timeoutMs: Number.isFinite(Number(runtimeConfig?.agentPlannerTimeoutMs))
       ? Math.min(60_000, Math.max(1_000, Number(runtimeConfig.agentPlannerTimeoutMs)))
-      : 30_000,
+      : 55_000,
   }
 }
 
@@ -700,8 +701,13 @@ export async function planBotanicGeneration(input, runtimeConfig, options = {}) 
     botanicAgentMountedSkillBriefing(mountedSkills, input.locale),
   ].filter(Boolean).join('\n\n')
   if (options.signal?.aborted) throw new BotanicAgentPlannerError(499, 'REQUEST_CANCELLED', '生图 Agent 请求已取消。')
-  const timeoutSignal = AbortSignal.timeout(config.timeoutMs)
-  const signal = options.signal ? AbortSignal.any([options.signal, timeoutSignal]) : timeoutSignal
+  // 超时按单次模型调用计，不罩整轮 tool loop：与 Turn/Chat 同一语义（H3A）。
+  // timeout signal 不跨工具执行复用，每次 sampling 重新创建。
+  let activeCallTimeout
+  const providerCallSignal = () => {
+    activeCallTimeout = AbortSignal.timeout(config.timeoutMs)
+    return options.signal ? AbortSignal.any([options.signal, activeCallTimeout]) : activeCallTimeout
+  }
   const fetchImpl = options.fetchImpl ?? fetch
   const proposedActions = []
   const webResearch = {
@@ -812,7 +818,7 @@ export async function planBotanicGeneration(input, runtimeConfig, options = {}) 
             temperature: botanicAgentProviderTemperature(config.model),
             stream: streaming,
           }),
-          signal,
+          signal: providerCallSignal(),
         })
         if (!response.ok) {
           const failureBody = await response.text().catch(() => '')
@@ -874,8 +880,8 @@ export async function planBotanicGeneration(input, runtimeConfig, options = {}) 
         || caught.code.startsWith('AGENT_ACTION_'))) {
       throw new BotanicAgentPlannerError(caught.statusCode ?? 409, caught.code, caught.message)
     }
-    if (timeoutSignal.aborted) throw new BotanicAgentPlannerError(504, 'PROVIDER_TIMEOUT', '生图 Agent 规划超时，请重试。')
     if (options.signal?.aborted) throw new BotanicAgentPlannerError(499, 'REQUEST_CANCELLED', '生图 Agent 请求已取消。')
+    if (activeCallTimeout?.aborted) throw new BotanicAgentPlannerError(504, 'PROVIDER_TIMEOUT', '生图 Agent 规划超时，请重试。')
     if (caught instanceof AgentToolRuntimeError) {
       throw new BotanicAgentPlannerError(502, 'INVALID_PROVIDER_RESPONSE', '生图 Agent 返回了不允许的工具调用。')
     }

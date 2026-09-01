@@ -153,6 +153,8 @@ export function runtimeConfig(rootDir = process.cwd()) {
     // Agent 规划与对话包含受控上下文读取和多轮工具调用；给它足够时间，
     // 避免浏览器先于 Provider 报“工作区超时”。客户端仍有独立的 60 秒上限。
     agentPlannerTimeoutMs: Number(process.env.AGENT_PLANNER_TIMEOUT_MS ?? 55000),
+    // Turn 业务时限（H3A）：单次 Provider call 之外的整轮寿命；写入 Turn 顶层 deadlineAt。
+    agentTurnLifetimeMs: boundedInteger(process.env.AGENT_TURN_LIFETIME_MS, 600_000, 60_000, 900_000),
     agentMcpTools: parseMcpToolConfigurations(process.env.BOTANIC_MCP_TOOLS_JSON),
     webSearch: {
       apiKey: (process.env.BOTANIC_WEB_SEARCH_API_KEY ?? '').trim(),
