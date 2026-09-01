@@ -243,6 +243,23 @@ function shapedBusinessHttpError(caught) {
   return new HttpError(statusCode, caught.code, caught.message)
 }
 
+const retryableDatabaseErrorCodes = new Set([
+  '08000', '08001', '08003', '08006', '25P02', '40001', '40P01',
+  '53300', '55P03', '57014',
+])
+const databaseTransactionErrorCodes = new Set(['25001'])
+
+function databaseHttpError(caught) {
+  const code = String(caught?.code ?? '')
+  if (retryableDatabaseErrorCodes.has(code)) return new HttpError(503, 'DATABASE_RETRYABLE', '数据服务暂时繁忙，请稍后重试。')
+  if (databaseTransactionErrorCodes.has(code)) return new HttpError(500, 'DATABASE_TRANSACTION_ERROR', '数据服务发生事务错误。')
+  return undefined
+}
+
+function safeErrorCode(value) {
+  return typeof value === 'string' && /^[A-Za-z0-9_.:-]{1,120}$/.test(value) ? value : undefined
+}
+
 function clientDisconnectHttpError(request, response) {
   if (request.aborted || response.destroyed) {
     return new HttpError(499, 'CLIENT_CLOSED_REQUEST', '请求已中断。')
@@ -456,6 +473,7 @@ async function dispatchSubagentActivation(identity) {
     throw new AgentSubagentServiceError('AGENT_SUBAGENT_QUEUE_UNAVAILABLE', 'Subagent 执行队列尚未配置。', 503)
   }
   queueMicrotask(() => void localSubagentProcessor(identity).catch((caught) => {
+    captureSentryException(caught, { level: 'warning', tags: { component: 'agent-subagent', operation: 'local_activation' } })
     console.error(`[agent-subagent] local activation deferred: ${caught instanceof Error ? caught.message : String(caught)}`)
   }))
   return true
@@ -502,6 +520,7 @@ const handleAgentRoute = createAgentRouteHandler({
 
 const handleRequestCore = async (request, response) => {
   const requestId = randomUUID()
+  let routePath = 'UNKNOWN'
   response.setHeader('X-Request-ID', requestId)
   const forwardedProtocol = request.headers['x-forwarded-proto']?.split(',')[0]?.trim()
   for (const [name, value] of Object.entries(securityResponseHeaders({ secure: forwardedProtocol === 'https' || Boolean(request.socket.encrypted) }))) {
@@ -509,6 +528,7 @@ const handleRequestCore = async (request, response) => {
   }
   try {
     const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`)
+    routePath = url.pathname
     const routeMatches = matchBotanicHttpRoutes(url.pathname)
     if (url.pathname !== '/api/health' && url.pathname.startsWith('/api/') && !await enforceRateLimit(response, {
       scope: 'api',
@@ -576,6 +596,8 @@ const handleRequestCore = async (request, response) => {
   } catch (caught) {
     const disconnectFailure = clientDisconnectHttpError(request, response)
     const agentEntityFailure = agentEntityHttpError(caught)
+    const caughtCode = safeErrorCode(caught?.code)
+    const traceId = safeErrorCode(activeBotanicTraceFields().traceId)
     const failure = disconnectFailure
       || (caught instanceof HttpError || caught instanceof ProjectAuthorizationError || caught instanceof GenerationError || caught instanceof PromptRefinementError || caught instanceof BotanicAgentPlannerError || caught instanceof BotanicAgentChatError || caught instanceof BotanicAgentRunError || caught instanceof BotanicAgentSkillError || caught instanceof AgentToolRuntimeError || caught instanceof AgentActionExecutionError || caught instanceof AgentActionReconciliationError || caught instanceof McpClientError || caught instanceof AgentDelegationFenceError || caught instanceof AgentSubagentServiceError
         ? caught
@@ -583,7 +605,8 @@ const handleRequestCore = async (request, response) => {
           ? agentEntityFailure
         : caught?.code === 'WORKSPACE_STORE_TIMEOUT'
           ? new HttpError(503, 'WORKSPACE_STORE_TIMEOUT', caught.message)
-        : shapedBusinessHttpError(caught)
+        : databaseHttpError(caught)
+          ?? shapedBusinessHttpError(caught)
           ?? new HttpError(500, 'INTERNAL_ERROR', '服务发生未预期错误。'))
     if (failure.statusCode >= 500) {
       reportError(caught, {
@@ -591,12 +614,18 @@ const handleRequestCore = async (request, response) => {
           component: 'api',
           error_code: failure.code,
           method: request.method ?? 'UNKNOWN',
+          route: routePath,
+          ...(caughtCode ? { caught_code: caughtCode } : {}),
+          ...(traceId ? { trace_id: traceId } : {}),
         },
-        contexts: { request: { id: requestId } },
+        contexts: { request: { id: requestId, route: routePath, ...(traceId ? { traceId } : {}) } },
       })
       console.error(JSON.stringify({
-        event: 'api.failure', requestId, method: request.method,
+        event: 'api.failure', requestId, method: request.method, route: routePath,
         code: failure.code,
+        ...(caughtCode ? { caughtCode } : {}),
+        ...(traceId ? { traceId } : {}),
+        statusCode: failure.statusCode,
       }))
     }
     return error(response, failure.statusCode, failure.code, failure.message)
@@ -633,6 +662,7 @@ async function start() {
     await generationRecoverySweep()()
   } catch (caught) {
     // 队列恢复不是 API 启动前置条件；数据库短暂波动不能让登录、项目与媒体服务整体不可用。
+    captureSentryException(caught, { level: 'warning', tags: { component: 'generation', operation: 'queue_recovery' } })
     console.error(`[generation] queue recovery deferred: ${caught instanceof Error ? caught.message : String(caught)}`)
   }
 
@@ -643,6 +673,7 @@ async function start() {
       observe: (event) => console.error(JSON.stringify(event)),
     })
     const recover = () => void recoverSubagents().catch((caught) => {
+      captureSentryException(caught, { level: 'warning', tags: { component: 'agent-subagent', operation: 'local_recovery' } })
       console.error(`[agent-subagent] local recovery deferred: ${caught instanceof Error ? caught.message : String(caught)}`)
     })
     recover()
@@ -658,8 +689,12 @@ async function start() {
     crossInstancePublisher: canvasRealtimeEventPublisher,
   })
   canvasRealtimeEventSubscriber = await createCanvasRealtimeEventSubscriber(config.redisUrl, {
-    onCanvasUpdate: (event) => void realtimeHub.receiveCanvasUpdate(event).catch(() => undefined),
-    onPresence: (event) => void realtimeHub.receivePresence(event).catch(() => undefined),
+    onCanvasUpdate: (event) => void realtimeHub.receiveCanvasUpdate(event).catch((caught) => {
+      captureSentryException(caught, { level: 'warning', tags: { component: 'realtime', operation: 'receive_canvas_update' } })
+    }),
+    onPresence: (event) => void realtimeHub.receivePresence(event).catch((caught) => {
+      captureSentryException(caught, { level: 'warning', tags: { component: 'realtime', operation: 'receive_presence' } })
+    }),
   }, { eventSecret: config.realtimeEventSecret })
   agentRunEventSubscriber = await createAgentRunEventSubscriber(
     config.redisUrl,
@@ -668,6 +703,7 @@ async function start() {
       onCollaborationActivity: (event) => realtimeHub.publishCollaborationActivity(event),
       onProjectUpdated: (event) => void realtimeHub.publishProjectUpdated(event).catch((caught) => {
         // Worker 的权威写入已完成；实时旁路失败不得形成未处理拒绝并拉垮 API 进程。
+        captureSentryException(caught, { level: 'warning', tags: { component: 'realtime', operation: 'worker_project_update' } })
         console.error(`[realtime] worker project update deferred: ${caught instanceof Error ? caught.message : String(caught)}`)
       }),
       // 别的实例发来的取消：如果这个 Turn 正在本实例执行，就地中止；不在本实例

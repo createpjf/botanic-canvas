@@ -7,6 +7,34 @@ function withoutQueryOrHash(value: string | undefined) {
   return suffix === -1 ? value : value.slice(0, suffix)
 }
 
+const sentryRedactions = [
+  { pattern: /data:[a-z]+\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]+/giu, replacement: '[redacted-inline-media]' },
+  { pattern: /https?:\/\/[^\s"'<>）)]+/giu, replacement: '[redacted-url]' },
+  { pattern: /\b(?:sk|pk|rk)-[A-Za-z0-9_-]{12,}/giu, replacement: '[redacted-key]' },
+  { pattern: /\bBearer\s+[A-Za-z0-9._~+/-]{12,}=*/giu, replacement: '[redacted-token]' },
+  { pattern: /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]+/gu, replacement: '[redacted-jwt]' },
+]
+
+function redactSentryText(value: string | undefined) {
+  if (!value) return value
+  return sentryRedactions.reduce(
+    (text, { pattern, replacement }) => text.replace(pattern, replacement),
+    value,
+  ).slice(0, 500)
+}
+
+function scrubSentryException(exception: ErrorEvent['exception']) {
+  if (!exception?.values) return exception
+  return {
+    ...exception,
+    values: exception.values.map((value) => ({
+      ...value,
+      ...(typeof value.type === 'string' ? { type: redactSentryText(value.type) } : {}),
+      ...(typeof value.value === 'string' ? { value: redactSentryText(value.value) } : {}),
+    })),
+  }
+}
+
 export function scrubSentryBreadcrumb(breadcrumb: Breadcrumb) {
   if (breadcrumb.category === 'console') return null
   if (!breadcrumb.data?.url) return breadcrumb
@@ -28,6 +56,8 @@ export function scrubSentryEvent(event: ErrorEvent) {
     ...event,
     user: undefined,
     extra: undefined,
+    ...(typeof event.message === 'string' ? { message: redactSentryText(event.message) } : {}),
+    exception: scrubSentryException(event.exception),
     request: event.request
       ? { method: event.request.method, url: withoutQueryOrHash(event.request.url) }
       : undefined,
@@ -53,6 +83,51 @@ export function initializeBrowserSentry() {
 }
 
 export const sentryReactErrorHandler = Sentry.reactErrorHandler
+
+type SentryMessageLevel = 'fatal' | 'error' | 'warning' | 'log' | 'info' | 'debug'
+
+function safeTag(value: unknown) {
+  return String(value ?? 'unknown').replace(/[\r\n]/gu, ' ').slice(0, 120)
+}
+
+function safeApiPath(path: string | undefined) {
+  return (path ?? 'unknown').split(/[?#]/u, 1)[0].slice(0, 160)
+}
+
+export function captureSentryApiFailure(
+  error: unknown,
+  input: { path?: string; method?: string; aborted?: boolean } = {},
+) {
+  if (input.aborted) return
+  const source = error && typeof error === 'object' ? error as { status?: unknown; code?: unknown } : {}
+  const status = Number(source.status)
+  const code = typeof source.code === 'string' && source.code ? source.code : undefined
+  const reportable = status === 0 || status >= 500 || status === 401 || status === 403 || status === 429
+  if (!reportable) return
+  Sentry.captureException(error, {
+    level: status >= 500 || status === 0 ? 'error' : 'warning',
+    tags: {
+      component: 'browser-api',
+      method: safeTag(input.method ?? 'GET'),
+      http_status: safeTag(Number.isFinite(status) ? status : 'unknown'),
+      ...(code ? { error_code: safeTag(code) } : {}),
+    },
+    contexts: { request: { method: input.method ?? 'GET', path: safeApiPath(input.path) } },
+  })
+}
+
+export function captureSentryMessage(
+  message: string,
+  input: { component?: string; level?: SentryMessageLevel; tags?: Record<string, unknown> } = {},
+) {
+  Sentry.captureMessage(redactSentryText(message) ?? 'botanic_event', {
+    level: input.level ?? 'warning',
+    tags: {
+      ...(input.component ? { component: safeTag(input.component) } : {}),
+      ...Object.fromEntries(Object.entries(input.tags ?? {}).map(([key, value]) => [key, safeTag(value)])),
+    },
+  })
+}
 
 /**
  * 静默兜底路径的最低可观测性：失败不打断用户，但要留痕，

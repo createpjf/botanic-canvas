@@ -53,6 +53,8 @@ export function createGenerationProcessor({
   acquireProviderAdmission = acquireGenerationProviderAdmission,
   // 终态失败的可聚合上报（Sentry 等）。只传错误码/Provider/模型，不传 Prompt 与媒体。
   reportWorkerFailure = () => {},
+  // 用户侧 Provider 失败仍需可观测，但不应伪装成 Worker 基础设施事故。
+  reportWorkerOutcome = () => {},
 }) {
   const canvasSourceInstanceId = randomUUID()
   function resolvedInputProvenance(provenance, input) {
@@ -977,17 +979,23 @@ export function createGenerationProcessor({
       const upstream = failure.upstreamMessage ? ` 上游原文：${failure.upstreamMessage}` : ''
       console.error(`[generation] ${jobId} failed (${failure.code}): ${detail}${upstream}`)
       try {
+        const reportContext = {
+          tags: {
+            component: 'worker',
+            error_code: failure.code,
+            provider: latest.provider ?? 'unknown',
+            model: latest.settings?.model ?? 'unknown',
+          },
+          fingerprint: ['generation-provider-outcome', failure.code, latest.settings?.model ?? 'unknown'],
+        }
         if (shouldReportGenerationWorkerFailure(failure)) {
           // 模型级 Provider 故障此前只在 Railway 日志可见；按码+模型稳定聚合，不逐 Job 开 Issue。
           reportWorkerFailure(failure, {
-            tags: {
-              component: 'worker',
-              error_code: failure.code,
-              provider: latest.provider ?? 'unknown',
-              model: latest.settings?.model ?? 'unknown',
-            },
+            ...reportContext,
             fingerprint: ['generation-worker-terminal-failure', failure.code, latest.settings?.model ?? 'unknown'],
           })
+        } else {
+          reportWorkerOutcome(failure, reportContext)
         }
       } catch { /* 可观测性不得改变任务状态。 */ }
       // 错误码随任务落库：失败消息是给人看的，服务端的重试策略要按码分类

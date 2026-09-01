@@ -24,6 +24,7 @@ import { readProductLocale, type ProductLocale } from '../i18n/core'
 import { canonicalImageFormatSentenceList, isCanonicalImageFormat } from '../domain/mediaFormats'
 import { persistentBotanicAgentMessageBody } from '../domain/agentMessagePersistence'
 import { readAgentTurnTimelineEvents } from './agentTurnTimelineEventReader'
+import { captureSentryMessage } from './sentry.ts'
 
 const agentActionsRequiringApproval = new Set([
   'generation_submit', 'mcp_call', 'agent_branch_retry', 'review_retry', 'workflow_run_retry_failed',
@@ -663,6 +664,16 @@ async function streamBotanicAgentEndpoint(input: {
     if (input.signal?.aborted) throw caught
     if (received) {
       const idleTimedOut = controller.signal.aborted
+      captureSentryMessage('agent_stream_interrupted', {
+        component: 'agent-stream',
+        level: 'error',
+        tags: {
+          operation: input.path.replace(/^\/api\//u, '').replace(/\/stream$/u, ''),
+          error_code: caught instanceof ProductApiError && caught.code
+            ? caught.code
+            : idleTimedOut ? 'REQUEST_TIMEOUT' : 'STREAM_DISCONNECTED',
+        },
+      })
       if (caught instanceof ProductApiError) {
         throw new ProductApiError(
           botanicAgentChatTransportErrorMessage(caught, { idleTimedOut, fallback: caught.message, locale: input.locale }),

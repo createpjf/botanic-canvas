@@ -5,6 +5,7 @@ import type { WorkspaceAuditEvent } from '../domain/auditEvents'
 import { invalidateProductSessionIfRequired, subscribeProductSessionInvalidated } from './productSessionInvalidation'
 import { cleanProductAuthUrl, detectProductAuthFlow } from './authFlow'
 import { localizeProductError, readProductLocale } from '../i18n/core'
+import { captureSentryApiFailure } from './sentry.ts'
 
 export type ProductUser = {
   id: string
@@ -231,7 +232,14 @@ export async function productRequest<T>(path: string, init: ProductRequestInit =
         && caught instanceof ProductApiError
         && (retryableProductResponseStatuses.has(caught.status)
           || (caught.status === 0 && caught.code !== 'REQUEST_TIMEOUT'))
-      if (!retryable) throw caught
+      if (!retryable) {
+        captureSentryApiFailure(caught, {
+          path,
+          method,
+          aborted: Boolean(init.signal?.aborted),
+        })
+        throw caught
+      }
       await new Promise<void>((resolve) => window.setTimeout(resolve, productRequestRetryDelaysMs[attempt]))
     }
   }

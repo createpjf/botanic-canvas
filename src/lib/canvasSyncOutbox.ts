@@ -1,3 +1,5 @@
+import { captureSentryMessage } from './sentry.ts'
+
 export type CanvasSyncMutation = {
   id: string
   projectId: string
@@ -74,6 +76,11 @@ export function createCanvasSyncOutbox(options: {
 
   const blockMutation = async (mutation: CanvasSyncMutation, failure: CanvasSyncFailure) => {
     await storage.put({ ...mutation, blocked: { ...failure, at: now() } })
+    captureSentryMessage('canvas_sync_mutation_blocked', {
+      component: 'canvas-sync',
+      level: 'error',
+      tags: { error_code: failure.code, http_status: failure.status ?? 'unknown' },
+    })
     await listPending()
   }
 

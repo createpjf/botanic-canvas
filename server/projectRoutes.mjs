@@ -60,7 +60,8 @@ export function createProjectRouteHandler({
         } catch (caught) {
           if (caught?.code === 'MEDIA_VALIDATION_FAILED') return error(response, 400, caught.code, caught.message)
           if (caught?.code === 'PROJECT_CONFLICT' || caught?.code === 'CANVAS_GRAPH_CONFLICT' || caught?.code === canvasSyncEpochStaleCode) return error(response, 409, caught.code, caught.message)
-          return error(response, 403, 'PROJECT_CREATE_FORBIDDEN', caught instanceof Error ? caught.message : '无法新建项目。')
+          if (projectWritePermissionCodes.has(caught?.code)) return error(response, 403, 'PROJECT_CREATE_FORBIDDEN', caught instanceof Error ? caught.message : '无法新建项目。')
+          throw caught
         }
       }
       return json(response, 405, { error: { code: 'METHOD_NOT_ALLOWED', message: '项目集合接口不支持该请求方法。' } }, {
@@ -134,7 +135,8 @@ export function createProjectRouteHandler({
         return json(response, 200, saved, projectResponseHeaders(saved))
       } catch (caught) {
         if (caught?.code === 'PROJECT_CONFLICT' || caught?.code === 'CANVAS_GRAPH_CONFLICT' || caught?.code === canvasSyncEpochStaleCode) return error(response, 409, caught.code, caught.message)
-        return error(response, 403, 'PROJECT_RENAME_FORBIDDEN', caught instanceof Error ? caught.message : '无法重命名项目。')
+        if (projectWritePermissionCodes.has(caught?.code)) return error(response, 403, 'PROJECT_RENAME_FORBIDDEN', caught instanceof Error ? caught.message : '无法重命名项目。')
+        throw caught
       }
     }
 
@@ -148,7 +150,8 @@ export function createProjectRouteHandler({
         if (!deleted) return error(response, 404, 'PROJECT_NOT_FOUND', '未找到项目或你没有删除权限。')
         return json(response, 204)
       } catch (caught) {
-        return error(response, 403, 'PROJECT_DELETE_FORBIDDEN', caught instanceof Error ? caught.message : '没有删除项目的权限。')
+        if (caught?.code === 'PROJECT_DELETE_FORBIDDEN') return error(response, 403, 'PROJECT_DELETE_FORBIDDEN', caught instanceof Error ? caught.message : '没有删除项目的权限。')
+        throw caught
       }
     }
 
@@ -257,7 +260,8 @@ export function createProjectRouteHandler({
         await productStore.addProjectMember(user.id, projectId, text(body?.userId, '成员', 160), enumValue(body?.role, ['owner', 'editor', 'viewer'], '成员角色'))
         return json(response, 204)
       } catch (caught) {
-        return error(response, 403, 'PROJECT_MEMBER_FORBIDDEN', caught instanceof Error ? caught.message : '成员权限更新失败。')
+        if (caught?.code === 'PROJECT_MEMBER_FORBIDDEN') return error(response, 403, 'PROJECT_MEMBER_FORBIDDEN', caught instanceof Error ? caught.message : '成员权限更新失败。')
+        throw caught
       }
     }
 

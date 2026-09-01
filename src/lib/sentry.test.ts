@@ -6,6 +6,8 @@ test('浏览器 Sentry 事件不携带身份、请求参数、额外数据或 co
   const event = scrubSentryEvent({
     user: { id: 'user-1', email: 'owner@example.com' },
     extra: { prompt: 'private prompt' },
+    message: 'provider https://provider.example/private?token=secret Bearer abcdefghijklmnopqrst',
+    exception: { values: [{ type: 'Error', value: 'data:image/png;base64,privatecontent' }] },
     request: {
       method: 'GET',
       url: 'https://botanic.example/auth/callback?code=secret#workspace',
@@ -20,6 +22,8 @@ test('浏览器 Sentry 事件不携带身份、请求参数、额外数据或 co
 
   assert.equal(event.user, undefined)
   assert.equal(event.extra, undefined)
+  assert.equal(event.message, 'provider [redacted-url] [redacted-token]')
+  assert.equal(event.exception?.values?.[0]?.value, '[redacted-inline-media]')
   assert.deepEqual(event.request, { method: 'GET', url: 'https://botanic.example/auth/callback' })
   assert.deepEqual(event.breadcrumbs, [{
     category: 'fetch',

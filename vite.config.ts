@@ -18,7 +18,7 @@ const sentryUploadEnabled = Boolean(
 
 function botanicReleaseManifest() {
   const version = JSON.parse(readFileSync(fileURLToPath(new URL('./package.json', import.meta.url)), 'utf8')).version
-  const revision = (process.env.VERCEL_GIT_COMMIT_SHA || '').slice(0, 7) || 'dev'
+  const revision = (process.env.VERCEL_GIT_COMMIT_SHA || process.env.RAILWAY_GIT_COMMIT_SHA || '').slice(0, 7) || 'dev'
   return { version, revision }
 }
 
@@ -65,7 +65,7 @@ export default defineConfig({
       telemetry: false,
       release: {
         name: sentryRelease,
-        setCommits: false,
+        setCommits: { auto: true, ignoreMissing: true, ignoreEmpty: true },
       },
       sourcemaps: { filesToDeleteAfterUpload: ['dist/**/*.map'] },
     })] : []),
