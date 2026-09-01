@@ -1,15 +1,23 @@
 // @ts-check
 import { canonicalHash } from './canonicalHash.mjs'
 import { validateAgentToolEntityReferences } from './agentEntityReferences.mjs'
+import { classifyPublicHttpUrl } from './agentWebResearch.mjs'
 
 const CHECKPOINT_VERSION = 1
+/** Checkpoint V2（H6A，ADR 0004/0008 2026-09-01 修订）：每 call lifecycle 与安全 result envelope。 */
+const CHECKPOINT_VERSION_V2 = 2
 const MAX_STEPS = 8
 const MAX_CALLS_PER_STEP = 16
 const MAX_CHECKPOINT_BYTES = 64 * 1024
+/** H6G 批准的 result 预算：单 call 8KiB、全 Turn 24KiB；总 checkpoint 仍 64KiB。 */
+const MAX_RESULT_ENVELOPE_BYTES = 8 * 1024
+const MAX_TURN_RESULT_BYTES = 24 * 1024
 const MAX_TERMINAL_CONTENT = 12_000
 const TOOL_NAME = /^[a-z][a-z0-9_]{1,63}$/
 const RISKS = new Set(['read', 'write', 'costly', 'external'])
-const RECOVERY_MODES = new Set(['reexecute', 'receipt', 'never'])
+const RECOVERY_MODES = new Set(['reexecute', 'receipt', 'never', 'journal'])
+/** V2 每 call lifecycle。prepared/dispatched 只出现在 pendingStep;终态出现在两处。 */
+const CALL_PHASES = new Set(['prepared', 'dispatched', 'completed', 'failed', 'aborted', 'unknown'])
 
 const CHECKPOINT_KEYS = new Set(['version', 'attempt', 'completedSteps', 'pendingStep', 'terminalContent'])
 const ATTEMPT_KEYS = new Set(['id', 'model', 'snapshotHash'])
@@ -27,13 +35,16 @@ const CALL_BASE_KEYS = ['id', 'name', 'risk', 'recovery', 'terminal']
  *   arguments?: Record<string, unknown>,
  *   receiptId?: string,
  *   intentHash?: string,
+ *   phase?: string,
+ *   resultEnvelope?: string,
+ *   resultRef?: { kind: string, id: string },
  *   entityReferences?: Array<{ type: string, id: string }>,
  * }} AgentTurnCheckpointCall
  */
 /** @typedef {{ step: number, calls: AgentTurnCheckpointCall[] }} AgentTurnCheckpointStep */
 /**
  * @typedef {{
- *   version: 1,
+ *   version: 1 | 2,
  *   attempt: AgentTurnCheckpointAttempt,
  *   completedSteps: AgentTurnCheckpointStep[],
  *   pendingStep?: AgentTurnCheckpointStep,
@@ -150,15 +161,45 @@ function validateSafeJson(value, path = 'arguments', depth = 0, ancestors = new 
   }
 }
 
-function normalizeCall(value, name = 'Checkpoint 工具调用', allowEntityReferences = false) {
+export function agentTurnCheckpointResultEnvelopeUrls(value) {
+  if (typeof value !== 'string') return []
+  const decoded = value.replace(/\\\//gu, '/')
+  return [...decoded.matchAll(/\bhttps?:\/\/[^\s"'<>\\{}]+/giu)].map((match) => match[0])
+}
+
+/** V2 result envelope：与实际送给模型的字符串完全一致;拒绝 raw/reasoning/媒体/Data URL/非公开 URL。 */
+function validateResultEnvelope(value, name) {
+  if (typeof value !== 'string' || !value.trim()) invalid(`${name} result envelope 无效。`)
+  if (Buffer.byteLength(value, 'utf8') > MAX_RESULT_ENVELOPE_BYTES) {
+    invalid(`${name} result envelope 超过 8KiB。`, 'AGENT_TURN_CHECKPOINT_TOO_LARGE')
+  }
+  if (/data:(?:image|video|audio|application)\//iu.test(value)) invalid(`${name} result envelope 不得包含媒体 Data URL。`)
+  if (/"(?:reasoning|reasoning_content|analysis)"\s*:/iu.test(value)) invalid(`${name} result envelope 不得包含原始推理。`)
+  for (const url of agentTurnCheckpointResultEnvelopeUrls(value)) {
+    const classified = classifyPublicHttpUrl(url)
+    if (!classified.ok) invalid(`${name} result envelope ${classified.message}`)
+  }
+  return value
+}
+
+function normalizeCall(value, name = 'Checkpoint 工具调用', allowEntityReferences = false, version = CHECKPOINT_VERSION) {
   const raw = object(value, name)
   const recovery = text(raw.recovery, `${name} recovery`, 24)
   if (!RECOVERY_MODES.has(recovery)) invalid(`${name} recovery 无效。`)
+  if (recovery === 'journal' && version !== CHECKPOINT_VERSION_V2) invalid(`${name} journal recovery 需要 Checkpoint V2。`)
   const allowed = new Set(CALL_BASE_KEYS)
   if (recovery === 'reexecute') allowed.add('arguments')
   if (recovery === 'receipt') {
     allowed.add('receiptId')
     allowed.add('intentHash')
+  }
+  if (version === CHECKPOINT_VERSION_V2) {
+    allowed.add('phase')
+    if (recovery === 'journal') {
+      allowed.add('arguments')
+      allowed.add('resultEnvelope')
+      allowed.add('resultRef')
+    }
   }
   if (allowEntityReferences) allowed.add('entityReferences')
   exactKeys(raw, allowed, name)
@@ -184,6 +225,25 @@ function normalizeCall(value, name = 'Checkpoint 工具调用', allowEntityRefer
   } else if (recovery === 'receipt') {
     result.receiptId = text(raw.receiptId, `${name} receipt`, 240)
     result.intentHash = text(raw.intentHash, `${name} intent hash`, 160)
+  } else if (recovery === 'journal') {
+    // journal（H6B writer 使用,H6A reader 先支持）:外部读取的每 call lifecycle。
+    if (raw.arguments !== undefined) result.arguments = validateSafeJson(raw.arguments)
+    if (raw.resultEnvelope !== undefined) result.resultEnvelope = validateResultEnvelope(raw.resultEnvelope, name)
+    if (raw.resultRef !== undefined) {
+      const ref = object(raw.resultRef, `${name} resultRef`)
+      exactKeys(ref, new Set(['kind', 'id']), `${name} resultRef`)
+      const kind = text(ref.kind, `${name} resultRef kind`, 24)
+      if (!['receipt', 'artifact'].includes(kind)) invalid(`${name} resultRef 只能指向 Receipt 或 Artifact。`)
+      result.resultRef = { kind, id: text(ref.id, `${name} resultRef id`, 240) }
+    }
+  }
+  if (version === CHECKPOINT_VERSION_V2 && raw.phase !== undefined) {
+    const phase = text(raw.phase, `${name} phase`, 24)
+    if (!CALL_PHASES.has(phase)) invalid(`${name} phase 无效。`)
+    if (phase === 'completed' && recovery === 'journal' && raw.resultEnvelope === undefined && raw.resultRef === undefined) {
+      invalid(`${name} completed journal call 缺少安全结果。`)
+    }
+    result.phase = phase
   }
   if (raw.entityReferences !== undefined) {
     result.entityReferences = validateAgentToolEntityReferences(callName, raw.entityReferences)
@@ -191,7 +251,7 @@ function normalizeCall(value, name = 'Checkpoint 工具调用', allowEntityRefer
   return result
 }
 
-function normalizeCalls(value, name, seenCallIds, allowEntityReferences = false) {
+function normalizeCalls(value, name, seenCallIds, allowEntityReferences = false, version = CHECKPOINT_VERSION) {
   if (!Array.isArray(value) || value.length < 1 || value.length > MAX_CALLS_PER_STEP) {
     invalid(`${name}工具调用数量无效。`)
   }
@@ -199,6 +259,7 @@ function normalizeCalls(value, name, seenCallIds, allowEntityReferences = false)
     call,
     `${name}第 ${index + 1} 个工具调用`,
     allowEntityReferences,
+    version,
   ))
   let terminalSeen = false
   for (const [index, call] of calls.entries()) {
@@ -213,7 +274,7 @@ function normalizeCalls(value, name, seenCallIds, allowEntityReferences = false)
   return calls
 }
 
-function normalizeStep(value, expectedStep, name, seenCallIds, allowEntityReferences = false) {
+function normalizeStep(value, expectedStep, name, seenCallIds, allowEntityReferences = false, version = CHECKPOINT_VERSION) {
   const raw = object(value, name)
   exactKeys(raw, STEP_KEYS, name)
   if (!Number.isInteger(raw.step) || raw.step !== expectedStep || raw.step < 0 || raw.step >= MAX_STEPS) {
@@ -221,7 +282,21 @@ function normalizeStep(value, expectedStep, name, seenCallIds, allowEntityRefere
   }
   return {
     step: raw.step,
-    calls: normalizeCalls(raw.calls, name, seenCallIds, allowEntityReferences),
+    calls: normalizeCalls(raw.calls, name, seenCallIds, allowEntityReferences, version),
+  }
+}
+
+/** V2 全 Turn result 预算：completed envelope 合计 ≤24KiB。 */
+function assertTurnResultBudget(checkpoint) {
+  let total = 0
+  const steps = [...checkpoint.completedSteps, ...(checkpoint.pendingStep ? [checkpoint.pendingStep] : [])]
+  for (const step of steps) {
+    for (const call of step.calls) {
+      if (typeof call.resultEnvelope === 'string') total += Buffer.byteLength(call.resultEnvelope, 'utf8')
+    }
+  }
+  if (total > MAX_TURN_RESULT_BYTES) {
+    invalid('Checkpoint result envelope 合计超过 24KiB。', 'AGENT_TURN_CHECKPOINT_TOO_LARGE')
   }
 }
 
@@ -242,10 +317,12 @@ function assertCheckpointSize(checkpoint) {
 export function validateAgentTurnCheckpoint(value) {
   const raw = object(value, 'Agent Turn Checkpoint')
   exactKeys(raw, CHECKPOINT_KEYS, 'Agent Turn Checkpoint')
-  if (raw.version !== CHECKPOINT_VERSION) invalid('Agent Turn Checkpoint 版本无效。')
+  // V1 reader 保留;V2 reader（H6A）先上线,writer（H6B）后启用。
+  if (raw.version !== CHECKPOINT_VERSION && raw.version !== CHECKPOINT_VERSION_V2) invalid('Agent Turn Checkpoint 版本无效。')
+  const version = raw.version
   /** @type {AgentTurnCheckpoint} */
   const checkpoint = {
-    version: CHECKPOINT_VERSION,
+    version,
     attempt: normalizeAttempt(raw.attempt),
     completedSteps: [],
   }
@@ -254,7 +331,7 @@ export function validateAgentTurnCheckpoint(value) {
   }
   const seenCallIds = new Set()
   checkpoint.completedSteps = raw.completedSteps.map((step, index) => (
-    normalizeStep(step, index, `Checkpoint 已完成步骤 ${index}`, seenCallIds, true)
+    normalizeStep(step, index, `Checkpoint 已完成步骤 ${index}`, seenCallIds, true, version)
   ))
   if (raw.pendingStep !== undefined) {
     if (checkpoint.completedSteps.length >= MAX_STEPS) invalid('Agent Turn Checkpoint 已达步骤上限。')
@@ -263,7 +340,20 @@ export function validateAgentTurnCheckpoint(value) {
       checkpoint.completedSteps.length,
       'Checkpoint pending 步骤',
       seenCallIds,
+      version === CHECKPOINT_VERSION_V2,
+      version,
     )
+  }
+  if (version === CHECKPOINT_VERSION_V2) {
+    // V2 终态 call 只能出现在 completedSteps;pendingStep 允许 prepared/dispatched/终态混合。
+    for (const step of checkpoint.completedSteps) {
+      for (const call of step.calls) {
+        if (call.phase !== undefined && ['prepared', 'dispatched'].includes(call.phase)) {
+          invalid('Checkpoint 已完成步骤不得包含未收束的 call。')
+        }
+      }
+    }
+    assertTurnResultBudget(checkpoint)
   }
   if (raw.terminalContent !== undefined) {
     if (checkpoint.pendingStep) invalid('Terminal Checkpoint 不能同时包含 pending 步骤。')
@@ -308,19 +398,61 @@ export function prepareAgentTurnCheckpoint(previous, input) {
   if (!Number.isInteger(input?.step) || input.step !== checkpoint.completedSteps.length || input.step >= MAX_STEPS) {
     invalid('Checkpoint prepared 步骤与已完成游标不匹配。')
   }
+  // journal call（H6B）进入 pendingStep 即写 V2;一旦升到 V2 不再降回 V1。
+  const requestedVersion = (Array.isArray(input?.calls) && input.calls.some((call) => call?.recovery === 'journal'))
+    || checkpoint.version === CHECKPOINT_VERSION_V2
+    ? CHECKPOINT_VERSION_V2
+    : CHECKPOINT_VERSION
   const calls = normalizeCalls(input?.calls, 'Checkpoint prepared 步骤', new Set(
     checkpoint.completedSteps.flatMap((step) => step.calls.map((call) => call.id)),
-  ))
+  ), false, requestedVersion)
   if (checkpoint.pendingStep) {
     if (checkpoint.pendingStep.step === input.step
-      && canonicalHash(checkpoint.pendingStep.calls) === canonicalHash(calls)) return checkpoint
+      && canonicalHash(checkpoint.pendingStep.calls.map(journalCallIdentity)) === canonicalHash(calls.map(journalCallIdentity))) return checkpoint
     invalid('Checkpoint 已有不同的 pending 步骤。', 'AGENT_TURN_CHECKPOINT_MISMATCH')
   }
   return validateAgentTurnCheckpoint({
-    version: CHECKPOINT_VERSION,
+    version: requestedVersion,
     attempt: currentAttempt,
     completedSteps: checkpoint.completedSteps,
     pendingStep: { step: input.step, calls },
+  })
+}
+
+/** journal lifecycle 字段不参与 prepared↔completed 的调用一致性比较。 */
+function journalCallIdentity(call) {
+  const { entityReferences, phase, resultEnvelope, resultRef, ...identity } = call
+  void entityReferences; void phase; void resultEnvelope; void resultRef
+  return identity
+}
+
+/**
+ * H6B：pendingStep 中单个 journal call 的 lifecycle 提交。
+ * dispatched 在请求交给 client 前持久化;completed 携带与模型 history 完全一致的
+ * envelope。逐 call 提交,不等整步收束。
+ */
+export function journalAgentTurnCheckpointCall(previous, input) {
+  const checkpoint = validateAgentTurnCheckpoint(previous)
+  if (!checkpoint.pendingStep) invalid('Checkpoint 没有 pending 步骤，无法提交 journal lifecycle。', 'AGENT_TURN_CHECKPOINT_MISMATCH')
+  const callId = text(input?.callId, 'journal call 标识', 160)
+  const phase = text(input?.phase, 'journal phase', 24)
+  if (!CALL_PHASES.has(phase) || phase === 'prepared') invalid('journal phase 无效。')
+  const index = checkpoint.pendingStep.calls.findIndex((call) => call.id === callId)
+  if (index < 0) invalid('journal call 不在 pending 步骤中。', 'AGENT_TURN_CHECKPOINT_MISMATCH')
+  const target = checkpoint.pendingStep.calls[index]
+  if (target.recovery !== 'journal') invalid('只有 journal call 可以提交逐调用 lifecycle。')
+  const updated = {
+    ...target,
+    phase,
+    ...(input?.resultEnvelope !== undefined ? { resultEnvelope: input.resultEnvelope } : {}),
+    ...(input?.resultRef !== undefined ? { resultRef: input.resultRef } : {}),
+  }
+  const calls = checkpoint.pendingStep.calls.map((call, callIndex) => (callIndex === index ? updated : call))
+  return validateAgentTurnCheckpoint({
+    version: CHECKPOINT_VERSION_V2,
+    attempt: checkpoint.attempt,
+    completedSteps: checkpoint.completedSteps,
+    pendingStep: { step: checkpoint.pendingStep.step, calls },
   })
 }
 
@@ -336,22 +468,23 @@ export function completeAgentTurnCheckpoint(prepared, input) {
     ? checkpoint.completedSteps
     : checkpoint.completedSteps.slice(0, -1)
   const previousIds = new Set(identitySteps.flatMap((step) => step.calls.map((call) => call.id)))
-  const calls = normalizeCalls(input?.calls, 'Checkpoint completed 步骤', previousIds, true)
+  const calls = normalizeCalls(input?.calls, 'Checkpoint completed 步骤', previousIds, true, checkpoint.version)
   if (!checkpoint.pendingStep) {
     const latest = checkpoint.completedSteps.at(-1)
     if (latest && canonicalHash(latest.calls) === canonicalHash(calls)) return checkpoint
     invalid('Checkpoint 没有可完成的 pending 步骤。', 'AGENT_TURN_CHECKPOINT_MISMATCH')
   }
-  const callIdentity = (call) => {
-    const { entityReferences, ...identity } = call
-    void entityReferences
-    return identity
-  }
-  if (canonicalHash(checkpoint.pendingStep.calls) !== canonicalHash(calls.map(callIdentity))) {
+  if (canonicalHash(checkpoint.pendingStep.calls.map(journalCallIdentity)) !== canonicalHash(calls.map(journalCallIdentity))) {
     invalid('Checkpoint completed 调用与 prepared 调用不一致。', 'AGENT_TURN_CHECKPOINT_MISMATCH')
   }
+  // journal call 的终态必须在收束前提交:completed 步骤不允许仍处 prepared/dispatched 的 call。
+  for (const call of calls) {
+    if (call.recovery === 'journal' && (call.phase === undefined || ['prepared', 'dispatched'].includes(call.phase))) {
+      invalid('journal call 尚未收束，不能完成该步骤。', 'AGENT_TURN_CHECKPOINT_MISMATCH')
+    }
+  }
   return validateAgentTurnCheckpoint({
-    version: CHECKPOINT_VERSION,
+    version: checkpoint.version,
     attempt: checkpoint.attempt,
     completedSteps: [
       ...checkpoint.completedSteps,
@@ -376,7 +509,8 @@ export function terminalAgentTurnCheckpoint(previous, input) {
     invalid('Checkpoint 已有不同的终态内容。', 'AGENT_TURN_CHECKPOINT_MISMATCH')
   }
   return validateAgentTurnCheckpoint({
-    version: CHECKPOINT_VERSION,
+    // 保留既有版本:V2 checkpoint 带 journal call,降级到 V1 会让终态校验拒绝自己。
+    version: checkpoint.version,
     attempt: currentAttempt,
     completedSteps: checkpoint.completedSteps,
     terminalContent: content,

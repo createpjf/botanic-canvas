@@ -2,10 +2,13 @@ import { agentToolCallSummary, appendAgentReasoning, extractProviderReasoning } 
 import { presentationWebSources } from './agentWebResearch.mjs'
 import {
   completeAgentTurnCheckpoint,
+  agentTurnCheckpointResultEnvelopeUrls,
+  journalAgentTurnCheckpointCall,
   prepareAgentTurnCheckpoint,
   terminalAgentTurnCheckpoint,
   validateAgentTurnCheckpoint,
 } from './agentTurnCheckpoint.mjs'
+import { assertPublicHttpsUrl } from './webEgressGuard.mjs'
 import { canonicalHash } from './canonicalHash.mjs'
 import { estimateAgentContextTokens, truncateAgentContextText } from './agentContextBudget.mjs'
 import { extractAgentEntityReferences, mergeAgentEntityReferences } from './agentEntityReferences.mjs'
@@ -14,7 +17,7 @@ import { withBotanicSpan } from './executionTelemetry.mjs'
 import { normalizeAgentToolCallId } from './agentToolCallIdentity.mjs'
 
 const TOOL_NAME = /^[a-z][a-z0-9_]{1,63}$/
-const TOOL_RECOVERY_MODES = new Set(['reexecute', 'receipt', 'never'])
+const TOOL_RECOVERY_MODES = new Set(['reexecute', 'receipt', 'never', 'journal'])
 const MODEL_TOOL_CALL_LIMIT = 16
 const MODEL_TOOL_CALL_TOTAL_LIMIT = 64
 /** 连续相同工具签名达到此次数时发时间线警告；再打到终止阈值则停手。 */
@@ -543,6 +546,8 @@ export async function runAgentToolLoop({
   resumeCheckpoint,
   saveCheckpoint,
   recoverToolCall,
+  recoverJournalResult,
+  checkpointUrlLookup = /** @type {((hostname: string) => Promise<string[]>) | undefined} */ (undefined),
   modelContext = undefined,
   maxOutputTokens = undefined,
   trigger = 'pre_step',
@@ -701,7 +706,9 @@ export async function runAgentToolLoop({
     return true
   }
 
-  const appendToolOutput = (entry, output) => {
+  // 先按预算生成最终 envelope,再把同一字符串同时交给 checkpoint（journal call）与模型
+  // history（H6G 规则 4）。计算与追加之间不得插入其他输出。
+  const prepareToolOutput = (entry, output) => {
     const serialized = serializedOutput(output)
     const compactContent = compactToolOutputEnvelope(entry, serialized, 'cumulative_budget')
     const compactTokens = estimateAgentContextTokens(compactContent)
@@ -734,11 +741,17 @@ export async function runAgentToolLoop({
         serialized,
       }
     }
+    return bounded
+  }
+
+  const appendPreparedToolOutput = (entry, bounded) => {
     const conversationIndex = conversation.length
     conversation.push({ role: 'tool', tool_call_id: entry.trace.id, name: entry.trace.name, content: bounded.content })
     toolOutputTokens += bounded.tokens
     toolOutputRecords.push({ ...bounded, entry, conversationIndex })
   }
+
+  const appendToolOutput = (entry, output) => appendPreparedToolOutput(entry, prepareToolOutput(entry, output))
 
   const traceFor = (tool, call, step, index, rawArguments) => {
     const summary = rawArguments ? agentToolCallSummary(rawArguments) : undefined
@@ -815,8 +828,9 @@ export async function runAgentToolLoop({
       risk: tool.risk,
       recovery: tool.recovery,
       terminal: tool.terminal,
-      ...(tool.recovery === 'reexecute' ? { arguments: structuredClone(rawArguments) } : {}),
+      ...(tool.recovery === 'reexecute' || tool.recovery === 'journal' ? { arguments: structuredClone(rawArguments) } : {}),
       ...(tool.recovery === 'receipt' ? receiptIdentity(tool, call, trace, rawArguments) : {}),
+      ...(tool.recovery === 'journal' ? { phase: 'prepared' } : {}),
     }
     return { call, tool, rawArguments, validatedInput, trace, descriptor }
   }
@@ -901,6 +915,13 @@ export async function runAgentToolLoop({
           409,
         )
       }
+      if (call.recovery === 'journal' && call.phase === 'completed' && call.resultRef && typeof recoverJournalResult !== 'function') {
+        throw new AgentToolRuntimeError(
+          'AGENT_TURN_NOT_REPLAYABLE',
+          `Agent 工具 ${call.name} 缺少结果引用恢复能力。`,
+          409,
+        )
+      }
     }
   }
 
@@ -909,6 +930,45 @@ export async function runAgentToolLoop({
     assertRecoverableStep(stepCheckpoint)
     return stepCheckpoint.calls.map((call, index) => {
       const tool = registry.get(call.name)
+      // journal（H6B）：durable lifecycle 决定恢复方式,不用进程内记忆猜测。
+      // - completed:直接复用安全 envelope,不联网、不重新扣配额;
+      // - prepared:有证据未 dispatch,允许按参数重执行;
+      // - dispatched/unknown:已派发无可靠结果,禁止自动重放。
+      if (call.recovery === 'journal') {
+        if (call.phase === 'completed' && typeof call.resultEnvelope === 'string') {
+          const trace = traceFor(tool, { id: call.id }, stepCheckpoint.step, index, call.arguments)
+          return { tool, rawArguments: call.arguments, trace, descriptor: call, recovering: true, referencesFromCheckpoint, reuseEnvelope: call.resultEnvelope }
+        }
+        if (call.phase === 'completed' && call.resultRef) {
+          const trace = traceFor(tool, { id: call.id }, stepCheckpoint.step, index, call.arguments)
+          return { tool, rawArguments: call.arguments, trace, descriptor: call, recovering: true, referencesFromCheckpoint, recoverResultRef: true }
+        }
+        if (call.phase === 'failed' || call.phase === 'aborted') {
+          const trace = traceFor(tool, { id: call.id }, stepCheckpoint.step, index, call.arguments)
+          const aborted = call.phase === 'aborted'
+          return {
+            tool, rawArguments: call.arguments, trace, descriptor: call, recovering: true, referencesFromCheckpoint,
+            reuseEnvelope: JSON.stringify({ ok: false, code: aborted ? 'AGENT_TOOL_ABORTED' : 'AGENT_TOOL_FAILED', error: aborted ? '工具调用已中止。' : '工具执行失败。' }),
+            reuseStatus: call.phase,
+          }
+        }
+        if (call.phase === undefined || call.phase === 'prepared') {
+          const rawArguments = structuredClone(call.arguments)
+          const trace = traceFor(tool, { id: call.id }, stepCheckpoint.step, index, rawArguments)
+          let validatedInput
+          try {
+            validatedInput = tool.validate(withoutReason(rawArguments), { ...context, toolCallId: call.id })
+          } catch (caught) {
+            throw knownPreEffectFailure(caught)
+          }
+          return { tool, rawArguments, validatedInput, trace, descriptor: call, recovering: true, referencesFromCheckpoint }
+        }
+        throw new AgentToolRuntimeError(
+          'AGENT_TOOL_OUTCOME_UNKNOWN',
+          `Agent 工具 ${call.name} 已派发但结果未知，系统不会自动重放。`,
+          409,
+        )
+      }
       const rawArguments = call.recovery === 'reexecute' ? structuredClone(call.arguments) : undefined
       const trace = traceFor(tool, { id: call.id }, stepCheckpoint.step, index, rawArguments)
       let validatedInput
@@ -986,6 +1046,42 @@ export async function runAgentToolLoop({
           ...(runningPresentation ? { presentation: runningPresentation } : {}),
         })
       }
+      // journal completed 恢复:复用 durable envelope,不再执行工具、不重新扣配额。
+      if (entry.reuseEnvelope !== undefined) {
+        for (const url of agentTurnCheckpointResultEnvelopeUrls(entry.reuseEnvelope)) {
+          const classified = await withinExecutionBoundary(() => assertPublicHttpsUrl(
+            url,
+            checkpointUrlLookup ? { lookup: checkpointUrlLookup } : {},
+          ))
+          if (!classified.ok) {
+            throw new AgentToolRuntimeError('AGENT_TURN_CHECKPOINT_INVALID', classified.message, 409)
+          }
+        }
+        const reused = { ...trace, status: entry.reuseStatus ?? 'succeeded' }
+        toolCalls.push(reused)
+        appendPreparedToolOutput(entry, {
+          content: entry.reuseEnvelope,
+          tokens: estimateAgentContextTokens(entry.reuseEnvelope),
+          compact: false,
+          serialized: entry.reuseEnvelope,
+        })
+        continue
+      }
+      if (entry.recoverResultRef) {
+        const output = await withinExecutionBoundary(() => recoverJournalResult({
+          step,
+          resultRef: structuredClone(entry.descriptor.resultRef),
+          toolCall: structuredClone(entry.descriptor),
+          context,
+        }))
+        toolCalls.push({ ...trace, status: 'succeeded' })
+        appendToolOutput(entry, output)
+        continue
+      }
+      // journal（H6B）:请求交给 client 前先 durable 写 dispatched;此后不能再假设「没执行」。
+      if (checkpointing && entry.descriptor.recovery === 'journal' && !entry.recovering) {
+        await persistCheckpoint(journalAgentTurnCheckpointCall(checkpoint, { callId: trace.id, phase: 'dispatched' }))
+      }
       let output
       try {
         output = await withinExecutionBoundary((activeSignal) => withBotanicSpan(`execute_tool ${trace.name}`, {
@@ -1045,6 +1141,11 @@ export async function runAgentToolLoop({
         }
         const failedOutput = { ok: false, error, code: caught.code }
         toolCalls.push(failed)
+        if (checkpointing && entry.descriptor.recovery === 'journal' && !entry.recovering) {
+          // 已知失败也是终局:durable 记 failed,恢复不再重放这次调用。
+          await persistCheckpoint(journalAgentTurnCheckpointCall(checkpoint, { callId: trace.id, phase: 'failed' }))
+          entry.completedDescriptor = { ...entry.completedDescriptor, phase: 'failed' }
+        }
         appendToolOutput(entry, failedOutput)
         noteToolProgress(entry, failedOutput, { isError: true, emitEvents })
         continue
@@ -1071,6 +1172,23 @@ export async function runAgentToolLoop({
       if (tool.terminal) {
         terminalOutput = output
         terminalSucceeded = true
+        continue
+      }
+      if (checkpointing && entry.descriptor.recovery === 'journal') {
+        // H6G 规则 4:先按剩余预算生成最终 envelope,同一字符串先 durable 进 checkpoint,
+        // commit 成功后才进入模型 history/下一次 sampling。
+        const bounded = prepareToolOutput(entry, output)
+        await persistCheckpoint(journalAgentTurnCheckpointCall(checkpoint, {
+          callId: trace.id,
+          phase: 'completed',
+          resultEnvelope: bounded.content,
+        }))
+        entry.completedDescriptor = {
+          ...entry.completedDescriptor,
+          phase: 'completed',
+          resultEnvelope: bounded.content,
+        }
+        appendPreparedToolOutput(entry, bounded)
         continue
       }
       appendToolOutput(entry, output)

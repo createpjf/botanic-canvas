@@ -1505,3 +1505,123 @@ test('preflight repair 一次配对结果,同签名第二次与 A/B 环都有界
   )
   assert.equal(cycleRounds, 4, 'A→B→A→B 在第 4 个重复签名处终止')
 })
+
+test('journal 恢复:post-result 崩溃后复用 durable envelope,fetch 只发生一次', async () => {
+  let fetches = 0
+  const registry = createAgentToolRegistry([{
+    name: 'web_probe_read', label: '外部读取', risk: 'external', recovery: 'journal',
+    description: '测试外部读取。',
+    parameters: { type: 'object', additionalProperties: false, properties: { url: { type: 'string' } }, required: ['url'] },
+    validate: (input) => ({ url: input.url }),
+    execute: async (input) => { fetches += 1; return { url: input.url, text: '正文内容' } },
+  }])
+  const attempt = { id: 'attempt-j', model: 'model-a', snapshotHash: 'hash-j' }
+  const checkpoints = []
+  const call = { id: 'call-journal-1', type: 'function', function: { name: 'web_probe_read', arguments: JSON.stringify({ url: 'https://example.com/a' }) } }
+  // 第一次执行:completed envelope durable 后、下一次模型调用前进程"崩溃"(模型抛错模拟)。
+  await assert.rejects(runAgentToolLoop({
+    registry, messages: [], maximumSteps: 2, attempt,
+    saveCheckpoint: async (checkpoint) => { checkpoints.push(structuredClone(checkpoint)) },
+    callModel: async ({ step }) => {
+      if (step === 0) return { choices: [{ message: { tool_calls: [call] } }] }
+      throw new Error('CRASH_BEFORE_NEXT_MODEL')
+    },
+  }))
+  assert.equal(fetches, 1)
+  const durable = checkpoints.at(-1)
+  assert.equal(durable.version, 2)
+  const journaled = durable.completedSteps[0].calls[0]
+  assert.equal(journaled.phase, 'completed')
+  const envelope = journaled.resultEnvelope
+  assert.ok(envelope.includes('正文内容'), '同一 envelope 字符串进 checkpoint')
+  // 恢复:复用 durable result,不再联网;模型看到与 checkpoint 完全相同的字符串。
+  let modelSawEnvelope
+  const recovered = await runAgentToolLoop({
+    registry, messages: [], maximumSteps: 2, attempt,
+    resumeCheckpoint: durable,
+    checkpointUrlLookup: async () => ['93.184.216.34'],
+    saveCheckpoint: async (checkpoint) => { checkpoints.push(structuredClone(checkpoint)) },
+    callModel: async ({ messages }) => {
+      modelSawEnvelope = messages.find((message) => message.role === 'tool')?.content
+      return { choices: [{ message: { content: '综合完成' } }] }
+    },
+  })
+  assert.equal(recovered.output, '综合完成')
+  assert.equal(fetches, 1, '恢复不得第二次 fetch')
+  assert.equal(modelSawEnvelope, envelope, '模型 history 与 checkpoint 使用同一字符串')
+
+  await assert.rejects(runAgentToolLoop({
+    registry, messages: [], maximumSteps: 2, attempt,
+    resumeCheckpoint: durable,
+    checkpointUrlLookup: async () => ['10.0.0.8'],
+    saveCheckpoint: async () => {},
+    callModel: async () => { throw new Error('私网结果不得进入模型') },
+  }), (caught) => caught.code === 'AGENT_TURN_CHECKPOINT_INVALID')
+  assert.equal(fetches, 1, '私网解析失败时也不得重放工具')
+
+  let recoveredRef
+  const refAttempt = { id: 'attempt-ref', model: 'model-a', snapshotHash: 'hash-ref' }
+  const refResult = await runAgentToolLoop({
+    registry, messages: [], maximumSteps: 2, attempt: refAttempt,
+    resumeCheckpoint: {
+      version: 2, attempt: refAttempt,
+      completedSteps: [{ step: 0, calls: [{
+        id: 'call-ref', name: 'web_probe_read', risk: 'external', recovery: 'journal', terminal: false,
+        phase: 'completed', arguments: { url: 'https://example.com/ref' }, resultRef: { kind: 'artifact', id: 'artifact-1' },
+      }] }],
+    },
+    recoverJournalResult: async ({ resultRef }) => ({ artifactId: resultRef.id, kind: resultRef.kind }),
+    saveCheckpoint: async () => {},
+    callModel: async ({ messages }) => {
+      recoveredRef = JSON.parse(messages.find((message) => message.role === 'tool').content)
+      return { choices: [{ message: { content: '引用恢复完成' } }] }
+    },
+  })
+  assert.equal(refResult.output, '引用恢复完成')
+  assert.deepEqual(recoveredRef, { artifactId: 'artifact-1', kind: 'artifact' })
+  assert.equal(fetches, 1, 'resultRef 恢复不得执行原工具')
+})
+
+test('journal 恢复:pre-dispatch 可重执行,post-dispatch 无结果收口 outcome-unknown 且不再 fetch', async () => {
+  let fetches = 0
+  const registry = createAgentToolRegistry([{
+    name: 'web_probe_read', label: '外部读取', risk: 'external', recovery: 'journal',
+    description: '测试外部读取。',
+    parameters: { type: 'object', additionalProperties: false, properties: { url: { type: 'string' } }, required: ['url'] },
+    validate: (input) => ({ url: input.url }),
+    execute: async (input) => { fetches += 1; return { url: input.url, text: '正文' } },
+  }])
+  const attempt = { id: 'attempt-j2', model: 'model-a', snapshotHash: 'hash-j2' }
+  const journalCall = (phase) => ({
+    version: 2, attempt,
+    completedSteps: [],
+    pendingStep: {
+      step: 0,
+      calls: [{
+        id: 'call-j', name: 'web_probe_read', risk: 'external', recovery: 'journal', terminal: false,
+        arguments: { url: 'https://example.com/x' },
+        ...(phase ? { phase } : {}),
+      }],
+    },
+  })
+  // pre-dispatch(prepared):有证据未派发,按策略重执行。
+  const resumed = await runAgentToolLoop({
+    registry, messages: [], maximumSteps: 2, attempt,
+    resumeCheckpoint: journalCall('prepared'),
+    saveCheckpoint: async () => {},
+    callModel: async () => ({ choices: [{ message: { content: '完成' } }] }),
+  })
+  assert.equal(resumed.output, '完成')
+  assert.equal(fetches, 1)
+  // post-dispatch(dispatched):禁止自动重放,收口 AGENT_TOOL_OUTCOME_UNKNOWN。
+  await assert.rejects(
+    runAgentToolLoop({
+      registry, messages: [], maximumSteps: 2, attempt,
+      resumeCheckpoint: journalCall('dispatched'),
+      saveCheckpoint: async () => {},
+      callModel: async () => { throw new Error('不应再调模型') },
+    }),
+    (caught) => caught.code === 'AGENT_TOOL_OUTCOME_UNKNOWN',
+  )
+  assert.equal(fetches, 1, 'dispatched 恢复不得再次 fetch')
+})

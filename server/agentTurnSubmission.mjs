@@ -14,6 +14,7 @@ import { requireProjectPermission } from './projectAuthorization.mjs'
 import { projectPermissionDecision } from './authorization.mjs'
 import { createAgentOperationalReaders } from './agentOperationalReaders.mjs'
 import { assertAgentTargetBinding, createAgentTargetBinding } from './agentTargetBinding.mjs'
+import { freezeBotanicAgentSkillCatalog } from './botanicAgentTools.mjs'
 
 export function configuredAgentGenerationModels(config) {
   return (config?.modelOptions ?? []).map((model) => ({
@@ -295,7 +296,13 @@ export function createAgentTurnSubmission({
         }
       }
       if (!recoveredStoredRequest) {
-        canonicalInput = { ...canonicalInput, generationModels: configuredAgentGenerationModels(config) }
+        canonicalInput = {
+          ...canonicalInput,
+          generationModels: configuredAgentGenerationModels(config),
+          // Skill Loader V2（H5）：新 Turn 的 durable request 冻结 Skill catalog——
+          // 内置 Skill 完整语义 snapshot + 项目 Skill metadata binding。恢复只读该冻结值。
+          skillCatalogSnapshot: freezeBotanicAgentSkillCatalog(projectSkills),
+        }
       }
       const mediaResolver = resolveVisionMedia?.(userId, validatedInput.projectId)
       if (canonicalInput.hasTarget && !canonicalInput.targetBinding) {

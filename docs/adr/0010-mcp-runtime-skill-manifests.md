@@ -48,6 +48,19 @@
   Supabase 必须先执行 `20260828220000_agent_skill_atomic_persistence.sql`，由单个 RPC 在同一事务内持锁、重算
   canonical hash、验证无间隙历史并写入审计。缺少 RPC 时 Adapter fail closed，不回退 read-then-upsert。
 
+### 5. 挂载 fail-closed 与 Turn 冻结 catalog（2026-09-01，Harness H1/H5）
+
+- 挂载解析 fail-closed：未知 ID、依赖缺失/环/版本冲突、依赖图越界（深 8/节点 64）、聚合预算超限
+  （`min(4000, 25%·maxInputTokens)`）都在 Provider 调用前以具名 `AGENT_SKILL_*` 错误收口；
+  不再静默丢弃、裁剪到 8 个或截断 2000 字正文。依赖 closure 按 dependency-first 拓扑序完整注入，diamond 只注入一次。
+- 两阶段加载：新 Turn 的 durable request 冻结 `skillCatalogSnapshot`——内置 Skill 无版本历史，
+  完整语义 snapshot 一次冻结（catalog ≤128 项、序列化 ≤64KB，越界具名失败）；项目 Skill 只存
+  metadata binding（id/version/contentHash），正文继续由不可变版本历史承载。`skill_search` 消费同一冻结投影。
+- 恢复 binding：recovery 优先读取 Turn 自身冻结 catalog；当前版本漂移时从版本历史读原正文，
+  历史缺失或 hash 不一致报 `AGENT_SKILL_SNAPSHOT_MISMATCH`，不得用当前 catalog 静默替换。
+  `skillCatalogSnapshot` 在 request 快照内，因此 request hash（v2）覆盖冻结 bundle identity。
+  旧 Turn 没有该字段时保留旧 reader 行为。
+
 ## 兼容与迁移
 
 - 未声明 version 的存量 MCP 配置归一为 `1`；未声明 Schema 的配置暂用开放对象契约。新配置必须收紧 Schema。

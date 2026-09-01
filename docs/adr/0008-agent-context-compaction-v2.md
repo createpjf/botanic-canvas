@@ -119,6 +119,12 @@ Provider 原始 response body、`reasoning_content`、analysis、完整工具结
 Index。`AGENT_RAW_REASONING=true` 只允许当轮实时下发原始推理，仍不得落盘。Context 持久层递归拒绝
 原始推理字段；checkpoint 还要脱敏凭据、data URL、媒体引用与外部链接，并受长度上限约束。
 
+**2026-09-01 H6G 修订（维护者批准）**：Turn Checkpoint V2 允许保存**实际送给模型的、已规范化脱敏的
+read/external result envelope**（单 call ≤8KiB、全 Turn ≤24KiB），以及经现有 web 安全校验、去凭据的公开
+HTTPS source URL；模型与 checkpoint 必须使用同一 envelope 字符串。raw Provider body、reasoning、媒体字节、
+Data URL、私有 URL 与凭据继续绝对禁止。该修订只作用于 Turn Checkpoint 的 journal call；Context V2
+state/ledger/Snapshot 的禁令不变。
+
 Provider body 只在进程内解析为标准 usage；可持久化的是经过验证的 Usage Anchor，不是原始回包。
 
 ## 发布与 staging migration gate

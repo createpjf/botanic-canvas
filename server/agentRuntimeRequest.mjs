@@ -5,6 +5,7 @@ import { planBotanicGeneration } from './botanicAgentPlanner.mjs'
 import { chatWithBotanicAgent } from './botanicAgentChat.mjs'
 import { resolveBotanicAgentTurn } from './botanicAgentTurn.mjs'
 import { bindAgentModelContextOptions } from './agentModelContextBinding.mjs'
+import { pinnedBotanicAgentProjectSkills } from './botanicAgentTools.mjs'
 
 const COMPATIBILITY_OPERATIONS = new Set(['plan', 'chat', 'intent'])
 
@@ -28,7 +29,11 @@ function runtimeInput(request, options) {
       statusCode: 409,
     })
   }
-  const projectSkills = (options?.projectSkills ?? []).map(plannerSkillInput)
+  // Skill Loader V2（H5）：pin 必须发生在 plannerSkillInput 裁剪之前——完整 Store 对象
+  // 才带 versions 历史;冻结 binding 与当前版本漂移时从历史读取,缺失/hash 不一致
+  // fail closed(AGENT_SKILL_SNAPSHOT_MISMATCH),不得用当前 catalog 静默替换。
+  const pinned = pinnedBotanicAgentProjectSkills(source.skillCatalogSnapshot, options?.projectSkills ?? [])
+  const projectSkills = pinned.map(plannerSkillInput)
   return {
     ...structuredClone(source),
     ...(projectSkills.length ? { projectSkills } : {}),
