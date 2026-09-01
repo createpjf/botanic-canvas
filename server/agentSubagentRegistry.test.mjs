@@ -34,7 +34,7 @@ test('Subagent Registry 只暴露服务端只读定义，画布投影剔除媒�
   assert.doesNotMatch(JSON.stringify(output), /base64|private prompt/u)
 })
 
-test('联网工具若启用则固定 recovery=never，并共用服务端配额', async () => {
+test('联网工具沿用 canonical journal 恢复语义，并共用服务端配额', async () => {
   const quotas = []
   const { registry } = await createAgentSubagentProjectRegistry({
     productStore: { async readProject() { return { document: { nodes: [], edges: [] } } } },
@@ -44,8 +44,10 @@ test('联网工具若启用则固定 recovery=never，并共用服务端配额',
     consumeWebResearchQuota: async (userId) => { quotas.push(userId); return { allowed: true } },
   })
 
-  assert.equal(registry.get('web_search')?.recovery, 'never')
-  assert.equal(registry.get('web_fetch')?.recovery, 'never')
+  // journal(H6B):completed 复用 durable envelope,dispatched 无结果收口 outcome-unknown;
+  // 与根 Turn/Chat/Planner 同一语义,不再按入口分叉。
+  assert.equal(registry.get('web_search')?.recovery, 'journal')
+  assert.equal(registry.get('web_fetch')?.recovery, 'journal')
   // 不真实调用 Provider；Registry 内闭包已经绑定同一 userId 的 quota seam。
   assert.deepEqual(quotas, [])
 })

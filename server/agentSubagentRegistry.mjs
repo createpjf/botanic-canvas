@@ -78,9 +78,9 @@ export async function createAgentSubagentProjectRegistry({
           : undefined,
       }
     : undefined
+  // 外部读取沿用 canonical journal 恢复语义(H6B),与根 Turn/Chat/Planner 一致;
+  // completed 复用 durable envelope,dispatched 无结果收口 outcome-unknown,绝不重复外呼。
   const webTools = createBotanicAgentWebResearchTools(webResearch)
-    // external 读取在首次执行时允许，但崩溃恢复绝不重复外呼。
-    .map((definition) => ({ ...definition, recovery: 'never' }))
   const registry = createAgentToolRegistry([
     canvasReadDefinition(project.document),
     ...createBotanicAgentOperationalToolDefinitions(operations),

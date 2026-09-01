@@ -569,9 +569,9 @@ function turnToolRegistry(input, { ontology, memory, skills, webResearch, operat
     // 运维只读工具：让模型用真实实体状态回答任务/评审/交付问题，而不是从对话里猜。
     // 没有注入读取器时不暴露，因此对话与规划链路不受影响。
     ...createBotanicAgentOperationalToolDefinitions(operations),
-    // 联网读取会消耗额度且返回内容没有 durable cache/receipt；中断后无法证明原调用
-    // 是否完成，因此不能自动重做。保留 external 风险并显式声明 never。
-    ...createBotanicAgentWebResearchTools(webResearch).map((tool) => ({ ...tool, recovery: 'never' })),
+    // 外部读取按 canonical journal 恢复(H6B):prepared 可重执行、completed 复用
+    // durable envelope、dispatched 无结果收口 outcome-unknown。不再覆盖为 never。
+    ...createBotanicAgentWebResearchTools(webResearch),
     // 没有生图目录就不暴露出图工具：识图/问答回合不得带着 generate_images。
     ...(imageModels(input.generationModels).length ? [generateImagesTool(input, targetVision), decomposeCreativeBriefTool(input)] : []),
     // 目录里没有视频模型时不暴露视频工具，模型也就不会声称能做视频。
