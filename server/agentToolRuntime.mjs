@@ -689,6 +689,8 @@ export async function runAgentToolLoop({
   }
   // 无进展检测只覆盖本 attempt 新执行的工具；恢复历史步骤不计入。
   const noProgress = createAgentToolNoProgressDetector()
+  // duplicate_dispatch guard（H7 0B）:本次 loop 执行内已到达派发边界的 journal call id。
+  const dispatchedJournalCallIds = new Set()
 
   const persistCheckpoint = async (next) => {
     if (!checkpointing) return
@@ -1091,6 +1093,19 @@ export async function runAgentToolLoop({
         continue
       }
       // journal（H6B）:请求交给 client 前先 durable 写 dispatched;此后不能再假设「没执行」。
+      if (entry.descriptor.recovery === 'journal') {
+        // duplicate_dispatch guard（H7 0B）:同一 call id 在本次执行内第二次到达派发
+        // 边界说明恢复/编排出错。先 emit 零容忍事件再具名失败,绝不二次外呼。
+        if (dispatchedJournalCallIds.has(trace.id)) {
+          emitHarness('recovery', 'duplicate_dispatch', { step, reason: 'AGENT_TOOL_DUPLICATE_DISPATCH' })
+          throw new AgentToolRuntimeError(
+            'AGENT_TOOL_DUPLICATE_DISPATCH',
+            `Agent 工具 ${trace.name} 的同一调用被重复派发，已停止执行。`,
+            409,
+          )
+        }
+        dispatchedJournalCallIds.add(trace.id)
+      }
       if (checkpointing && entry.descriptor.recovery === 'journal' && !entry.recovering) {
         await persistCheckpoint(journalAgentTurnCheckpointCall(checkpoint, { callId: trace.id, phase: 'dispatched' }))
       }

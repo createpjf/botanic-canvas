@@ -33,7 +33,18 @@ for (const source of sources) {
 
 const metrics = aggregateOperationalMetrics(events)
 const { harness } = metrics
-console.log(JSON.stringify({ sampleCount: metrics.sampleCount, harness }, null, 2))
+// producer coverage(H7 0B):区分「有生产 emit 点、值为 0」与「尚无 producer,0 不可信」。
+// provider.retry 保持 H3C Gate 关闭;call_timeout 由 Change Set 1 的 Provider owner 提供。
+const producerCoverage = {
+  startedAfterCancelCount: 'active',
+  completedAfterCancelCount: 'active',
+  duplicateDispatchCount: 'active',
+  cancelP50LatencyMs: 'active',
+  cancelP95LatencyMs: 'active',
+  providerCallTimeoutCount: 'pending_provider_module',
+  providerRetryCount: 'retry_policy_disabled',
+}
+console.log(JSON.stringify({ sampleCount: metrics.sampleCount, producerCoverage, harness }, null, 2))
 
 const violations = [
   ['startedAfterCancelCount', harness.startedAfterCancelCount],
