@@ -391,19 +391,61 @@ export function prepareAgentTurnCheckpoint(previous, input) {
   if (!Number.isInteger(input?.step) || input.step !== checkpoint.completedSteps.length || input.step >= MAX_STEPS) {
     invalid('Checkpoint prepared 步骤与已完成游标不匹配。')
   }
+  // journal call（H6B）进入 pendingStep 即写 V2;一旦升到 V2 不再降回 V1。
+  const requestedVersion = (Array.isArray(input?.calls) && input.calls.some((call) => call?.recovery === 'journal'))
+    || checkpoint.version === CHECKPOINT_VERSION_V2
+    ? CHECKPOINT_VERSION_V2
+    : CHECKPOINT_VERSION
   const calls = normalizeCalls(input?.calls, 'Checkpoint prepared 步骤', new Set(
     checkpoint.completedSteps.flatMap((step) => step.calls.map((call) => call.id)),
-  ))
+  ), false, requestedVersion)
   if (checkpoint.pendingStep) {
     if (checkpoint.pendingStep.step === input.step
-      && canonicalHash(checkpoint.pendingStep.calls) === canonicalHash(calls)) return checkpoint
+      && canonicalHash(checkpoint.pendingStep.calls.map(journalCallIdentity)) === canonicalHash(calls.map(journalCallIdentity))) return checkpoint
     invalid('Checkpoint 已有不同的 pending 步骤。', 'AGENT_TURN_CHECKPOINT_MISMATCH')
   }
   return validateAgentTurnCheckpoint({
-    version: CHECKPOINT_VERSION,
+    version: requestedVersion,
     attempt: currentAttempt,
     completedSteps: checkpoint.completedSteps,
     pendingStep: { step: input.step, calls },
+  })
+}
+
+/** journal lifecycle 字段不参与 prepared↔completed 的调用一致性比较。 */
+function journalCallIdentity(call) {
+  const { entityReferences, phase, resultEnvelope, resultRef, ...identity } = call
+  void entityReferences; void phase; void resultEnvelope; void resultRef
+  return identity
+}
+
+/**
+ * H6B：pendingStep 中单个 journal call 的 lifecycle 提交。
+ * dispatched 在请求交给 client 前持久化;completed 携带与模型 history 完全一致的
+ * envelope。逐 call 提交,不等整步收束。
+ */
+export function journalAgentTurnCheckpointCall(previous, input) {
+  const checkpoint = validateAgentTurnCheckpoint(previous)
+  if (!checkpoint.pendingStep) invalid('Checkpoint 没有 pending 步骤，无法提交 journal lifecycle。', 'AGENT_TURN_CHECKPOINT_MISMATCH')
+  const callId = text(input?.callId, 'journal call 标识', 160)
+  const phase = text(input?.phase, 'journal phase', 24)
+  if (!CALL_PHASES.has(phase) || phase === 'prepared') invalid('journal phase 无效。')
+  const index = checkpoint.pendingStep.calls.findIndex((call) => call.id === callId)
+  if (index < 0) invalid('journal call 不在 pending 步骤中。', 'AGENT_TURN_CHECKPOINT_MISMATCH')
+  const target = checkpoint.pendingStep.calls[index]
+  if (target.recovery !== 'journal') invalid('只有 journal call 可以提交逐调用 lifecycle。')
+  const updated = {
+    ...target,
+    phase,
+    ...(input?.resultEnvelope !== undefined ? { resultEnvelope: input.resultEnvelope } : {}),
+    ...(input?.resultRef !== undefined ? { resultRef: input.resultRef } : {}),
+  }
+  const calls = checkpoint.pendingStep.calls.map((call, callIndex) => (callIndex === index ? updated : call))
+  return validateAgentTurnCheckpoint({
+    version: CHECKPOINT_VERSION_V2,
+    attempt: checkpoint.attempt,
+    completedSteps: checkpoint.completedSteps,
+    pendingStep: { step: checkpoint.pendingStep.step, calls },
   })
 }
 
@@ -419,22 +461,23 @@ export function completeAgentTurnCheckpoint(prepared, input) {
     ? checkpoint.completedSteps
     : checkpoint.completedSteps.slice(0, -1)
   const previousIds = new Set(identitySteps.flatMap((step) => step.calls.map((call) => call.id)))
-  const calls = normalizeCalls(input?.calls, 'Checkpoint completed 步骤', previousIds, true)
+  const calls = normalizeCalls(input?.calls, 'Checkpoint completed 步骤', previousIds, true, checkpoint.version)
   if (!checkpoint.pendingStep) {
     const latest = checkpoint.completedSteps.at(-1)
     if (latest && canonicalHash(latest.calls) === canonicalHash(calls)) return checkpoint
     invalid('Checkpoint 没有可完成的 pending 步骤。', 'AGENT_TURN_CHECKPOINT_MISMATCH')
   }
-  const callIdentity = (call) => {
-    const { entityReferences, ...identity } = call
-    void entityReferences
-    return identity
-  }
-  if (canonicalHash(checkpoint.pendingStep.calls) !== canonicalHash(calls.map(callIdentity))) {
+  if (canonicalHash(checkpoint.pendingStep.calls.map(journalCallIdentity)) !== canonicalHash(calls.map(journalCallIdentity))) {
     invalid('Checkpoint completed 调用与 prepared 调用不一致。', 'AGENT_TURN_CHECKPOINT_MISMATCH')
   }
+  // journal call 的终态必须在收束前提交:completed 步骤不允许仍处 prepared/dispatched 的 call。
+  for (const call of calls) {
+    if (call.recovery === 'journal' && (call.phase === undefined || ['prepared', 'dispatched'].includes(call.phase))) {
+      invalid('journal call 尚未收束，不能完成该步骤。', 'AGENT_TURN_CHECKPOINT_MISMATCH')
+    }
+  }
   return validateAgentTurnCheckpoint({
-    version: CHECKPOINT_VERSION,
+    version: checkpoint.version,
     attempt: checkpoint.attempt,
     completedSteps: [
       ...checkpoint.completedSteps,
@@ -459,7 +502,8 @@ export function terminalAgentTurnCheckpoint(previous, input) {
     invalid('Checkpoint 已有不同的终态内容。', 'AGENT_TURN_CHECKPOINT_MISMATCH')
   }
   return validateAgentTurnCheckpoint({
-    version: CHECKPOINT_VERSION,
+    // 保留既有版本:V2 checkpoint 带 journal call,降级到 V1 会让终态校验拒绝自己。
+    version: checkpoint.version,
     attempt: currentAttempt,
     completedSteps: checkpoint.completedSteps,
     terminalContent: content,

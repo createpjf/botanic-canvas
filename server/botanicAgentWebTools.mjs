@@ -34,6 +34,9 @@ export function createBotanicAgentWebResearchTools(webResearch) {
       label: '网页搜索',
       description: '在公开互联网检索品牌、产品和参考资料。只返回标题、链接和摘要，不下载图片。没有关键词搜索需求时不要调用。',
       risk: 'external',
+      // H6B:外部读取按逐 call journal 恢复——completed 复用安全结果,dispatched 无结果
+      // 收口 outcome-unknown,不再粗粒度 recovery:never。
+      recovery: 'journal',
       parameters: {
         type: 'object', additionalProperties: false,
         properties: { query: { type: 'string', maxLength: 200 } },
@@ -55,6 +58,7 @@ export function createBotanicAgentWebResearchTools(webResearch) {
     label: '网页获取',
     description: '读取用户或搜索结果给出的公开 HTTPS 页面正文。不要抓取内网、登录页或媒体文件。',
     risk: 'external',
+    recovery: 'journal',
     parameters: {
       type: 'object', additionalProperties: false,
       properties: { url: { type: 'string', maxLength: 2048 } },
