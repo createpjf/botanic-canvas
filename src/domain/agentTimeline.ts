@@ -42,11 +42,11 @@ export type TimelineBlock =
   | { id: string; type: 'thinking'; status: 'running' | 'done'; startedAt: number; endedAt?: number; text: string }
   | { id: string; type: 'narration'; text: string }
   | {
-    id: string; type: 'step'; status: 'running' | 'succeeded' | 'failed'; kind: TimelineStepKind
+    id: string; type: 'step'; status: 'running' | 'succeeded' | 'failed' | 'aborted'; kind: TimelineStepKind
     title: string; summary?: string; count?: number; sources?: TimelineWebSource[]; sourceToolIds: string[]
     /** 第一次收到该步骤工具事件的时间；accordion 用它推耗时，不改 ToolCall 契约。 */
     startedAt?: number
-    /** 步骤进入 succeeded / failed 的时间。 */
+    /** 步骤进入 succeeded / failed / aborted 的时间。 */
     endedAt?: number
     /**
      * 失败原因。**没有它，界面只能显示一个「失败」**，看的人无从判断该改什么。
@@ -259,22 +259,25 @@ function stepWithMergedSources(
 }
 
 function stepStatus(status: AgentToolCallTrace['status']): TimelineStepBlock['status'] {
-  // aborted:同批 fatal 时未启动的调用。此时 Turn 已失败,块级按 failed 收尾,不留永久 running。
-  if (status === 'failed' || status === 'aborted') return 'failed'
+  // aborted:同批 fatal 时未启动,是中性终态;不能显示为失败,更不能落到默认 running。
+  if (status === 'aborted') return 'aborted'
+  if (status === 'failed') return 'failed'
   if (status === 'succeeded') return 'succeeded'
   return 'running'
 }
 
 function aggregateStatus(toolIds: string[], items: AgentToolCallTrace[]): TimelineStepBlock['status'] {
   const statuses = toolIds.map((id) => items.find((item) => item.id === id)?.status)
-  if (statuses.some((status) => status === 'failed' || status === 'aborted')) return 'failed'
-  if (statuses.some((status) => status !== 'succeeded')) return 'running'
+  if (statuses.some((status) => status === 'failed')) return 'failed'
+  if (statuses.some((status) => status === 'running' || status === 'pending' || status === 'awaiting_confirmation' || status === undefined)) return 'running'
+  if (statuses.some((status) => status === 'aborted')) return 'aborted'
   return 'succeeded'
 }
 
 function searchTitle(status: TimelineStepBlock['status'], count?: number) {
   if (status === 'running') return count !== undefined ? `已搜索 ${count} 个网站，继续搜索中` : '正在搜索网站'
   if (status === 'failed') return count !== undefined ? `已搜索 ${count} 个网站，后续搜索失败` : '搜索网站失败'
+  if (status === 'aborted') return '未执行网站搜索'
   return `已搜索 ${count ?? 1} 个网站`
 }
 
@@ -581,7 +584,7 @@ export function isAgentPipelineTimelineStep(block: TimelineBlock): block is Time
   return isSubmitStep(block) || isGenerateStep(block) || isPrepareStep(block)
 }
 
-export type AgentToolAccordionRowStatus = 'running' | 'succeeded' | 'failed'
+export type AgentToolAccordionRowStatus = 'running' | 'succeeded' | 'failed' | 'aborted'
 
 export type AgentToolAccordionRow = {
   id: string
@@ -704,6 +707,7 @@ export function agentMcpServerBrandLogoSrc(serverId?: string) {
 }
 
 function toolCallRowStatus(status: AgentToolCallTrace['status']): AgentToolAccordionRowStatus {
+  if (status === 'aborted') return 'aborted'
   if (status === 'failed') return 'failed'
   if (status === 'succeeded') return 'succeeded'
   return 'running'
@@ -711,6 +715,7 @@ function toolCallRowStatus(status: AgentToolCallTrace['status']): AgentToolAccor
 
 function toolAccordionVerb(kind: TimelineStepKind, status: AgentToolAccordionRowStatus, locale: string) {
   const en = locale === 'en'
+  if (status === 'aborted') return en ? 'Not run' : '未执行'
   if (kind === 'search') {
     if (status === 'running') return en ? 'Searching' : '正在检索'
     if (status === 'failed') return en ? 'Search failed' : '检索失败'
@@ -760,6 +765,7 @@ function toolAccordionDurationMs(startedAt?: number, endedAt?: number) {
 function aggregateAccordionStatus(statuses: AgentToolAccordionRowStatus[]): AgentToolAccordionRowStatus {
   if (statuses.some((status) => status === 'failed')) return 'failed'
   if (statuses.some((status) => status === 'running')) return 'running'
+  if (statuses.some((status) => status === 'aborted')) return 'aborted'
   return 'succeeded'
 }
 
@@ -936,7 +942,7 @@ export function presentAgentToolAccordion(
         name: agentTimelineStepToolName(step) ?? step.kind,
         label: step.title,
         risk: 'read' as const,
-        status: step.status === 'failed' ? 'failed' as const : step.status === 'succeeded' ? 'succeeded' as const : 'running' as const,
+        status: step.status === 'failed' ? 'failed' as const : step.status === 'succeeded' ? 'succeeded' as const : step.status === 'aborted' ? 'aborted' as const : 'running' as const,
         requiresConfirmation: false,
         ...(step.summary ? { summary: step.summary } : {}),
         ...(step.error ? { error: step.error } : {}),
@@ -955,7 +961,7 @@ export function presentAgentToolAccordion(
       name: 'web_search',
       label: step.title,
       risk: 'read',
-      status: step.status === 'failed' ? 'failed' : step.status === 'succeeded' ? 'succeeded' : 'running',
+      status: step.status === 'failed' ? 'failed' : step.status === 'succeeded' ? 'succeeded' : step.status === 'aborted' ? 'aborted' : 'running',
       requiresConfirmation: false,
       ...(step.summary ? { summary: step.summary } : {}),
       ...(step.error ? { error: step.error } : {}),
@@ -1062,6 +1068,7 @@ export function conversationTimelineStepTitle(
   const en = locale === 'en'
   const running = block.status === 'running'
   const failed = block.status === 'failed'
+  if (block.status === 'aborted') return en ? 'Not run' : '未执行'
   if (block.kind === 'write' && /^生成/u.test(block.title)) {
     const label = block.title.replace(/^生成(?:\s*·\s*|\s*)/u, '').trim()
     const suffix = label && !isBotanicAgentProcessLabel(label) && label !== '分支' ? ` · ${label}` : ''

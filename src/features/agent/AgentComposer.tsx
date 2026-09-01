@@ -18,6 +18,7 @@ import {
 import { agentPlannerModelLabel, agentPlannerModelShortLabel } from '../../components/generationModelPresentation'
 import type { AgentContextItem, AgentSkillOption } from './agentWorkspace.types'
 import { nextAgentSuggestionIndex } from './agentComposerState'
+import { BOTANIC_AGENT_MOUNTED_SKILL_LIMIT } from './agentSkillForm'
 import { useProductI18n, useProductMessages } from '../../i18n/react'
 
 type AgentComposerProps = {
@@ -151,30 +152,48 @@ export function AgentComposer({
   }
   const skillMenuOpen = mentionQuery?.trigger === '/'
   const canvasMenuOpen = mentionQuery?.trigger === '@'
-  const suggestionCount = skillMenuOpen ? skillOptions.length + 1 : canvasMenuOpen ? mentionOptions.length : 0
-  const selectedSuggestionIndex = Math.min(activeSuggestionIndex, Math.max(0, suggestionCount - 1))
-  const activeSuggestionId = suggestionCount ? `${suggestionListId}-option-${selectedSuggestionIndex}` : undefined
+  const mountedSkillIds = new Set(mountedSkills.map((skill) => skill.id))
+  const skillLimitReached = mountedSkills.length >= BOTANIC_AGENT_MOUNTED_SKILL_LIMIT
+  const skillOptionUnavailable = (skill: AgentSkillOption) => skillLimitReached && !mountedSkillIds.has(skill.id)
+  // Composite listbox:方向键只走可用 option;active(键盘高亮)与 selected(已挂载)是两件事。
+  const selectableSuggestionIndexes = skillMenuOpen
+    ? [
+        ...skillOptions.flatMap((skill, index) => skillOptionUnavailable(skill) ? [] : [index]),
+        ...(skillLimitReached ? [] : [skillOptions.length]),
+      ]
+    : canvasMenuOpen
+      ? mentionOptions.map((_, index) => index)
+      : []
+  const selectedSuggestionIndex = selectableSuggestionIndexes.includes(activeSuggestionIndex)
+    ? activeSuggestionIndex
+    : (selectableSuggestionIndexes[0] ?? -1)
+  const activeSuggestionId = selectedSuggestionIndex >= 0
+    ? `${suggestionListId}-option-${selectedSuggestionIndex}`
+    : undefined
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === 'Escape' && mentionQuery) {
       event.preventDefault()
       onDismissMention()
       return
     }
-    if ((event.key === 'ArrowDown' || event.key === 'ArrowUp') && mentionQuery && suggestionCount) {
+    if ((event.key === 'ArrowDown' || event.key === 'ArrowUp') && mentionQuery && selectableSuggestionIndexes.length) {
       event.preventDefault()
       const direction = event.key === 'ArrowDown' ? 'ArrowDown' : 'ArrowUp'
-      setActiveSuggestionIndex((current) => nextAgentSuggestionIndex(current, suggestionCount, direction))
+      const currentPosition = Math.max(0, selectableSuggestionIndexes.indexOf(selectedSuggestionIndex))
+      const nextPosition = nextAgentSuggestionIndex(currentPosition, selectableSuggestionIndexes.length, direction)
+      setActiveSuggestionIndex(selectableSuggestionIndexes[nextPosition])
       return
     }
     if (event.key === 'Enter' && mentionQuery) {
       if (skillMenuOpen && skillOptions[selectedSuggestionIndex]) {
         event.preventDefault()
-        onSelectSkill(skillOptions[selectedSuggestionIndex])
+        const selected = skillOptions[selectedSuggestionIndex]
+        if (!skillOptionUnavailable(selected)) onSelectSkill(selected)
         return
       }
       if (skillMenuOpen && selectedSuggestionIndex === skillOptions.length) {
         event.preventDefault()
-        onCreateSkill()
+        if (!skillLimitReached) onCreateSkill()
         return
       }
       if (canvasMenuOpen && mentionOptions[selectedSuggestionIndex]) {
@@ -249,7 +268,7 @@ export function AgentComposer({
         </div>
       </div> : null}
       {mountedSkills.length ? <div className="agent-composer__attach-row" aria-label={`${copy.mounted} ${mountedSkills.length} Skill`}>
-        <span className="agent-composer__attach-label">{mountedSkills.length > 8 ? `${copy.mounted} ${mountedSkills.length}/16` : copy.mounted}</span>
+        <span className="agent-composer__attach-label">{`${copy.mounted} ${mountedSkills.length}/{BOTANIC_AGENT_MOUNTED_SKILL_LIMIT}`}</span>
         <div className="agent-composer__attach-chips">
           {mountedSkills.map((skill) => <button key={skill.id} data-flip-id={skill.id} type="button" className="agent-composer__chip is-skill" aria-label={`${copy.remove} Skill ${skill.name}`} title={`${copy.remove} ${skill.name}`} onClick={() => onRemoveMountedSkill(skill.id)}>
             <SparkleIcon /><b>{skill.name}</b><i aria-hidden="true">×</i>
@@ -257,9 +276,13 @@ export function AgentComposer({
         </div>
       </div> : null}
     </div> : null}
-    {skillMenuOpen ? <div id={suggestionListId} className="agent-composer__mention-menu" role="listbox" aria-label={copy.callSkill} onPointerDown={(event) => event.stopPropagation()}>
-      {skillOptions.length ? <div className="agent-composer__mention-section" role="group" aria-label={copy.callSkill}><strong>{copy.callSkill}</strong>{skillOptions.map((skill, index) => <button id={`${suggestionListId}-option-${index}`} key={`skill-${skill.id}`} type="button" role="option" tabIndex={-1} aria-selected={selectedSuggestionIndex === index} aria-label={`${copy.callSkill} ${skill.name}`} onMouseEnter={() => setActiveSuggestionIndex(index)} onMouseDown={(event) => event.preventDefault()} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onSelectSkill(skill) }}><SparkleIcon /><b>{skill.name}</b><small>{skill.source === 'system' ? copy.systemSkill : copy.projectSkill}</small></button>)}</div> : null}
-      <button id={`${suggestionListId}-option-${skillOptions.length}`} type="button" role="option" tabIndex={-1} aria-selected={selectedSuggestionIndex === skillOptions.length} className="agent-composer__create-skill" aria-label={copy.createSkill} onMouseEnter={() => setActiveSuggestionIndex(skillOptions.length)} onMouseDown={(event) => event.preventDefault()} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onCreateSkill() }}><PlusIcon /><b>{copy.createSkill}</b><small>{copy.saveRules}</small></button>
+    {skillMenuOpen ? <div id={suggestionListId} className="agent-composer__mention-menu" role="listbox" aria-multiselectable="true" aria-label={copy.callSkill} onPointerDown={(event) => event.stopPropagation()}>
+      {skillOptions.length ? <div className="agent-composer__mention-section" role="group" aria-label={copy.callSkill}><strong>{copy.callSkill}<span className="agent-composer__mention-count">{mountedSkills.length}/{BOTANIC_AGENT_MOUNTED_SKILL_LIMIT}</span></strong>{skillOptions.map((skill, index) => {
+        const mounted = mountedSkillIds.has(skill.id)
+        const unavailable = skillOptionUnavailable(skill)
+        return <button id={`${suggestionListId}-option-${index}`} key={`skill-${skill.id}`} type="button" role="option" tabIndex={-1} disabled={unavailable} aria-disabled={unavailable} aria-selected={mounted} className={selectedSuggestionIndex === index ? 'is-active' : undefined} aria-label={`${copy.callSkill} ${skill.name}`} onMouseEnter={() => { if (!unavailable) setActiveSuggestionIndex(index) }} onMouseDown={(event) => event.preventDefault()} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); if (!unavailable) onSelectSkill(skill) }}><SparkleIcon /><b>{skill.name}</b><small>{skill.source === 'system' ? copy.systemSkill : copy.projectSkill}{mounted ? ' · ✓' : ''}</small></button>
+      })}</div> : null}
+      <button id={`${suggestionListId}-option-${skillOptions.length}`} type="button" role="option" tabIndex={-1} disabled={skillLimitReached} aria-disabled={skillLimitReached} aria-selected={false} className={`agent-composer__create-skill${selectedSuggestionIndex === skillOptions.length ? ' is-active' : ''}`} aria-label={copy.createSkill} onMouseEnter={() => { if (!skillLimitReached) setActiveSuggestionIndex(skillOptions.length) }} onMouseDown={(event) => event.preventDefault()} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); if (!skillLimitReached) onCreateSkill() }}><PlusIcon /><b>{copy.createSkill}</b><small>{copy.saveRules}</small></button>
       {!skillOptions.length ? <p>{copy.noSkillMatch}</p> : null}
     </div> : null}
     {canvasMenuOpen ? <div id={suggestionListId} className="agent-composer__mention-menu" role="listbox" aria-label={copy.referenceCanvas} onPointerDown={(event) => event.stopPropagation()}>

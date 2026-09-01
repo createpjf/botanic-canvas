@@ -81,9 +81,11 @@ export function nextExpandedSkillId(current: string, skillId: string) {
   return current === skillId ? '' : skillId
 }
 
-/** 挂载去重且保留原有挂载；卸载只移除目标。 */
+export const BOTANIC_AGENT_MOUNTED_SKILL_LIMIT = 16
+
+/** 挂载去重且保留原有挂载；达到服务端同源上限时不产生第 17 个绑定。 */
 export function nextMountedSkillIds(current: readonly string[], skillId: string, mounted: boolean) {
-  return mounted
-    ? [...new Set([...current, skillId])]
-    : current.filter((id) => id !== skillId)
+  if (!mounted) return current.filter((id) => id !== skillId)
+  const next = [...new Set([...current, skillId])]
+  return next.length <= BOTANIC_AGENT_MOUNTED_SKILL_LIMIT ? next : [...current]
 }

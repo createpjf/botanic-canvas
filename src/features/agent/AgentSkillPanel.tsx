@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState, type RefObject } from 'react'
 import type { BotanicAgentSkill, BotanicAgentSkillCatalogItem } from '../../domain/agent'
 import { CloseIcon, PlusIcon, SearchIcon, SparkleIcon } from '../../components/BotanicIcons'
 import { AgentSkillCard } from './AgentUtilityPanels'
-import type { AgentSkillFormState } from './agentSkillForm'
+import { BOTANIC_AGENT_MOUNTED_SKILL_LIMIT, type AgentSkillFormState } from './agentSkillForm'
 
 export type AgentSkillSourceFilter = 'all' | 'system' | 'project'
 
@@ -100,6 +100,7 @@ export function AgentSkillPanel({
     .filter((skill, index, items) => items.findIndex((candidate) => candidate.id === skill.id) === index), [skills, systemSkills])
   const mountedIds = useMemo(() => new Set(mountedSkillIds ?? []), [mountedSkillIds])
   const mountedItems = useMemo(() => catalogItems.filter((skill) => mountedIds.has(skill.id)), [catalogItems, mountedIds])
+  const skillLimitReached = mountedIds.size >= BOTANIC_AGENT_MOUNTED_SKILL_LIMIT
   const filteredItems = useMemo(() => {
     const normalizedQuery = query.trim().toLocaleLowerCase()
     return catalogItems
@@ -124,7 +125,7 @@ export function AgentSkillPanel({
       {!form.open ? <button type="button" className="agent-skill-panel__create-entry" aria-expanded="false" onClick={onOpenForm}><PlusIcon />{copy.newSkill}</button> : null}
     </div> : null}
     {mountedItems.length ? <section className="agent-skill-panel__mounted" aria-label={copy.mountedSkills(mountedItems.length)}>
-      <header><strong>{copy.mountedSkills(mountedItems.length)}</strong><span>{mountedItems.length}</span></header>
+      <header><strong>{copy.mountedSkills(mountedItems.length)}</strong><span>{mountedItems.length}/{BOTANIC_AGENT_MOUNTED_SKILL_LIMIT}</span></header>
       <div className="agent-skill-panel__mounted-list">
         {mountedItems.map((skill) => <span key={skill.id} className="agent-skill-panel__mounted-chip">
           {skill.source === 'system' ? <SparkleIcon /> : null}
@@ -152,6 +153,7 @@ export function AgentSkillPanel({
         source={skill.source}
         expanded={expandedSkillId === skill.id}
         mounted={mountedIds.has(skill.id)}
+        mountDisabled={skillLimitReached && !mountedIds.has(skill.id)}
         onToggle={onToggleExpanded}
         onToggleMount={onToggleMounted}
       />)}

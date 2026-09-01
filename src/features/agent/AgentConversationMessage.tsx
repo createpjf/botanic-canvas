@@ -462,6 +462,7 @@ function TimelineStepMarker({
 }) {
   if (block.status === 'failed') return <AlertIcon />
   if (block.status === 'succeeded') return <CheckIcon />
+  if (block.status === 'aborted') return <TimelineStepIcon kind={block.kind} />
   if (block.status === 'running') {
     return (
       <AgentToolOrb
@@ -552,6 +553,7 @@ function AgentTimelineSearchStep({
 }
 
 function timelineStepTitle(block: Extract<TimelineBlock, { type: 'step' }>, locale: ProductLocale) {
+  if (block.status === 'aborted' && locale === 'en') return 'Not run'
   if (locale !== 'en' || !/\p{Script=Han}/u.test(block.title)) return block.title
   if (block.kind === 'search') {
     const count = block.count ?? 1
@@ -609,7 +611,13 @@ function AgentMessageTimeline({ timeline }: { timeline: AgentTimelineState }) {
     }
     if (block.type === 'narration') return <p key={block.id} className="agent-timeline__narration">{block.text}</p>
     if (block.type === 'step') {
-      const statusLabel = block.status === 'running' ? (locale === 'en' ? 'Running' : '进行中') : block.status === 'succeeded' ? (locale === 'en' ? 'Completed' : '已完成') : (locale === 'en' ? 'Failed' : '失败')
+      const statusLabel = block.status === 'running'
+        ? (locale === 'en' ? 'Running' : '进行中')
+        : block.status === 'succeeded'
+          ? (locale === 'en' ? 'Completed' : '已完成')
+          : block.status === 'aborted'
+            ? (locale === 'en' ? 'Not run' : '未执行')
+            : (locale === 'en' ? 'Failed' : '失败')
       const title = conversationTimelineStepTitle(block, locale) ?? timelineStepTitle(block, locale)
       const failureCopy = block.status === 'failed'
         ? generationTaskErrorMessage(block.error, block.errorCode, locale === 'en' ? 'en' : 'zh-CN')

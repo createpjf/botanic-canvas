@@ -28,7 +28,7 @@ const toolCall = (
   id: string,
   name: string,
   label: string,
-  status: 'running' | 'succeeded',
+  status: 'running' | 'succeeded' | 'failed' | 'aborted',
 ) => ({
   id,
   name,
@@ -684,4 +684,23 @@ test('没有错误文案时不编造一个', () => {
   const step = state.blocks.find((block) => block.type === 'step')
   assert.equal(step?.status, 'failed')
   assert.equal(step?.error, undefined)
+})
+
+test('aborted 工具是中性未执行终态,时间线与 accordion 都不显示失败或永久 running', () => {
+  const timeline = reduceAgentTimeline(createAgentTimeline(1_000), {
+    type: 'tool',
+    step: 0,
+    toolCall: {
+      ...toolCall('aborted-1', 'web_fetch', '网页获取', 'aborted'),
+      error: '同批 fatal 后未启动',
+    },
+    presentation: { kind: 'fetch', title: '网页获取' },
+    receivedAt: 1_200,
+  })
+  const step = timeline.blocks.find((block) => block.type === 'step')
+  assert.equal(step?.status, 'aborted')
+  const accordion = presentAgentToolAccordion(timeline, 'zh-CN', 1_500)
+  assert.equal(accordion?.groups[0]?.status, 'aborted')
+  assert.equal(accordion?.groups[0]?.rows[0]?.status, 'aborted')
+  assert.equal(accordion?.groups[0]?.rows[0]?.verb, '未执行')
 })

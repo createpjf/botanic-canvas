@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   agentSkillFormReducer,
+  BOTANIC_AGENT_MOUNTED_SKILL_LIMIT,
   canSubmitAgentSkillForm,
   emptyAgentSkillForm,
   nextExpandedSkillId,
@@ -102,4 +103,8 @@ test('挂载去重且保留原有挂载，卸载只移除目标', () => {
   const current = ['a', 'b']
   nextMountedSkillIds(current, 'c', true)
   assert.deepEqual(current, ['a', 'b'])
+  // Composer、Skill 面板、新建后自动挂载共用此 owner:第 17 个绑定不能进入前端状态。
+  const full = Array.from({ length: BOTANIC_AGENT_MOUNTED_SKILL_LIMIT }, (_, index) => `skill-${index}`)
+  assert.deepEqual(nextMountedSkillIds(full, 'skill-17', true), full)
+  assert.deepEqual(nextMountedSkillIds(full, 'skill-0', true), full, '满额时已挂载项仍保持幂等')
 })
