@@ -259,6 +259,10 @@ test('已知规划工具标题与服务端对齐；Run 投影只反映已持久�
     agentTimelineToolPresentation(toolCall('c3', 'project_memory_search', '检索项目记忆', 'running')),
     { kind: 'search', title: '检索项目记忆' },
   )
+  assert.deepEqual(
+    agentTimelineToolPresentation(toolCall('c4', 'subagent_research', '并行调研', 'running')),
+    { kind: 'subagent', title: '并行调研' },
+  )
 
   const previous = {
     blocks: [

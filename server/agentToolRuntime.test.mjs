@@ -558,7 +558,10 @@ test('规划/回合工具在 execute 前才有 running，返回后才有 succeed
     risk: 'read',
     parameters: { type: 'object', properties: {} },
     validate: (value) => value,
-    execute: async () => ({ nodes: 2 }),
+    execute: async (_value, context) => {
+      context.reportProgress({ summary: '已读取 2 个节点', presentation: { kind: 'read', title: '读取画布上下文', count: 2 } })
+      return { nodes: 2 }
+    },
   }, {
     name: 'generation_create_plan',
     label: '生成执行计划',
@@ -584,11 +587,12 @@ test('规划/回合工具在 execute 前才有 running，返回后才有 succeed
     },
   })
 
-  assert.deepEqual(events.map((event) => [event.toolCall.status, event.presentation?.title]), [
-    ['running', '读取画布上下文'],
-    ['succeeded', '读取画布上下文'],
-    ['running', '起草生成计划'],
-    ['succeeded', '起草生成计划'],
+  assert.deepEqual(events.map((event) => [event.toolCall.status, event.presentation?.title, event.toolCall.summary]), [
+    ['running', '读取画布上下文', undefined],
+    ['running', '读取画布上下文', '已读取 2 个节点'],
+    ['succeeded', '读取画布上下文', undefined],
+    ['running', '起草生成计划', undefined],
+    ['succeeded', '起草生成计划', undefined],
   ])
   // 禁止未 execute 先 succeeded：每个工具的首个事件必须是 running。
   const byId = new Map()

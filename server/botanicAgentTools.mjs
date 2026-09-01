@@ -1165,8 +1165,16 @@ export function createBotanicAgentPlanningToolRegistry({ input, finalizePlan, fi
         // 当前 root executor fence。由拥有 Tool Loop context 的这一层显式闭包注入，
         // 不能让模型参数或 Subtask payload 自报 executionGeneration / leaseToken。
         const runWithRootExecution = (runInput) => subagentRunner({ ...runInput, context })
+        context?.reportProgress?.({
+          summary: `已启动 ${subtasks.length} 个调研角度`,
+          presentation: { kind: 'subagent', title: '并行调研', count: subtasks.length },
+        })
         const outcome = await runAgentSubtaskFanout({
           subtasks, registry, context, runSubagent: runWithRootExecution, maxConcurrent: 3,
+        })
+        context?.reportProgress?.({
+          summary: `完成 ${outcome.completed.length}/${subtasks.length} 个调研角度`,
+          presentation: { kind: 'subagent', title: '并行调研', count: subtasks.length },
         })
         return {
           // 终止数与完成数并列：只报「拿到 3 份提案」会让主 Agent 在残缺输入上下结论。

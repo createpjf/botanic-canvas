@@ -52,13 +52,16 @@ test('并行调研返回提案，并把终止情况一并报出', async () => {
       return { summary: `${subtask.role} 的结论`, confidence: 'medium', findings: ['要点一'] }
     },
   })
+  const progress = []
   const output = await registry.execute('subagent_research', {
     tasks: [
       { role: 'brand_research', question: '品牌调性是什么' },
       { role: 'competitor_research', question: '竞品怎么拍' },
     ],
-  }, { userId: 'u-1', traceId: 'turn-9' })
+  }, { userId: 'u-1', traceId: 'turn-9', reportProgress: (event) => progress.push(event) })
 
+  assert.deepEqual(progress.map((event) => event.summary), ['已启动 2 个调研角度', '完成 1/2 个调研角度'])
+  assert.ok(progress.every((event) => event.presentation.kind === 'subagent' && event.presentation.count === 2))
   assert.deepEqual(output.proposals.map((item) => item.role), ['brand_research'])
   assert.equal(output.proposals[0].summary, 'brand_research 的结论')
   // 终止情况必须出现在返回值里，否则主 Agent 会在残缺输入上下结论。

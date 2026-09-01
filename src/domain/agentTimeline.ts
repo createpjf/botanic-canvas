@@ -17,7 +17,7 @@ export {
   timelineWebSourceHref,
 } from './agentTimelineWebSources.ts'
 
-export type TimelineStepKind = 'search' | 'fetch' | 'read_skill' | 'connect_runtime' | 'read' | 'write' | 'other'
+export type TimelineStepKind = 'search' | 'fetch' | 'read_skill' | 'connect_runtime' | 'subagent' | 'read' | 'write' | 'other'
 
 /** thinking-orbs 的九态；只决定动画，不决定界面文案。 */
 export type AgentTimelineOrbState =
@@ -119,6 +119,7 @@ const knownTimelineToolTitles: Record<string, TimelineToolPresentation> = {
   canvas_read: { kind: 'read', title: '读取画布上下文' },
   asset_search: { kind: 'search', title: '搜索素材' },
   skill_run: { kind: 'read_skill', title: '调用创作 Skill' },
+  subagent_research: { kind: 'subagent', title: '并行调研' },
   skill_create_propose: { kind: 'write', title: '提议创建项目 Skill' },
   mcp_propose: { kind: 'other', title: '提议 MCP 调用' },
   generation_ask_clarification: { kind: 'other', title: '确认生成参数' },
@@ -204,6 +205,7 @@ export function agentTimelineOrbState(input: {
     case 'connect_runtime':
       return 'connecting'
     case 'read_skill':
+    case 'subagent':
       return 'weaving'
     case 'read':
     case 'write':
@@ -671,6 +673,7 @@ export function agentToolIconKey(input: {
   ) {
     return 'search-code'
   }
+  if (input.kind === 'subagent' || name === 'subagent_research') return 'list-todo'
   if (
     input.kind === 'read'
     || input.kind === 'read_skill'
@@ -737,6 +740,11 @@ function toolAccordionVerb(kind: TimelineStepKind, status: AgentToolAccordionRow
     if (status === 'running') return en ? 'Connecting' : '正在连接'
     if (status === 'failed') return en ? 'Connection failed' : '连接失败'
     return en ? 'Connected' : '已连接'
+  }
+  if (kind === 'subagent') {
+    if (status === 'running') return en ? 'Researching' : '正在调研'
+    if (status === 'failed') return en ? 'Research failed' : '调研失败'
+    return en ? 'Research complete' : '调研完成'
   }
   if (kind === 'write') {
     if (status === 'running') return en ? 'Running' : '正在运行'

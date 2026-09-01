@@ -566,6 +566,7 @@ function timelineStepTitle(block: Extract<TimelineBlock, { type: 'step' }>, loca
     return host && !/\p{Script=Han}/u.test(host) ? `Fetching ${host}` : 'Fetching webpage'
   }
   if (block.kind === 'read_skill') return 'Reading Skill guide'
+  if (block.kind === 'subagent') return 'Parallel research'
   if (block.kind === 'connect_runtime') return 'Connecting browser runtime'
   if (block.kind === 'read') return 'Reading project data'
   if (block.kind === 'write') return 'Writing project data'
