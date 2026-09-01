@@ -3,7 +3,7 @@ import type { CanvasNode } from '../domain/canvas'
 import { createCollaborativeGraph, type CollaborativeGraph } from '../domain/collaborativeGraph'
 import { deriveCanvasSyncStatus, type AgentRunUpdatedRealtimeEvent, type CanvasCrdtRealtimeEvent, type CanvasSyncStatus, type CollaborationActivityRealtimeEvent, type CollaborationPresenceRealtimeEvent, type ProjectRealtimeConnectionState, type ProjectUpdatedRealtimeEvent } from '../domain/realtimeSync'
 import { createCanvasSyncOutbox, type CanvasSyncFailure } from './canvasSyncOutbox'
-import { canvasSyncOutboxStorage, rememberAppliedCanvasGraphRevision, rememberRemoteSyncProtocolEpoch } from './db'
+import { canvasSyncOutboxStorage, lastKnownCanvasSyncProtocolEpoch, rememberAppliedCanvasGraphRevision, rememberRemoteSyncProtocolEpoch } from './db'
 import { commitCanvasRealtimeUpdate, openProjectRealtimeChannel } from './projectRealtime'
 import { ProductApiError } from './productSession'
 
@@ -84,6 +84,10 @@ export function connectCanvasCollaboration({
   const outbox = createCanvasSyncOutbox({
     projectId,
     storage: canvasSyncOutboxStorage,
+    // 权威快照握手（ready.v2 / 旧协议 ready）完成前一律不发包：此时重放本地
+    // Y.Doc/Outbox 旧几何会覆盖服务端权威布局。HTTP fallback 同受此门禁。
+    sendReady: () => handshakeReady,
+    expectedEpoch: () => syncProtocolEpoch ?? lastKnownCanvasSyncProtocolEpoch(projectId),
     publish: (event) => syncProtocolEpoch === undefined
       ? false
       : channel?.publish({ ...event, syncProtocolEpoch }) ?? false,
