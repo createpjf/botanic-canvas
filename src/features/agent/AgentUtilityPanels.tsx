@@ -915,6 +915,7 @@ export function AgentSkillCard({
   source,
   expanded,
   mounted = false,
+  mountDisabled = false,
   onToggle,
   onToggleMount,
 }: {
@@ -924,6 +925,7 @@ export function AgentSkillCard({
   source: 'system' | 'project'
   expanded: boolean
   mounted?: boolean
+  mountDisabled?: boolean
   onToggle: (id: string) => void
   onToggleMount?: (id: string, nextMounted: boolean) => void
 }) {
@@ -945,7 +947,7 @@ export function AgentSkillCard({
       </span>
       <span className="agent-skill-card__disclosure" aria-hidden="true">{expanded ? '−' : '＋'}</span>
     </button>
-    {onToggleMount ? <button type="button" className="agent-skill-card__mount" aria-pressed={mounted} aria-label={mounted ? `${copy.unmount} ${name}` : `${copy.mount} ${name}`} onClick={() => onToggleMount(id, !mounted)}>
+    {onToggleMount ? <button type="button" className="agent-skill-card__mount" disabled={mountDisabled} aria-pressed={mounted} aria-label={mounted ? `${copy.unmount} ${name}` : `${copy.mount} ${name}`} onClick={() => onToggleMount(id, !mounted)}>
       {mounted ? <CheckIcon /> : <PlusIcon />}<span>{mounted ? copy.unmount : copy.mount}</span>
     </button> : null}
     {expanded ? <pre id={`skill-body-${id}`} className="agent-skill-card__body">{body}</pre> : null}

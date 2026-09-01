@@ -462,6 +462,7 @@ function TimelineStepMarker({
 }) {
   if (block.status === 'failed') return <AlertIcon />
   if (block.status === 'succeeded') return <CheckIcon />
+  if (block.status === 'aborted') return <TimelineStepIcon kind={block.kind} />
   if (block.status === 'running') {
     return (
       <AgentToolOrb
@@ -552,6 +553,7 @@ function AgentTimelineSearchStep({
 }
 
 function timelineStepTitle(block: Extract<TimelineBlock, { type: 'step' }>, locale: ProductLocale) {
+  if (block.status === 'aborted' && locale === 'en') return 'Not run'
   if (locale !== 'en' || !/\p{Script=Han}/u.test(block.title)) return block.title
   if (block.kind === 'search') {
     const count = block.count ?? 1
@@ -564,28 +566,34 @@ function timelineStepTitle(block: Extract<TimelineBlock, { type: 'step' }>, loca
     return host && !/\p{Script=Han}/u.test(host) ? `Fetching ${host}` : 'Fetching webpage'
   }
   if (block.kind === 'read_skill') return 'Reading Skill guide'
+  if (block.kind === 'subagent') return 'Parallel research'
   if (block.kind === 'connect_runtime') return 'Connecting browser runtime'
   if (block.kind === 'read') return 'Reading project data'
   if (block.kind === 'write') return 'Writing project data'
   return 'Running tool'
 }
 
-function AgentMessageTimeline({ timeline }: { timeline: AgentTimelineState }) {
+function AgentMessageTimeline({
+  timeline, loadingMore = false, onLoadMore,
+}: { timeline: AgentTimelineState; loadingMore?: boolean; onLoadMore?: () => void }) {
   const { locale } = useProductI18n()
-  const accordion = presentAgentToolAccordion(timeline, locale)
+  const [now, setNow] = useState(() => Date.now())
+  const accordion = presentAgentToolAccordion(timeline, locale, now)
   const toolLive = accordion?.groups.some((group) => group.status === 'running') ?? false
   const thinkingLive = timeline.blocks.some((block) => block.type === 'thinking' && block.status === 'running')
-  const [now, setNow] = useState(() => Date.now())
   const toolItems = timeline.blocks.find((block) => block.type === 'raw_group')?.items ?? []
-  const liveAccordion = toolLive || thinkingLive
-    ? presentAgentToolAccordion(timeline, locale, now)
-    : accordion
+  const liveAccordion = accordion
 
   useEffect(() => {
-    if (!toolLive && !thinkingLive) return
-    const timer = window.setInterval(() => setNow(Date.now()), 1_000)
-    return () => window.clearInterval(timer)
-  }, [toolLive, thinkingLive])
+    if (toolLive || thinkingLive) {
+      const timer = window.setInterval(() => setNow(Date.now()), 1_000)
+      return () => window.clearInterval(timer)
+    }
+    if (accordion?.nextUpdateAt !== undefined && accordion.nextUpdateAt > now) {
+      const timer = window.setTimeout(() => setNow(Date.now()), accordion.nextUpdateAt - now + 1)
+      return () => window.clearTimeout(timer)
+    }
+  }, [accordion?.nextUpdateAt, now, thinkingLive, toolLive])
 
   const renderBlock = (block: TimelineBlock) => {
     if (block.type === 'thinking') {
@@ -609,7 +617,13 @@ function AgentMessageTimeline({ timeline }: { timeline: AgentTimelineState }) {
     }
     if (block.type === 'narration') return <p key={block.id} className="agent-timeline__narration">{block.text}</p>
     if (block.type === 'step') {
-      const statusLabel = block.status === 'running' ? (locale === 'en' ? 'Running' : '进行中') : block.status === 'succeeded' ? (locale === 'en' ? 'Completed' : '已完成') : (locale === 'en' ? 'Failed' : '失败')
+      const statusLabel = block.status === 'running'
+        ? (locale === 'en' ? 'Running' : '进行中')
+        : block.status === 'succeeded'
+          ? (locale === 'en' ? 'Completed' : '已完成')
+          : block.status === 'aborted'
+            ? (locale === 'en' ? 'Not run' : '未执行')
+            : (locale === 'en' ? 'Failed' : '失败')
       const title = conversationTimelineStepTitle(block, locale) ?? timelineStepTitle(block, locale)
       const failureCopy = block.status === 'failed'
         ? generationTaskErrorMessage(block.error, block.errorCode, locale === 'en' ? 'en' : 'zh-CN')
@@ -652,11 +666,9 @@ function AgentMessageTimeline({ timeline }: { timeline: AgentTimelineState }) {
       <summary><span>{locale === 'en' ? 'View steps' : '查看步骤'}</span></summary>
       <div className="agent-timeline__settled-list">{view.collapsed.map(renderBlock)}</div>
     </details> : null}
-    {timeline.truncation ? <p className="agent-timeline__step-error" role="status">
-      {locale === 'en'
-        ? `Only the first ${timeline.truncation.loadedCount} runtime events are loaded. More events remain after cursor ${timeline.truncation.nextAfter}.`
-        : `仅加载前 ${timeline.truncation.loadedCount} 条运行事件；游标 ${timeline.truncation.nextAfter} 之后仍有记录。`}
-    </p> : null}
+    {timeline.truncation && onLoadMore ? <button type="button" className="agent-timeline__load-more" disabled={loadingMore} onClick={onLoadMore}>
+      {loadingMore ? (locale === 'en' ? 'Loading…' : '加载中…') : (locale === 'en' ? 'More activity' : '更多活动')}
+    </button> : null}
   </div>
 }
 
@@ -1036,6 +1048,8 @@ function AgentCompositionCard({
 type AgentConversationMessageProps = {
   message: BotanicAgentMessage
   timeline?: AgentTimelineState
+  timelineLoadingMore?: boolean
+  onLoadMoreTimeline?: () => void
   streaming?: boolean
   isLatestAssistant?: boolean
   agentBusy?: boolean
@@ -1085,6 +1099,8 @@ type AgentConversationMessageProps = {
 export function AgentConversationMessage({
   message,
   timeline,
+  timelineLoadingMore = false,
+  onLoadMoreTimeline,
   streaming = false,
   isLatestAssistant = false,
   agentBusy = false,
@@ -1222,10 +1238,10 @@ export function AgentConversationMessage({
   return <article className={`agent-message is-${message.role} is-${message.kind}${timeline ? ' has-timeline' : ''}${allowsSays ? ' is-bob-large' : ''}${showUtilities ? utilitySurface.className : ''}`} role={liveStatus ? 'status' : undefined} aria-live={liveStatus ? 'polite' : undefined} aria-busy={streaming || undefined}>
     <div className="agent-message__role" data-bob-mood={bob?.mood} data-bob-says={bob?.says}>{bob ? <BobCharacter mood={bob.mood} says={bob.says} saysCycles={bob.cycles} onSaysComplete={() => bobPlays.markPlayed(bob.says)} /> : <span>{t('你', 'You')}</span>}</div>
     <div className="agent-message__body">
-      {resultsFirst ? null : timeline ? <AgentMessageTimeline timeline={timeline} /> : null}
+      {resultsFirst ? null : timeline ? <AgentMessageTimeline timeline={timeline} loadingMore={timelineLoadingMore} onLoadMore={onLoadMoreTimeline} /> : null}
       {messageProse}
       {runResults}
-      {resultsFirst && timeline ? <AgentMessageTimeline timeline={timeline} /> : null}
+      {resultsFirst && timeline ? <AgentMessageTimeline timeline={timeline} loadingMore={timelineLoadingMore} onLoadMore={onLoadMoreTimeline} /> : null}
       {message.role === 'assistant' && botanicAgentMessageOffersVisualPrompt(message) ? <div className="agent-run-message__actions" aria-label={t('Prompt 操作', 'Prompt actions')}>
         <button type="button" disabled={planning || promptUsePending} onClick={() => onUsePrompt(message)}>{promptUsePending ? t('等待确认', 'Awaiting approval') : t('用这段 Prompt 生成', 'Generate with this prompt')}</button>
       </div> : null}

@@ -12,6 +12,10 @@ test('用户消息只在同步失败时显示可重试提示', () => {
   assert.match(messageSource, /onRetryDelivery/u)
 })
 
+test('observed Turn 终止只写会话 notice,不在 Composer 重复同一错误', () => {
+  assert.equal(workspaceSource.includes("if (!observedTurnId && !(caught instanceof ProductApiError"), true)
+})
+
 test('Run 从执行中进入终态后不保留底部实时步骤', () => {
   assert.match(
     runtimeTraceSource,

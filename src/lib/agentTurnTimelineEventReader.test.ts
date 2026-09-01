@@ -70,6 +70,22 @@ test('超过 1000 条事件返回截断标记与续读游标', async () => {
   assert.equal(result.events.length, 1000)
   assert.equal(result.truncated, true)
   assert.equal(result.nextAfter, 1000)
+
+  let continuationPath = ''
+  const continuation = await readAgentTurnTimelineEvents({
+    turnId: 'turn-long', projectId: 'project-1', after: result.nextAfter, maximumPages: 1,
+    readPage: async (path) => {
+      continuationPath = path
+      return {
+        turn: { id: 'turn-long', projectId: 'project-1', status: 'completed' },
+        events: [{ sequence: 1001, type: 'turn.tool', payload: { step: 1, toolCallId: 'tool-1001', toolName: 'read', status: 'succeeded' } }],
+        cursor: { after: 1001, hasMore: false },
+      }
+    },
+  })
+  assert.equal(continuationPath, '/api/agent-turns/turn-long?after=1000&limit=200')
+  assert.equal(continuation.events.length, 1)
+  assert.equal(continuation.truncated, false)
 })
 
 test('时间线 hydration 遇到停滞游标立即失败，不无限循环', async () => {

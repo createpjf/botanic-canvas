@@ -334,6 +334,7 @@ const knownToolPresentations = Object.freeze({
   canvas_read: { kind: 'read', title: '读取画布上下文' },
   asset_search: { kind: 'search', title: '搜索素材' },
   skill_run: { kind: 'read_skill', title: '调用创作 Skill' },
+  subagent_research: { kind: 'subagent', title: '并行调研' },
   skill_create_propose: { kind: 'write', title: '提议创建项目 Skill' },
   mcp_propose: { kind: 'other', title: '提议 MCP 调用' },
   generation_ask_clarification: { kind: 'other', title: '确认生成参数' },
@@ -348,6 +349,15 @@ const knownToolPresentations = Object.freeze({
   skill_create: { kind: 'write', title: '创建项目 Skill' },
   mcp_call: { kind: 'other', title: '调用外部工具' },
 })
+
+function safeReportedToolPresentation(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const kind = safePresentationLabel(value.kind)
+  const title = safePresentationLabel(value.title)
+  if (!kind || !title || !['search', 'fetch', 'read_skill', 'connect_runtime', 'subagent', 'read', 'write', 'other'].includes(kind)) return undefined
+  const count = Number(value.count)
+  return { kind, title, ...(Number.isInteger(count) && count >= 0 && count <= 10_000 ? { count } : {}) }
+}
 
 export function toolEventPresentation(name, output) {
   const normalizedName = typeof name === 'string' ? name.toLowerCase() : ''
@@ -1133,6 +1143,16 @@ export async function runAgentToolLoop({
           return tool.execute(entry.validatedInput, {
             ...context,
             toolCallId: trace.id,
+            // 同一call id的安全进度投影;只更新UI/Turn Event,不进入模型tool output。
+            reportProgress: emitEvents ? (progress = {}) => {
+              const progressSummary = safePresentationLabel(progress.summary)
+              const presentation = safeReportedToolPresentation(progress.presentation)
+              emit({
+                type: 'tool', step,
+                toolCall: { ...trace, status: 'running', ...(progressSummary ? { summary: progressSummary } : {}) },
+                ...(presentation ? { presentation } : {}),
+              })
+            } : undefined,
             // 根 signal 直达工具；子任务等自带 timeout 的 context 已在各自 seam 组合过。
             ...(activeSignal ? { signal: activeSignal } : {}),
             ...(typeof deadlineAt === 'number' ? { deadlineAt } : {}),

@@ -17,7 +17,7 @@ export {
   timelineWebSourceHref,
 } from './agentTimelineWebSources.ts'
 
-export type TimelineStepKind = 'search' | 'fetch' | 'read_skill' | 'connect_runtime' | 'read' | 'write' | 'other'
+export type TimelineStepKind = 'search' | 'fetch' | 'read_skill' | 'connect_runtime' | 'subagent' | 'read' | 'write' | 'other'
 
 /** thinking-orbs 的九态；只决定动画，不决定界面文案。 */
 export type AgentTimelineOrbState =
@@ -42,11 +42,11 @@ export type TimelineBlock =
   | { id: string; type: 'thinking'; status: 'running' | 'done'; startedAt: number; endedAt?: number; text: string }
   | { id: string; type: 'narration'; text: string }
   | {
-    id: string; type: 'step'; status: 'running' | 'succeeded' | 'failed'; kind: TimelineStepKind
+    id: string; type: 'step'; status: 'running' | 'succeeded' | 'failed' | 'aborted'; kind: TimelineStepKind
     title: string; summary?: string; count?: number; sources?: TimelineWebSource[]; sourceToolIds: string[]
     /** 第一次收到该步骤工具事件的时间；accordion 用它推耗时，不改 ToolCall 契约。 */
     startedAt?: number
-    /** 步骤进入 succeeded / failed 的时间。 */
+    /** 步骤进入 succeeded / failed / aborted 的时间。 */
     endedAt?: number
     /**
      * 失败原因。**没有它，界面只能显示一个「失败」**，看的人无从判断该改什么。
@@ -119,6 +119,7 @@ const knownTimelineToolTitles: Record<string, TimelineToolPresentation> = {
   canvas_read: { kind: 'read', title: '读取画布上下文' },
   asset_search: { kind: 'search', title: '搜索素材' },
   skill_run: { kind: 'read_skill', title: '调用创作 Skill' },
+  subagent_research: { kind: 'subagent', title: '并行调研' },
   skill_create_propose: { kind: 'write', title: '提议创建项目 Skill' },
   mcp_propose: { kind: 'other', title: '提议 MCP 调用' },
   generation_ask_clarification: { kind: 'other', title: '确认生成参数' },
@@ -204,6 +205,7 @@ export function agentTimelineOrbState(input: {
     case 'connect_runtime':
       return 'connecting'
     case 'read_skill':
+    case 'subagent':
       return 'weaving'
     case 'read':
     case 'write':
@@ -259,22 +261,25 @@ function stepWithMergedSources(
 }
 
 function stepStatus(status: AgentToolCallTrace['status']): TimelineStepBlock['status'] {
-  // aborted:同批 fatal 时未启动的调用。此时 Turn 已失败,块级按 failed 收尾,不留永久 running。
-  if (status === 'failed' || status === 'aborted') return 'failed'
+  // aborted:同批 fatal 时未启动,是中性终态;不能显示为失败,更不能落到默认 running。
+  if (status === 'aborted') return 'aborted'
+  if (status === 'failed') return 'failed'
   if (status === 'succeeded') return 'succeeded'
   return 'running'
 }
 
 function aggregateStatus(toolIds: string[], items: AgentToolCallTrace[]): TimelineStepBlock['status'] {
   const statuses = toolIds.map((id) => items.find((item) => item.id === id)?.status)
-  if (statuses.some((status) => status === 'failed' || status === 'aborted')) return 'failed'
-  if (statuses.some((status) => status !== 'succeeded')) return 'running'
+  if (statuses.some((status) => status === 'failed')) return 'failed'
+  if (statuses.some((status) => status === 'running' || status === 'pending' || status === 'awaiting_confirmation' || status === undefined)) return 'running'
+  if (statuses.some((status) => status === 'aborted')) return 'aborted'
   return 'succeeded'
 }
 
 function searchTitle(status: TimelineStepBlock['status'], count?: number) {
   if (status === 'running') return count !== undefined ? `已搜索 ${count} 个网站，继续搜索中` : '正在搜索网站'
   if (status === 'failed') return count !== undefined ? `已搜索 ${count} 个网站，后续搜索失败` : '搜索网站失败'
+  if (status === 'aborted') return '未执行网站搜索'
   return `已搜索 ${count ?? 1} 个网站`
 }
 
@@ -581,7 +586,7 @@ export function isAgentPipelineTimelineStep(block: TimelineBlock): block is Time
   return isSubmitStep(block) || isGenerateStep(block) || isPrepareStep(block)
 }
 
-export type AgentToolAccordionRowStatus = 'running' | 'succeeded' | 'failed'
+export type AgentToolAccordionRowStatus = 'running' | 'succeeded' | 'failed' | 'aborted'
 
 export type AgentToolAccordionRow = {
   id: string
@@ -607,6 +612,8 @@ export type AgentToolAccordionGroup = {
 export type AgentToolAccordionView = {
   elapsedMs: number
   groups: AgentToolAccordionGroup[]
+  /** Pending reveal / quiet linger 的下一次纯展示重算时间。 */
+  nextUpdateAt?: number
 }
 
 function isMcpToolName(name: string) {
@@ -666,6 +673,7 @@ export function agentToolIconKey(input: {
   ) {
     return 'search-code'
   }
+  if (input.kind === 'subagent' || name === 'subagent_research') return 'list-todo'
   if (
     input.kind === 'read'
     || input.kind === 'read_skill'
@@ -704,6 +712,7 @@ export function agentMcpServerBrandLogoSrc(serverId?: string) {
 }
 
 function toolCallRowStatus(status: AgentToolCallTrace['status']): AgentToolAccordionRowStatus {
+  if (status === 'aborted') return 'aborted'
   if (status === 'failed') return 'failed'
   if (status === 'succeeded') return 'succeeded'
   return 'running'
@@ -711,6 +720,7 @@ function toolCallRowStatus(status: AgentToolCallTrace['status']): AgentToolAccor
 
 function toolAccordionVerb(kind: TimelineStepKind, status: AgentToolAccordionRowStatus, locale: string) {
   const en = locale === 'en'
+  if (status === 'aborted') return en ? 'Not run' : '未执行'
   if (kind === 'search') {
     if (status === 'running') return en ? 'Searching' : '正在检索'
     if (status === 'failed') return en ? 'Search failed' : '检索失败'
@@ -730,6 +740,11 @@ function toolAccordionVerb(kind: TimelineStepKind, status: AgentToolAccordionRow
     if (status === 'running') return en ? 'Connecting' : '正在连接'
     if (status === 'failed') return en ? 'Connection failed' : '连接失败'
     return en ? 'Connected' : '已连接'
+  }
+  if (kind === 'subagent') {
+    if (status === 'running') return en ? 'Researching' : '正在调研'
+    if (status === 'failed') return en ? 'Research failed' : '调研失败'
+    return en ? 'Research complete' : '调研完成'
   }
   if (kind === 'write') {
     if (status === 'running') return en ? 'Running' : '正在运行'
@@ -760,7 +775,54 @@ function toolAccordionDurationMs(startedAt?: number, endedAt?: number) {
 function aggregateAccordionStatus(statuses: AgentToolAccordionRowStatus[]): AgentToolAccordionRowStatus {
   if (statuses.some((status) => status === 'failed')) return 'failed'
   if (statuses.some((status) => status === 'running')) return 'running'
+  if (statuses.some((status) => status === 'aborted')) return 'aborted'
   return 'succeeded'
+}
+
+const AGENT_READ_REVEAL_DELAY_MS = 300
+const AGENT_READ_MIN_VISIBLE_MS = 600
+
+type QuietReadDisposition = { kind: 'pending' | 'visible' | 'aggregate'; nextUpdateAt?: number }
+
+function quietReadDisposition(
+  call: AgentToolCallTrace,
+  row: AgentToolAccordionRow,
+  timing: { startedAt?: number; endedAt?: number } | undefined,
+  now: number,
+): QuietReadDisposition {
+  const eligible = call.risk === 'read'
+    && (row.kind === 'read' || row.kind === 'read_skill')
+    && !call.error?.trim()
+  if (!eligible || timing?.startedAt === undefined) return { kind: 'visible' }
+  const revealAt = timing.startedAt + AGENT_READ_REVEAL_DELAY_MS
+  if (row.status === 'running') {
+    return now < revealAt ? { kind: 'pending', nextUpdateAt: revealAt } : { kind: 'visible' }
+  }
+  if (row.status !== 'succeeded') return { kind: 'visible' }
+  const endedAt = timing.endedAt ?? timing.startedAt
+  // 完成早于 reveal:从未闪现,直接并入摘要。
+  if (endedAt < revealAt) return { kind: 'aggregate' }
+  // 已经画出来的 quiet success 至少稳定600ms,避免同帧消失。
+  const removalAt = revealAt + AGENT_READ_MIN_VISIBLE_MS
+  return now < removalAt
+    ? { kind: 'visible', nextUpdateAt: removalAt }
+    : { kind: 'aggregate' }
+}
+
+function quietReadSummaryRow(rows: AgentToolAccordionRow[], locale: string): AgentToolAccordionRow | undefined {
+  if (!rows.length) return undefined
+  const count = rows.length
+  const verb = locale === 'en' ? `Read ${count} item${count === 1 ? '' : 's'}` : `已读取 ${count} 项`
+  return {
+    id: `quiet-reads:${rows.map((row) => row.id).join('+')}`,
+    kind: 'read',
+    toolName: 'quiet_reads',
+    verb,
+    detail: verb,
+    status: 'succeeded',
+    callCount: count,
+    calls: rows,
+  }
 }
 
 function buildToolAccordionRow(
@@ -936,7 +998,7 @@ export function presentAgentToolAccordion(
         name: agentTimelineStepToolName(step) ?? step.kind,
         label: step.title,
         risk: 'read' as const,
-        status: step.status === 'failed' ? 'failed' as const : step.status === 'succeeded' ? 'succeeded' as const : 'running' as const,
+        status: step.status === 'failed' ? 'failed' as const : step.status === 'succeeded' ? 'succeeded' as const : step.status === 'aborted' ? 'aborted' as const : 'running' as const,
         requiresConfirmation: false,
         ...(step.summary ? { summary: step.summary } : {}),
         ...(step.error ? { error: step.error } : {}),
@@ -955,7 +1017,7 @@ export function presentAgentToolAccordion(
       name: 'web_search',
       label: step.title,
       risk: 'read',
-      status: step.status === 'failed' ? 'failed' : step.status === 'succeeded' ? 'succeeded' : 'running',
+      status: step.status === 'failed' ? 'failed' : step.status === 'succeeded' ? 'succeeded' : step.status === 'aborted' ? 'aborted' : 'running',
       requiresConfirmation: false,
       ...(step.summary ? { summary: step.summary } : {}),
       ...(step.error ? { error: step.error } : {}),
@@ -965,22 +1027,35 @@ export function presentAgentToolAccordion(
 
   if (!orderedCalls.length) return null
 
-  const rows = mergeMcpAccordionRows(
-    orderedCalls.map((call) => buildToolAccordionRow(call, timingByToolId.get(call.id), locale)),
-    locale,
-  )
+  const visibleRows: AgentToolAccordionRow[] = []
+  const quietRows: AgentToolAccordionRow[] = []
+  let quietInsertIndex: number | undefined
+  let nextUpdateAt: number | undefined
+  for (const call of orderedCalls) {
+    const timing = timingByToolId.get(call.id)
+    const row = buildToolAccordionRow(call, timing, locale)
+    const disposition = quietReadDisposition(call, row, timing, now)
+    if (disposition.nextUpdateAt !== undefined) {
+      nextUpdateAt = nextUpdateAt === undefined ? disposition.nextUpdateAt : Math.min(nextUpdateAt, disposition.nextUpdateAt)
+    }
+    if (disposition.kind === 'pending') continue
+    if (disposition.kind === 'aggregate') {
+      quietInsertIndex ??= visibleRows.length
+      quietRows.push(row)
+      continue
+    }
+    visibleRows.push(row)
+  }
+  const quietSummary = quietReadSummaryRow(quietRows, locale)
+  if (quietSummary) visibleRows.splice(quietInsertIndex ?? visibleRows.length, 0, quietSummary)
+  const rows = mergeMcpAccordionRows(visibleRows, locale)
+  if (!rows.length) return { elapsedMs: timelineElapsedMs(timeline, now), groups: [], ...(nextUpdateAt ? { nextUpdateAt } : {}) }
   const status = aggregateAccordionStatus(rows.map((row) => row.status))
   const focusStep = steps.find((step) => step.status === 'running') ?? steps.at(-1)
-  const group: AgentToolAccordionGroup = {
-    id: 'tools',
-    title: accordionGroupTitle(focusStep, rows, locale),
-    status,
-    open: status === 'running',
-    rows,
-  }
   return {
     elapsedMs: timelineElapsedMs(timeline, now),
-    groups: [group],
+    groups: [{ id: 'tools', title: accordionGroupTitle(focusStep, rows, locale), status, open: status === 'running', rows }],
+    ...(nextUpdateAt ? { nextUpdateAt } : {}),
   }
 }
 
@@ -1062,6 +1137,7 @@ export function conversationTimelineStepTitle(
   const en = locale === 'en'
   const running = block.status === 'running'
   const failed = block.status === 'failed'
+  if (block.status === 'aborted') return en ? 'Not run' : '未执行'
   if (block.kind === 'write' && /^生成/u.test(block.title)) {
     const label = block.title.replace(/^生成(?:\s*·\s*|\s*)/u, '').trim()
     const suffix = label && !isBotanicAgentProcessLabel(label) && label !== '分支' ? ` · ${label}` : ''
