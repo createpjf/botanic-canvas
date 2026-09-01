@@ -1,7 +1,7 @@
 import { AgentToolRuntimeError, agentToolObject, agentToolText, createAgentToolRegistry, freezeAgentStepSnapshot, runAgentToolLoop } from './agentToolRuntime.mjs'
-import { botanicAgentProviderConfig, botanicAgentProviderTemperature } from './botanicAgentPlanner.mjs'
+import { botanicAgentProviderConfig } from './botanicAgentPlanner.mjs'
+import { createBotanicAgentModelProvider } from './botanicAgentModelProvider.mjs'
 import { BotanicAgentChatError } from './botanicAgentChat.mjs'
-import { readStreamedChatCompletion } from './botanicAgentStream.mjs'
 import { normalizeBotanicAgentLocale, readBotanicAgentInstructions } from './agentInstructions.mjs'
 import { botanicAgentContextBriefing, buildBotanicAgentOntology, safeBotanicAgentMemory } from './botanicAgentOntology.mjs'
 import { BOTANIC_AGENT_MOUNTED_SKILL_LIMIT, botanicAgentMountedSkillBriefing, botanicAgentSearchableSkills, pinnedBotanicAgentProjectSkills, resolveBotanicAgentMountedSkills } from './botanicAgentTools.mjs'
@@ -23,8 +23,6 @@ import {
   GENERATION_RESOLUTIONS,
   NANO_BANANA_MODEL_ID,
 } from './generationVocabulary.mjs'
-import { throwIfAgentProviderContextOverflow } from './agentProviderContextOverflow.mjs'
-import { outboundAgentTraceHeaders } from './agentTraceContext.mjs'
 import {
   projectAgentThreadContextSnapshotV2,
   resolveAgentModelContextBinding,
@@ -676,13 +674,6 @@ function turnSituationBriefing(input, locale = 'zh-CN') {
   return lines.join('\n')
 }
 
-function providerError(status) {
-  if (status === 401 || status === 403) return new BotanicAgentChatError(502, 'PROVIDER_AUTH_FAILED', 'Agent 服务鉴权失败。')
-  if (status === 429) return new BotanicAgentChatError(429, 'PROVIDER_RATE_LIMITED', 'Agent 当前繁忙，请稍后重试。')
-  if (status >= 500) return new BotanicAgentChatError(502, 'PROVIDER_UNAVAILABLE', 'Agent 服务暂时不可用，请稍后重试。')
-  return new BotanicAgentChatError(422, 'PROVIDER_REJECTED', 'Agent 无法处理本次请求。')
-}
-
 function conversationEntryTokens(entry) {
   return estimateAgentContextTokens(JSON.stringify(entry)) + 4
 }
@@ -890,15 +881,13 @@ function turnThreadContextV2(snapshot, model) {
 }
 
 async function executeTurnAttempt({ config, model, system, messages, registry, options, allowRawReasoning, snapshot, attempt }) {
-  // 超时按单次模型调用计，不罩整轮 tool loop：调研回合搜索+读页 8 步很容易超过
-  // 30s 整轮预算，被整体掐死后用户只看到「响应超时」。单步卡死仍在 timeoutMs 内中止；
-  // 步数由 maximumSteps 封顶，工具各有自己的超时。
-  let activeCallTimeout
-  const providerCallSignal = (runtimeSignal = options.signal) => {
-    activeCallTimeout = AbortSignal.timeout(config.timeoutMs)
-    return runtimeSignal ? AbortSignal.any([runtimeSignal, activeCallTimeout]) : activeCallTimeout
-  }
-  const fetchImpl = options.fetchImpl ?? fetch
+  // 传输差异(URL/header/timeout signal/SSE/错误分类)由 Model Provider 拥有;
+  // 超时仍按单次模型调用计,不罩整轮 tool loop。fetchImpl 保留为测试 seam。
+  const provider = options.modelProvider
+    ?? createBotanicAgentModelProvider(
+      { flockApiBaseUrl: config.baseUrl, flockApiKey: config.apiKey, agentPlannerTimeoutMs: config.timeoutMs },
+      { fetchImpl: options.fetchImpl ?? fetch },
+    )
   // 有实时通道时才向提供方请求流式；工具步仍以 loop emit 为准，禁止客户端预插成功。
   const streaming = typeof options.onEvent === 'function'
   const emitEvent = (event) => {
@@ -929,60 +918,33 @@ async function executeTurnAttempt({ config, model, system, messages, registry, o
       signal: options.signal,
       deadlineAt: options.deadlineAt,
       callModel: async ({ messages: turnMessages, tools, tool_choice, step }, { signal: runtimeSignal } = {}) => {
-        const requestProvider = (requestMessages) => fetchImpl(`${config.baseUrl}/chat/completions`, {
-            method: 'POST',
-            headers: {
-              ...outboundAgentTraceHeaders(),
-              Authorization: `Bearer ${config.apiKey}`,
-              'x-litellm-api-key': config.apiKey,
-              Accept: streaming ? 'text/event-stream' : 'application/json',
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-              model,
-              messages: requestMessages,
-              tools,
-              tool_choice,
-              max_tokens: 3000,
-              temperature: botanicAgentProviderTemperature(model),
-              stream: streaming,
-            }),
-            signal: providerCallSignal(runtimeSignal),
-          })
-        let response = await requestProvider(turnMessages)
-        if (!response.ok) {
-          const failureBody = await response.text().catch(() => '')
-          try {
-            throwIfAgentProviderContextOverflow(response.status, failureBody)
-          } catch (caught) {
-            // V2 统一由 ToolLoop 触发强制 compaction；legacy 才保留这里的
-            // 唯一一次严格裁剪，避免一轮出现私有重试 + 统一重试共 3 次请求。
-            if (options.modelContext !== undefined) throw caught
-            response = await requestProvider(strictOverflowRetryConversation(turnMessages))
-            if (!response.ok) {
-              const retryFailureBody = await response.text().catch(() => '')
-              throwIfAgentProviderContextOverflow(response.status, retryFailureBody)
-              throw providerError(response.status)
-            }
-          }
-          if (!response.ok) throw providerError(response.status)
-        }
-        if (!streaming) {
-          const parsed = await response.json().catch(() => null)
-          activeCallTimeout = undefined
-          return parsed
-        }
-        const parsed = await readStreamedChatCompletion(response.body, {
-          onEvent: (event) => {
-            if (event.type === 'reasoning') {
-              if (allowRawReasoning) emitEvent({ type: 'reasoning', step, delta: event.delta })
-              return
-            }
-            if (event.type === 'answer') emitEvent({ type: 'answer', step, delta: event.delta })
-          },
+        const request = (requestMessages) => ({
+          model,
+          messages: requestMessages,
+          tools,
+          toolChoice: tool_choice,
+          maxOutputTokens: 3000,
+          stream: streaming,
+          timeoutMs: config.timeoutMs,
+          signal: runtimeSignal ?? options.signal,
+          onEvent: streaming
+            ? (event) => {
+                if (event.type === 'reasoning') {
+                  if (allowRawReasoning) emitEvent({ type: 'reasoning', step, delta: event.delta })
+                  return
+                }
+                if (event.type === 'answer') emitEvent({ type: 'answer', step, delta: event.delta })
+              }
+            : undefined,
         })
-        activeCallTimeout = undefined
-        return parsed
+        try {
+          return await provider.sample(request(turnMessages))
+        } catch (caught) {
+          // V2 统一由 ToolLoop 触发强制 compaction；legacy 才保留这里的
+          // 唯一一次严格裁剪，避免一轮出现私有重试 + 统一重试共 3 次请求。
+          if (caught?.code !== 'AGENT_CONTEXT_OVERFLOW' || options.modelContext !== undefined) throw caught
+          return await provider.sample(request(strictOverflowRetryConversation(turnMessages)))
+        }
       },
     })
     if (result.output && typeof result.output === 'object' && result.output.__turnKind === 'generation') {
@@ -1054,12 +1016,13 @@ async function executeTurnAttempt({ config, model, system, messages, registry, o
       throw new BotanicAgentChatError(caught.statusCode ?? 409, caught.code, caught.message, { cause: caught })
     }
     if (options.signal?.aborted) throw new BotanicAgentChatError(499, 'REQUEST_CANCELLED', 'Agent 请求已取消。')
-    if (activeCallTimeout?.aborted) throw new BotanicAgentChatError(504, 'PROVIDER_TIMEOUT', 'Agent 响应超时，请重试。')
-    // TOOL_*、AGENT_SKILL_*、取消与 deadline 是具名事实（H4），不得吞成 Provider 错;
-    // INVALID_PROVIDER_RESPONSE 只在 Provider payload 本身不可解析时使用。
+    // TOOL_*、AGENT_SKILL_*、PROVIDER_*、取消与 deadline 是具名事实（H4/1B），不得吞成
+    // 通用 Provider 错;INVALID_PROVIDER_RESPONSE 只在 payload 本身不可解析时使用。
     if (typeof caught?.code === 'string'
       && (caught.code.startsWith('TOOL_')
         || caught.code.startsWith('AGENT_SKILL_')
+        || caught.code.startsWith('AGENT_TOOL_')
+        || caught.code.startsWith('PROVIDER_')
         || caught.code === 'WEB_QUOTA_EXCEEDED'
         || caught.code === 'REQUEST_CANCELLED'
         || caught.code === 'AGENT_TURN_DEADLINE_EXCEEDED')) {

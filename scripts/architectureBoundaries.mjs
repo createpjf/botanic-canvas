@@ -6,6 +6,14 @@ const sourceExtensions = new Set(['.js', '.mjs', '.ts', '.tsx'])
 const staticImportPattern = /\b(?:import|export)\s+(?:type\s+)?(?:[^'"]*?\sfrom\s*)?['"]([^'"]+)['"]/g
 const dynamicImportPattern = /\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/g
 const commonJsRequirePattern = /\brequire\s*\(\s*['"]([^'"]+)['"]\s*\)/g
+// Agent 模型传输细节只属于 botanicAgentModelProvider.mjs(计划 1B):这些 owner
+// 不得再出现 endpoint/鉴权头/SSE reader,防止第二份 transport 静默长回来。
+const agentSamplingTransportForbidden = Object.freeze([
+  ['/chat/completions', 'agent-caller-cannot-own-model-transport'],
+  ["Authorization: `Bearer", 'agent-caller-cannot-own-model-auth'],
+  ['readStreamedChatCompletion', 'agent-caller-cannot-own-stream-reader'],
+])
+
 const ownershipPolicies = Object.freeze({
   'server/agentRoutes.mjs': {
     maxLines: 2263,
@@ -14,6 +22,10 @@ const ownershipPolicies = Object.freeze({
       ['createAgentTurnRecord', 'agent-routes-cannot-create-turn-record'],
     ],
   },
+  'server/botanicAgentTurn.mjs': { forbidden: agentSamplingTransportForbidden },
+  'server/botanicAgentChat.mjs': { forbidden: agentSamplingTransportForbidden },
+  'server/botanicAgentPlanner.mjs': { forbidden: agentSamplingTransportForbidden },
+  'server/agentSubagentRunner.mjs': { forbidden: agentSamplingTransportForbidden },
   'src/features/agent/AgentWorkspace.tsx': {
     maxLines: 3853,
     forbidden: [
