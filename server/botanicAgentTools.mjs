@@ -8,6 +8,7 @@ import { createBotanicAgentWebResearchTools } from './botanicAgentWebTools.mjs'
 import {
   agentSkillExecutionContentHash,
   agentSkillManifestRisk,
+  agentSkillVersion,
   BotanicAgentSkillError,
   botanicAgentSkillCapabilities,
   normalizeAgentSkillManifest,
@@ -130,27 +131,126 @@ function projectSkillEntries(projectSkills = []) {
     }])
 }
 
-/** 系统目录 + 当前项目已启用 Skill。同名 id 以系统目录为准，避免项目覆盖内置规则。 */
-export function resolveBotanicAgentAvailableSkills(projectSkills = []) {
-  const systemEntries = Object.keys(skillCatalog).map((id) => {
-    const skill = botanicAgentBuiltInSkill(id)
-    return [id, {
-      label: skill.name,
-      instructions: skill.instructions,
-      source: 'system',
-      version: skill.version,
-      contentHash: skill.contentHash,
-      capabilities: skill.capabilities,
-      versions: [{
-        version: skill.version,
-        name: skill.name,
+/** 系统目录 + 当前项目已启用 Skill。同名 id 以系统目录为准，避免项目覆盖内置规则。
+ * `builtIn`（H5）：恢复时传入 Turn 创建时冻结的内置语义 snapshot；部署后的内置目录
+ * 变化不得替换原回合正文。 */
+export function resolveBotanicAgentAvailableSkills(projectSkills = [], { builtIn } = {}) {
+  const frozenBuiltIn = builtIn && typeof builtIn === 'object' && !Array.isArray(builtIn) ? builtIn : undefined
+  const systemEntries = frozenBuiltIn
+    ? Object.entries(frozenBuiltIn).map(([id, skill]) => [id, {
+        label: skill.name,
         instructions: skill.instructions,
-        capabilities: skill.capabilities,
+        source: 'system',
+        version: skill.version,
         contentHash: skill.contentHash,
-      }],
-    }]
-  })
+        capabilities: Array.isArray(skill.capabilities) ? skill.capabilities : ['read'],
+        versions: [{
+          version: skill.version,
+          name: skill.name,
+          instructions: skill.instructions,
+          capabilities: Array.isArray(skill.capabilities) ? skill.capabilities : ['read'],
+          contentHash: skill.contentHash,
+        }],
+      }])
+    : Object.keys(skillCatalog).map((id) => {
+        const skill = botanicAgentBuiltInSkill(id)
+        return [id, {
+          label: skill.name,
+          instructions: skill.instructions,
+          source: 'system',
+          version: skill.version,
+          contentHash: skill.contentHash,
+          capabilities: skill.capabilities,
+          versions: [{
+            version: skill.version,
+            name: skill.name,
+            instructions: skill.instructions,
+            capabilities: skill.capabilities,
+            contentHash: skill.contentHash,
+          }],
+        }]
+      })
   return { ...Object.fromEntries(systemEntries), ...Object.fromEntries(projectSkillEntries(projectSkills)) }
+}
+
+/** Skill Loader V2 防御边界（H5）。 */
+const AGENT_SKILL_CATALOG_MAX_ITEMS = 128
+const AGENT_SKILL_SNAPSHOT_MAX_BYTES = 64 * 1024
+
+/**
+ * 在 Turn 创建时冻结 Skill catalog（H5）：
+ * - 内置 Skill 没有版本历史,完整语义 snapshot 一次冻结（不整体注入 prompt）;
+ * - 项目 Skill 只存 metadata binding（id/name/version/contentHash/capabilities/manifest）,
+ *   正文恢复时从不可变版本历史读取;
+ * - 越界具名失败:catalog 超 128 项 AGENT_SKILL_CATALOG_TOO_LARGE,序列化超 64KB
+ *   AGENT_SKILL_SNAPSHOT_TOO_LARGE。
+ */
+export function freezeBotanicAgentSkillCatalog(projectSkills = []) {
+  const available = resolveBotanicAgentAvailableSkills(projectSkills)
+  const entries = Object.entries(available)
+  if (entries.length > AGENT_SKILL_CATALOG_MAX_ITEMS) {
+    throw new BotanicAgentSkillError(409, 'AGENT_SKILL_CATALOG_TOO_LARGE', `Skill 目录超过 ${AGENT_SKILL_CATALOG_MAX_ITEMS} 项，无法冻结。`)
+  }
+  const builtIn = {}
+  const project = []
+  for (const [id, skill] of entries) {
+    if ((skill.source ?? 'system') === 'project') {
+      project.push({
+        id,
+        name: skill.label,
+        ...(Number.isInteger(skill.version) ? { version: skill.version } : {}),
+        ...(typeof skill.contentHash === 'string' ? { contentHash: skill.contentHash } : {}),
+        ...(Array.isArray(skill.capabilities) ? { capabilities: [...skill.capabilities] } : {}),
+        ...(skill.manifest ? { manifest: structuredClone(skill.manifest) } : {}),
+      })
+    } else {
+      builtIn[id] = {
+        name: skill.label,
+        instructions: skill.instructions,
+        version: skill.version,
+        contentHash: skill.contentHash,
+        capabilities: Array.isArray(skill.capabilities) ? [...skill.capabilities] : ['read'],
+      }
+    }
+  }
+  const frozen = { version: 1, builtIn, project }
+  if (JSON.stringify(frozen).length > AGENT_SKILL_SNAPSHOT_MAX_BYTES) {
+    throw new BotanicAgentSkillError(409, 'AGENT_SKILL_SNAPSHOT_TOO_LARGE', 'Skill 目录冻结快照过大。')
+  }
+  return frozen
+}
+
+/**
+ * 恢复时按冻结 catalog 固定项目 Skill 正文（H5）：当前版本命中直接用,否则从
+ * 不可变版本历史读取;历史丢失或 hash 不一致报 AGENT_SKILL_SNAPSHOT_MISMATCH,
+ * 在 Provider 调用前失败。返回形如 projectSkills 的数组供既有解析器消费。
+ */
+export function pinnedBotanicAgentProjectSkills(frozenCatalog, currentProjectSkills = []) {
+  const frozen = frozenCatalog && typeof frozenCatalog === 'object' ? frozenCatalog : undefined
+  if (!frozen || !Array.isArray(frozen.project)) return currentProjectSkills
+  const byId = new Map((Array.isArray(currentProjectSkills) ? currentProjectSkills : []).filter((skill) => skill?.id).map((skill) => [skill.id, skill]))
+  return frozen.project.map((binding) => {
+    const current = byId.get(binding.id)
+    if (!current) {
+      throw new BotanicAgentSkillError(409, 'AGENT_SKILL_SNAPSHOT_MISMATCH', `项目 Skill ${binding.id} 已不存在，无法按原回合恢复。`)
+    }
+    const currentMatches = (binding.version === undefined || Number(current.version) === binding.version)
+      && (binding.contentHash === undefined || current.contentHash === binding.contentHash)
+    if (currentMatches) return current
+    const snapshot = agentSkillVersion(current, binding.version)
+    if (!snapshot || (binding.contentHash && snapshot.contentHash !== binding.contentHash)) {
+      throw new BotanicAgentSkillError(409, 'AGENT_SKILL_SNAPSHOT_MISMATCH', `项目 Skill ${binding.id}@${binding.version ?? '?'} 的历史版本缺失或内容不一致。`)
+    }
+    return {
+      ...current,
+      name: typeof snapshot.name === 'string' ? snapshot.name : current.name,
+      instructions: snapshot.instructions,
+      version: binding.version,
+      contentHash: snapshot.contentHash,
+      ...(Array.isArray(snapshot.capabilities) ? { capabilities: [...snapshot.capabilities] } : {}),
+      ...(snapshot.manifest ? { manifest: snapshot.manifest } : {}),
+    }
+  })
 }
 
 /** Composer 公开请求上限与解析上限共用同一常量；两处不一致就会出现「API 接受、解析器丢弃」。 */
@@ -178,13 +278,13 @@ function mountedSkillTokenBudget(contextPolicy) {
  * `role: 'dependency'`）+ 挂载 roots（保留用户挂载顺序）。全部条目正文完整注入，
  * 聚合预算超限时具名失败而不是裁剪正文。
  */
-export function resolveBotanicAgentMountedSkills(mountedSkillIds = [], projectSkills = [], { contextPolicy } = {}) {
+export function resolveBotanicAgentMountedSkills(mountedSkillIds = [], projectSkills = [], { contextPolicy, builtIn } = {}) {
   const requested = [...new Set(Array.isArray(mountedSkillIds) ? mountedSkillIds : [])]
   if (!requested.length) return []
   if (requested.length > BOTANIC_AGENT_MOUNTED_SKILL_LIMIT) {
     throw new BotanicAgentSkillError(400, 'AGENT_SKILL_BINDING_LIMIT', `一次最多挂载 ${BOTANIC_AGENT_MOUNTED_SKILL_LIMIT} 个 Skill。`)
   }
-  const available = resolveBotanicAgentAvailableSkills(projectSkills)
+  const available = resolveBotanicAgentAvailableSkills(projectSkills, { builtIn })
   const unknown = requested.filter((skillId) => !available[skillId])
   if (unknown.length) {
     throw new BotanicAgentSkillError(409, 'AGENT_SKILL_BINDING_UNKNOWN', `挂载的 Skill 不可用：${unknown.join('、')}。`)
@@ -250,8 +350,8 @@ export function resolveBotanicAgentMountedSkills(mountedSkillIds = [], projectSk
 }
 
 /** skill_search 用的扁平目录：系统 Skill 始终在，项目 Skill 跟在后面。 */
-export function botanicAgentSearchableSkills(projectSkills = []) {
-  const available = resolveBotanicAgentAvailableSkills(projectSkills)
+export function botanicAgentSearchableSkills(projectSkills = [], { builtIn } = {}) {
+  const available = resolveBotanicAgentAvailableSkills(projectSkills, { builtIn })
   return Object.entries(available).map(([id, skill]) => ({
     id,
     name: skill.label,

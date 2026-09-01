@@ -4,6 +4,7 @@ import {
   botanicAgentMountedSkillBriefing,
   botanicAgentSearchableSkills,
   createBotanicAgentPlanningToolRegistry,
+  pinnedBotanicAgentProjectSkills,
   resolveBotanicAgentMountedSkills,
 } from './botanicAgentTools.mjs'
 import { readStreamedChatCompletion } from './botanicAgentStream.mjs'
@@ -683,8 +684,10 @@ async function plannerInstructions(locale) {
 
 function plannerModelInput(input) {
   const { projectSkills, ...safeInput } = input
-  const availableSkills = botanicAgentSearchableSkills(projectSkills).map((skill) => ({ id: skill.id, name: skill.name }))
-  const mountedSkills = resolveBotanicAgentMountedSkills(input.mountedSkillIds, projectSkills)
+  const effectiveProjectSkills = pinnedBotanicAgentProjectSkills(input.skillCatalogSnapshot, projectSkills)
+  const frozenBuiltInSkills = input.skillCatalogSnapshot?.builtIn
+  const availableSkills = botanicAgentSearchableSkills(effectiveProjectSkills, { builtIn: frozenBuiltInSkills }).map((skill) => ({ id: skill.id, name: skill.name }))
+  const mountedSkills = resolveBotanicAgentMountedSkills(input.mountedSkillIds, effectiveProjectSkills, { builtIn: frozenBuiltInSkills })
     .map((skill) => ({ id: skill.id, name: skill.name, instructions: skill.instructions }))
   return {
     ...safeInput,
@@ -695,7 +698,11 @@ function plannerModelInput(input) {
 
 export async function planBotanicGeneration(input, runtimeConfig, options = {}) {
   const config = botanicAgentProviderConfig(runtimeConfig, input?.plannerModel)
-  const mountedSkills = resolveBotanicAgentMountedSkills(input.mountedSkillIds, input.projectSkills)
+  const mountedSkills = resolveBotanicAgentMountedSkills(
+    input.mountedSkillIds,
+    pinnedBotanicAgentProjectSkills(input.skillCatalogSnapshot, input.projectSkills),
+    { builtIn: input.skillCatalogSnapshot?.builtIn },
+  )
   const system = [
     await plannerInstructions(input.locale),
     botanicAgentMountedSkillBriefing(mountedSkills, input.locale),

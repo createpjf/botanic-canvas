@@ -12,7 +12,7 @@ import {
 import { captionAgentVisionModel, nativeAgentVisionModel } from './botanicAgentVisionCapability.mjs'
 import { readStreamedChatCompletion } from './botanicAgentStream.mjs'
 import { botanicAgentContextToolSourceLabels, createBotanicAgentReadToolDefinitions } from './botanicAgentContextTools.mjs'
-import { BOTANIC_AGENT_MOUNTED_SKILL_LIMIT, botanicAgentMountedSkillBriefing, botanicAgentSearchableSkills, resolveBotanicAgentMountedSkills } from './botanicAgentTools.mjs'
+import { BOTANIC_AGENT_MOUNTED_SKILL_LIMIT, botanicAgentMountedSkillBriefing, botanicAgentSearchableSkills, pinnedBotanicAgentProjectSkills, resolveBotanicAgentMountedSkills } from './botanicAgentTools.mjs'
 import { canonicalHash } from './canonicalHash.mjs'
 import { throwIfAgentProviderContextOverflow } from './agentProviderContextOverflow.mjs'
 import { resolveAgentModelContextBinding } from './agentModelContextBinding.mjs'
@@ -333,9 +333,13 @@ export async function chatWithBotanicAgent(input, runtimeConfig, options = {}) {
   if (options.signal?.aborted) throw new BotanicAgentChatError(499, 'REQUEST_CANCELLED', 'Agent 对话请求已取消。')
   const ontology = buildBotanicAgentOntology(options.document, input.contextNodeIds)
   const memory = safeBotanicAgentMemory(options.document)
-  const skills = botanicAgentSearchableSkills(options.projectSkills)
-  const mountedSkills = resolveBotanicAgentMountedSkills(input.mountedSkillIds, options.projectSkills, {
+  // Skill Loader V2（H5）:recovery 读 Turn 冻结 catalog,新 Turn 读当前目录。
+  const effectiveProjectSkills = pinnedBotanicAgentProjectSkills(input.skillCatalogSnapshot, options.projectSkills)
+  const frozenBuiltInSkills = input.skillCatalogSnapshot?.builtIn
+  const skills = botanicAgentSearchableSkills(effectiveProjectSkills, { builtIn: frozenBuiltInSkills })
+  const mountedSkills = resolveBotanicAgentMountedSkills(input.mountedSkillIds, effectiveProjectSkills, {
     contextPolicy: options.modelContext?.policy,
+    builtIn: frozenBuiltInSkills,
   })
   const webResearch = options.allowWebResearch === false ? undefined : {
     apiKey: runtimeConfig?.webSearch?.apiKey,

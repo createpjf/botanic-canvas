@@ -4,7 +4,7 @@ import { BotanicAgentChatError } from './botanicAgentChat.mjs'
 import { readStreamedChatCompletion } from './botanicAgentStream.mjs'
 import { normalizeBotanicAgentLocale, readBotanicAgentInstructions } from './agentInstructions.mjs'
 import { botanicAgentContextBriefing, buildBotanicAgentOntology, safeBotanicAgentMemory } from './botanicAgentOntology.mjs'
-import { BOTANIC_AGENT_MOUNTED_SKILL_LIMIT, botanicAgentMountedSkillBriefing, botanicAgentSearchableSkills, resolveBotanicAgentMountedSkills } from './botanicAgentTools.mjs'
+import { BOTANIC_AGENT_MOUNTED_SKILL_LIMIT, botanicAgentMountedSkillBriefing, botanicAgentSearchableSkills, pinnedBotanicAgentProjectSkills, resolveBotanicAgentMountedSkills } from './botanicAgentTools.mjs'
 import {
   botanicAgentMultimodalMessages,
   botanicAgentVisionBriefing,
@@ -845,6 +845,28 @@ function turnAttempt(id, model, snapshot) {
   return Object.freeze({ id, model, snapshotHash: canonicalHash(snapshot) })
 }
 
+function turnPinnedProjectSkills(frozenCatalog, projectSkills) {
+  try {
+    return pinnedBotanicAgentProjectSkills(frozenCatalog, projectSkills)
+  } catch (caught) {
+    if (typeof caught?.code === 'string' && caught.code.startsWith('AGENT_SKILL_')) {
+      throw new BotanicAgentChatError(caught.statusCode ?? 409, caught.code, caught.message, { cause: caught })
+    }
+    throw caught
+  }
+}
+
+function turnMountedSkills(mountedSkillIds, projectSkills, resolveOptions) {
+  try {
+    return resolveBotanicAgentMountedSkills(mountedSkillIds, projectSkills, resolveOptions)
+  } catch (caught) {
+    if (typeof caught?.code === 'string' && caught.code.startsWith('AGENT_SKILL_')) {
+      throw new BotanicAgentChatError(caught.statusCode ?? 409, caught.code, caught.message, { cause: caught })
+    }
+    throw caught
+  }
+}
+
 function turnModelContextBinding(options, model, expectedPolicy) {
   try {
     return resolveAgentModelContextBinding(options, model, expectedPolicy)
@@ -1064,9 +1086,14 @@ export async function resolveBotanicAgentTurn(input, runtimeConfig, options = {}
   const baseSystem = await turnInstructions(input.locale, { canGenerate })
   const situation = turnSituationBriefing(input, input.locale)
   const contextV2 = turnThreadContextV2(input.threadContextSnapshot, config.model)
+  // Skill Loader V2（H5）：recovery 优先读取 Turn 自身冻结 catalog——项目 Skill 按
+  // binding pin 到不可变版本历史,内置 Skill 用冻结语义 snapshot;当前项目目录只服务新 Turn。
+  const effectiveProjectSkills = turnPinnedProjectSkills(input.skillCatalogSnapshot, options.projectSkills)
+  const frozenBuiltInSkills = input.skillCatalogSnapshot?.builtIn
   // Skill 子预算来自同一冻结 Context policy（H1）：不在简报旁另造口径。
-  const mountedSkills = resolveBotanicAgentMountedSkills(input.mountedSkillIds, options.projectSkills, {
+  const mountedSkills = turnMountedSkills(input.mountedSkillIds, effectiveProjectSkills, {
     contextPolicy: contextV2?.modelPolicy ?? options.modelContext?.policy,
+    builtIn: frozenBuiltInSkills,
   })
   const mountedBriefing = botanicAgentMountedSkillBriefing(mountedSkills, input.locale)
   const immutableThreadContext = input.threadContextSnapshot?.version === 1
@@ -1102,7 +1129,7 @@ export async function resolveBotanicAgentTurn(input, runtimeConfig, options = {}
   )
   const ontology = buildBotanicAgentOntology(options.document, contextNodeIds)
   const memory = safeBotanicAgentMemory(options.document)
-  const skills = botanicAgentSearchableSkills(options.projectSkills)
+  const skills = botanicAgentSearchableSkills(effectiveProjectSkills, { builtIn: frozenBuiltInSkills })
   // 与对话/规划链路同一套 Tavily 配置；没 Key 时 createBotanicAgentWebResearchTools 不会暴露 web_search。
   const webResearch = options.allowWebResearch === false ? undefined : {
     apiKey: runtimeConfig?.webSearch?.apiKey,
