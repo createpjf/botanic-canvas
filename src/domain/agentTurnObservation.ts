@@ -213,10 +213,19 @@ export function resolveBotanicAgentContinuationTarget<T>(
   throw error
 }
 
+/** Harness terminal 码:重试不会改变结局,必须停止恢复并显示原因。 */
+const TERMINAL_TURN_RECOVERY_CODES = new Set([
+  'AGENT_TURN_DEADLINE_EXCEEDED',
+  'AGENT_TURN_RESUME_LIMIT_REACHED',
+  'AGENT_SKILL_SNAPSHOT_MISMATCH',
+  'AGENT_TOOL_OUTCOME_UNKNOWN',
+])
+
 export function isRetryableBotanicAgentTurnRecoveryError(caught: unknown) {
   const source = caught as { status?: unknown; code?: unknown } | undefined
   const status = Number(source?.status)
   const code = typeof source?.code === 'string' ? source.code : ''
+  if (TERMINAL_TURN_RECOVERY_CODES.has(code)) return false
   if (status === 0) {
     return !code
       || code === 'STREAM_DISCONNECTED'
@@ -401,7 +410,7 @@ export function monotonicAgentTurnEventDecision(
 }
 
 const toolRisks = new Set<AgentToolCallTrace['risk']>(['read', 'write', 'costly', 'external'])
-const toolStatuses = new Set<AgentToolCallTrace['status']>(['pending', 'running', 'awaiting_confirmation', 'succeeded', 'failed'])
+const toolStatuses = new Set<AgentToolCallTrace['status']>(['pending', 'running', 'awaiting_confirmation', 'succeeded', 'failed', 'aborted'])
 const presentationKinds = new Set<TimelineStepKind>(['search', 'fetch', 'read_skill', 'connect_runtime', 'read', 'write', 'other'])
 
 function stringValue(value: unknown, fallback = '') {

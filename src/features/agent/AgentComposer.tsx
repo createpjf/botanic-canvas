@@ -249,7 +249,7 @@ export function AgentComposer({
         </div>
       </div> : null}
       {mountedSkills.length ? <div className="agent-composer__attach-row" aria-label={`${copy.mounted} ${mountedSkills.length} Skill`}>
-        <span className="agent-composer__attach-label">{copy.mounted}</span>
+        <span className="agent-composer__attach-label">{mountedSkills.length > 8 ? `${copy.mounted} ${mountedSkills.length}/16` : copy.mounted}</span>
         <div className="agent-composer__attach-chips">
           {mountedSkills.map((skill) => <button key={skill.id} data-flip-id={skill.id} type="button" className="agent-composer__chip is-skill" aria-label={`${copy.remove} Skill ${skill.name}`} title={`${copy.remove} ${skill.name}`} onClick={() => onRemoveMountedSkill(skill.id)}>
             <SparkleIcon /><b>{skill.name}</b><i aria-hidden="true">×</i>

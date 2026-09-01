@@ -1533,9 +1533,12 @@ export default function AgentWorkspace({
   }
   const selectSkill = (skill: AgentSkillOption) => {
     if (!session || !mentionQuery) return
+    const next = [...new Set([...(session.mountedSkillIds ?? []), skill.id])]
+    // 服务端 16 上限 fail-closed;超限在挂载点直接拒绝,不等提交时报错。
+    if (next.length > 16) return
     const consumed = consumeBotanicAgentMention(instruction, mentionQuery)
     setInstruction(consumed.value)
-    onSkillsChange(session.id, [...new Set([...(session.mountedSkillIds ?? []), skill.id])])
+    onSkillsChange(session.id, next)
     setMentionQuery(undefined)
     requestAnimationFrame(() => {
       composerTextareaRef.current?.focus()
