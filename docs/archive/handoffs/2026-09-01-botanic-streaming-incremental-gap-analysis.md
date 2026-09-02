@@ -12,6 +12,16 @@
 | S4 PartialAccumulator | 完成 | 重复chunk、旧attempt迟到chunk被丢弃；stream状态有单一domain owner | `e0dcb8f` |
 | S6 TTFT/chunk health | 完成 | 区分首token慢、解码间隔大、流截断、坏帧；为H3C提供数据 | `0c2f5b0` |
 
+## 第二阶段：Durable TurnOutputPreview
+
+- ADR 0012：`8d683a1`。
+- 核心实现：`fe6591f`。
+- 运行中answer按500ms/1KiB合并，最大12KiB；attempt-start先等待空preview fenced commit，再启动Provider。
+- Turn payload只保留最新正文；`turn.output_preview.updated` Event只保存revision/attempt/step/charCount。
+- 实时SSE和GET observer投影`answer_snapshot`，前端按revision replace；会话初始化清空live bubble的竞态由后续UAT修复。
+- completed/waiting_user/failed/cancelled原子清除；Message、线程上下文与Cancel Partial不变。
+- 新Supabase migration：`20260901120000_agent_turn_output_preview.sql`。
+
 ## 关键语义
 
 - Provider SSE只有`[DONE]`正常结束；malformed/closed保留具名502。
@@ -19,7 +29,7 @@
 - Agent Protocol v1 additive增加`attempt`事件；answer/reasoning携带attemptId+chunkIndex，tool携带attemptId。
 - vision/text使用现有attempt ID；Chat用`chat_text`，Planner用`plan`。
 - 新attempt只清除live answer/reasoning；Tool状态仍由execute前后事实拥有。
-- attempt/chunk cursor live-only；reasoning/answer仍不进入durable Turn Event。
+- attempt/chunk cursor live-only；reasoning与逐token answer delta不持久化。只有用户可见answer的最新有界TurnOutputPreview短期落Turn payload；Event不含正文。
 - 指标不含文本/参数/URL/Turn ID/Project ID；每stream仅first_token一次、终态一次，不按chunk写日志。
 
 ## 指标
@@ -33,19 +43,21 @@
 
 ## 验证
 
-- 774 tests。
+- 1955 server tests + 775 app tests。
 - Architecture boundaries、Protocol artifacts、build、diff check全绿。
 - 故障注入:vision流先吐废弃前缀后缺DONE，服务端产生vision→text attempts，最终结果只含text答案；前端重复/迟到chunk测试通过。
-- Chromium UAT 2/2:accepted后刷新恢复且Provider只调一次；Stop不产出最终回答。
+- 第一阶段Chromium UAT 2/2:accepted后刷新恢复且Provider只调一次；Stop不产出最终回答。
+- Preview Chromium UAT 1/1:Provider停顿30秒时刷新，GET observer恢复正文；最终请求数1；terminal DB无preview且事件无text。
+- 真实Postgres SQL:preview RPC返回committed、metadata Event无text、terminal trigger清除。
 - React Doctor changed scope:0 errors；现存warnings无本批新增错误。
 
 ## 保持不变
 
-- 无数据库/schema/ProductStore Adapter变化。
+- ProductStore公共方法不新增；commit command additive支持outputPreview，三个Adapter同步。Supabase需部署ADR 0012 migration。
 - 不启用transport retry(H3C Gate仍关闭)。
 - 不持久化raw reasoning、tool-call argument delta或partial answer。
 - 不迁移WebSocket mux。
 
-## 后续Gate
+## Cancel Partial Gate
 
-Durable answer snapshot会改变内容持久化边界，必须单独ADR；Cancel partial需要产品决定“本地保留已停止前缀”还是继续保守丢弃。本批不实现。
+ADR 0013已建立但未采纳interrupted Message。当前收集：preview write P50/P95、max char P50/P95、取消样本数/非空率，以及浏览器active observer/recovered Sentry比率。至少观察14天、1000个Preview Turn、100次取消、50次active observer，且取消非空率>=25%并有明确用户证据后，才进入接受评审。当前取消仍只显示notice，不保留partial。

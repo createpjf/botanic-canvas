@@ -113,6 +113,13 @@ export function aggregateOperationalMetrics(events = [], { minimumPercentileSamp
   const providerStreamDurationMs = providerStreams.map((event) => Number(event.durationMs)).filter(Number.isFinite)
   const providerChunkCounts = providerStreams.map((event) => Number(event.chunkCount)).filter(Number.isFinite)
   const providerMaxChunkGapMs = providerStreams.map((event) => Number(event.maxChunkGapMs)).filter(Number.isFinite)
+  const previewSettled = harnessOf('preview', 'preview_settled')
+  const previewCancelled = harnessOf('preview', 'preview_cancelled')
+  const previewSamples = [...previewSettled, ...previewCancelled]
+  const previewWriteCounts = previewSamples.map((event) => Number(event.writeCount)).filter(Number.isFinite)
+  const previewMaxCharCounts = previewSettled.map((event) => Number(event.maxCharCount)).filter(Number.isFinite)
+  const previewCancelCharCounts = previewCancelled.map((event) => Number(event.maxCharCount)).filter(Number.isFinite)
+  const previewCancelNonEmpty = previewCancelled.reduce((count, event) => count + (Number(event.nonEmptyCount) === 1 ? 1 : 0), 0)
   const deadlineExceeded = harnessOf('provider', 'deadline_exceeded')
   const resumeLimit = harnessOf('provider', 'resume_limit')
   const generations = harness.map((event) => Number(event.generation)).filter(Number.isFinite)
@@ -209,6 +216,15 @@ export function aggregateOperationalMetrics(events = [], { minimumPercentileSamp
       providerChunkP50Count: percentile(providerChunkCounts, 0.5, percentileOptions),
       providerChunkP95Count: percentile(providerChunkCounts, 0.95, percentileOptions),
       providerMaxChunkGapP95Ms: percentile(providerMaxChunkGapMs, 0.95, percentileOptions),
+      previewSampleCount: previewSamples.length,
+      previewWriteP50Count: percentile(previewWriteCounts, 0.5, percentileOptions),
+      previewWriteP95Count: percentile(previewWriteCounts, 0.95, percentileOptions),
+      previewMaxCharP50Count: percentile(previewMaxCharCounts, 0.5, percentileOptions),
+      previewMaxCharP95Count: percentile(previewMaxCharCounts, 0.95, percentileOptions),
+      previewCancelSampleCount: previewCancelled.length,
+      previewCancelCharP50Count: percentile(previewCancelCharCounts, 0.5, percentileOptions),
+      previewCancelCharP95Count: percentile(previewCancelCharCounts, 0.95, percentileOptions),
+      previewCancelNonEmptyRate: ratio(previewCancelNonEmpty, previewCancelled.length),
       deadlineExceededCount: deadlineExceeded.length,
       resumeLimitCount: resumeLimit.length,
       generationP95: percentile(generations, 0.95, percentileOptions),

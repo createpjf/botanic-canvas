@@ -134,6 +134,10 @@ test('harness 口径从 lifecycle 语义事件聚合,零容忍计数与 null 语
     harness('provider', 'stream_completed', { durationMs: 2_000, chunkCount: 8, maxChunkGapMs: 80 }),
     harness('provider', 'stream_closed', { durationMs: 500, chunkCount: 1, maxChunkGapMs: 0 }),
     harness('provider', 'stream_malformed', { durationMs: 20, chunkCount: 0, maxChunkGapMs: 0 }),
+    harness('preview', 'preview_settled', { reason: 'COMPLETED', writeCount: 2, maxCharCount: 500, nonEmptyCount: 1 }),
+    harness('preview', 'preview_settled', { reason: 'FAILED', writeCount: 4, maxCharCount: 2_000, nonEmptyCount: 1 }),
+    harness('preview', 'preview_cancelled', { reason: 'CANCELLED', writeCount: 3, maxCharCount: 800, nonEmptyCount: 1 }),
+    harness('preview', 'preview_cancelled', { reason: 'CANCELLED', writeCount: 1, maxCharCount: 0, nonEmptyCount: 0 }),
   ], { minimumPercentileSamples: 1 })
   assert.equal(metrics.harness.toolSettledCount, 3)
   assert.equal(metrics.harness.toolSuccessRate, 1 / 3)
@@ -154,6 +158,13 @@ test('harness 口径从 lifecycle 语义事件聚合,零容忍计数与 null 语
   assert.equal(metrics.harness.providerMaxChunkGapP95Ms, 80)
   assert.equal(metrics.harness.providerStreamClosedCount, 1)
   assert.equal(metrics.harness.providerStreamMalformedCount, 1)
+  assert.equal(metrics.harness.previewSampleCount, 4)
+  assert.equal(metrics.harness.previewWriteP50Count, 2)
+  assert.equal(metrics.harness.previewWriteP95Count, 4)
+  assert.equal(metrics.harness.previewMaxCharP95Count, 2_000)
+  assert.equal(metrics.harness.previewCancelSampleCount, 2)
+  assert.equal(metrics.harness.previewCancelCharP95Count, 800)
+  assert.equal(metrics.harness.previewCancelNonEmptyRate, 0.5)
   // 零容忍不变量默认 0;取消延迟没有样本时是 null 而不是 0。
   assert.equal(metrics.harness.startedAfterCancelCount, 0)
   assert.equal(metrics.harness.completedAfterCancelCount, 0)

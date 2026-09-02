@@ -149,6 +149,15 @@ test('ID、计数、耗时、Token 与 W3C Trace 均有严格边界', () => {
     chunkCount: stream.chunkCount, maxChunkGapMs: stream.maxChunkGapMs,
   }, { outcome: 'stream_completed', durationMs: 420, chunkCount: 8, maxChunkGapMs: 65 })
   assert.equal(stream.prompt, undefined)
+  const preview = createAgentSemanticEvent(AGENT_SEMANTIC_EVENT_NAMES.HARNESS_LIFECYCLE, {
+    kind: 'preview', outcome: 'preview_cancelled', reason: 'CANCELLED',
+    writeCount: 4, maxCharCount: 2_048, nonEmptyCount: 1, content: '不得记录',
+  }, occurredAt)
+  assert.deepEqual({
+    kind: preview.kind, outcome: preview.outcome, reason: preview.reason,
+    writeCount: preview.writeCount, maxCharCount: preview.maxCharCount, nonEmptyCount: preview.nonEmptyCount,
+  }, { kind: 'preview', outcome: 'preview_cancelled', reason: 'CANCELLED', writeCount: 4, maxCharCount: 2_048, nonEmptyCount: 1 })
+  assert.equal(preview.content, undefined)
 })
 
 test('writer 对 schema、序列化和 logger 故障全部 fail-open', () => {

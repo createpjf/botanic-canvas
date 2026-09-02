@@ -31,6 +31,10 @@ test('语义事件旁路成低基数指标:标识字段被丢弃,duration/genera
       event: 'botanic.agent.harness.lifecycle', kind: 'provider', outcome: 'stream_completed',
       durationMs: 2_000, chunkCount: 8, maxChunkGapMs: 80,
     })
+    recordAgentSemanticMetric({
+      event: 'botanic.agent.harness.lifecycle', kind: 'preview', outcome: 'preview_cancelled',
+      writeCount: 3, maxCharCount: 800, nonEmptyCount: 1,
+    })
     const counter = records.find((entry) => entry.instrument === 'counter')
     assert.equal(counter.attributes.kind, 'cancel')
     assert.equal(counter.attributes.outcome, 'cancel_observed')
@@ -40,6 +44,9 @@ test('语义事件旁路成低基数指标:标识字段被丢弃,duration/genera
     assert.ok(records.some((entry) => entry.instrument === 'botanic.agent.turn.generation' && entry.value === 2))
     assert.ok(records.some((entry) => entry.instrument === 'botanic.agent.provider.chunk_count' && entry.value === 8))
     assert.ok(records.some((entry) => entry.instrument === 'botanic.agent.provider.max_chunk_gap' && entry.value === 80))
+    assert.ok(records.some((entry) => entry.instrument === 'botanic.agent.preview.write_count' && entry.value === 3))
+    assert.ok(records.some((entry) => entry.instrument === 'botanic.agent.preview.max_char_count' && entry.value === 800))
+    assert.ok(records.some((entry) => entry.instrument === 'botanic.agent.preview.nonempty' && entry.value === 1))
   } finally {
     resetAgentTelemetryMetrics()
   }

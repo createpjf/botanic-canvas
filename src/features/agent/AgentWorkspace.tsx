@@ -2973,10 +2973,19 @@ export default function AgentWorkspace({
       latestLiveContent = next.content
       latestTimeline = next.timeline
       setLiveConversation((current) => {
-        if (current?.sessionId !== session.id || current.message.id !== liveMessageId) return current
+        if (current && (current.sessionId !== session.id || current.message.id !== liveMessageId)) return current
+        const active = current ?? {
+          sessionId: session.id,
+          message: {
+            id: liveMessageId, role: 'assistant' as const, kind: 'text' as const,
+            content: '', createdAt: startedAt, ...(observedTurnId ? { turnId: observedTurnId } : {}),
+          },
+          timeline: latestTimeline,
+          streaming: true,
+        }
         return {
-          ...current,
-          message: { ...current.message, content: next.content },
+          ...active,
+          message: { ...active.message, content: next.content },
           timeline: next.timeline,
           streaming: event.type !== 'done' && event.type !== 'error',
         }
