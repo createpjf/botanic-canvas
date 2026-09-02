@@ -1,5 +1,5 @@
 import { createGenerationQueue } from './generation/generationQueue.mjs'
-import { createAgentSubagentQueue } from './agentSubagentQueue.mjs'
+import { createAgentSubagentQueue } from './agent/subagent/agentSubagentQueue.mjs'
 import { createConfiguredMcpRuntime } from './mcpClient.mjs'
 import { createAgentRunEventPublisher } from './agentRunEventBus.mjs'
 import { createProductRuntime, loadLocalEnv, runtimeConfig } from './runtime.mjs'

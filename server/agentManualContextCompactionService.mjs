@@ -5,8 +5,8 @@ import { decodeAgentMessageCursor } from './agentMessagePersistence.mjs'
 import {
   AgentContextCoordinatorError,
   createAgentContextCoordinator,
-} from './agentContextCoordinator.mjs'
-import { AgentContextCompactionError } from './agentContextCompaction.mjs'
+} from './agent/context/agentContextCoordinator.mjs'
+import { AgentContextCompactionError } from './agent/context/agentContextCompaction.mjs'
 import { ProjectAuthorizationError, requireProjectPermission } from './projectAuthorization.mjs'
 
 const MESSAGE_PAGE_LIMIT = 200

@@ -8,7 +8,7 @@ import {
   pinnedBotanicAgentProjectSkills,
   resolveBotanicAgentMountedSkills,
 } from './botanicAgentTools.mjs'
-import { createAgentSubagentRunner } from './agentSubagentRunner.mjs'
+import { createAgentSubagentRunner } from './agent/subagent/agentSubagentRunner.mjs'
 import { normalizeBotanicAgentLocale, readBotanicAgentInstructions } from './agentInstructions.mjs'
 import {
   botanicCreativeBriefFieldIds,

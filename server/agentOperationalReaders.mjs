@@ -1,6 +1,6 @@
 // @ts-check
 import { publicAgentRun } from './botanicAgentRun.mjs'
-import { publicAgentReviewTask } from './agentReviewTask.mjs'
+import { publicAgentReviewTask } from './agent/review/agentReviewTask.mjs'
 
 /**
  * Agent 运维只读工具的单一数据源。API 首次执行与 Worker 恢复必须复用同一实现，

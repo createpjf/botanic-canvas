@@ -35,12 +35,12 @@ import { createRealtimeTicketRouteHandler } from './realtimeTicketRoutes.mjs'
 import { createPromptMediaRouteHandler } from './promptMediaRoutes.mjs'
 import { createAgentRouteHandler } from './agentRoutes.mjs'
 import { createBotanicAgentTurnRuntime } from './agent/turn/botanicAgentTurnRuntime.mjs'
-import { createAgentSubagentRunner } from './agentSubagentRunner.mjs'
-import { createAgentSubagentProjectRegistry } from './agentSubagentRegistry.mjs'
-import { createAgentSubagentProcessor } from './agentSubagentProcessor.mjs'
-import { createAgentSubagentCancellation } from './agentSubagentCancellation.mjs'
-import { createAgentSubagentRecovery } from './agentSubagentRecovery.mjs'
-import { AgentSubagentServiceError, createAgentSubagentService } from './agentSubagentService.mjs'
+import { createAgentSubagentRunner } from './agent/subagent/agentSubagentRunner.mjs'
+import { createAgentSubagentProjectRegistry } from './agent/subagent/agentSubagentRegistry.mjs'
+import { createAgentSubagentProcessor } from './agent/subagent/agentSubagentProcessor.mjs'
+import { createAgentSubagentCancellation } from './agent/subagent/agentSubagentCancellation.mjs'
+import { createAgentSubagentRecovery } from './agent/subagent/agentSubagentRecovery.mjs'
+import { AgentSubagentServiceError, createAgentSubagentService } from './agent/subagent/agentSubagentService.mjs'
 import { createAgentRunGenerationService } from './agentRunGenerationService.mjs'
 import { writeAgentRunOperationalEvent } from './agentRunObservability.mjs'
 import { AgentDelegationFenceError } from './agentCancellationService.mjs'
@@ -55,7 +55,7 @@ import {
   setBotanicHttpSpanStatus,
   withBotanicSpan,
 } from './executionTelemetry.mjs'
-import { agentContextRolloutHealth } from './agentContextRollout.mjs'
+import { agentContextRolloutHealth } from './agent/context/agentContextRollout.mjs'
 import { captureException as captureSentryException } from './sentry.mjs'
 
 export function createBotanicHttpServer({

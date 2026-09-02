@@ -17,12 +17,12 @@ import {
   normalizeRunnableAgentSubagentPage,
   publicAgentSubagent,
   publicAgentSubagentActivation,
-} from '../agentSubagentPersistence.mjs'
+} from '../agent/subagent/agentSubagentPersistence.mjs'
 import {
   materializeAgentContextCommand,
   normalizeAgentContextCompactionPage,
   publicAgentContextCompaction,
-} from '../agentContextPersistence.mjs'
+} from '../agent/context/agentContextPersistence.mjs'
 import { BotanicAgentSkillError } from '../botanicAgentSkill.mjs'
 
 const now = () => Date.now()

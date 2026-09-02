@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { encodeAgentMessageCursor } from './agentMessagePersistence.mjs'
-import { agentContextStateCompareAndSetDecision } from './agentContextPersistence.mjs'
+import { agentContextStateCompareAndSetDecision } from './agent/context/agentContextPersistence.mjs'
 import {
   AgentManualContextCompactionServiceError,
   createAgentManualContextCompactionService,

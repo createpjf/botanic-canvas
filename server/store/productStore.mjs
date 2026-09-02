@@ -13,9 +13,9 @@ import { collaborationActivitiesForMember, nextCollaborationReceipt, validateCol
 import { acknowledgedGenerationJobCancellation, committedGenerationJobExecution, comparedAndSetGenerationJob, generationJobExecutionClaimDecision, generationJobPutDecision, requestedGenerationJobCancellation } from '../generation/generationJobExecution.mjs'
 import { idempotencyRequestBindingWriteDecision } from '../idempotencyRequestBinding.mjs'
 import { agentBranchRetryClaimDecision, agentBranchRetryJobDecision } from '../agentBranchRetryClaim.mjs'
-import { agentReviewCancellationFinalizeDecision, agentReviewCancellationRequestDecision, agentReviewExecutionClaimDecision, agentReviewTaskPutDecision, committedAgentReviewExecution } from '../agentReviewExecution.mjs'
-import { agentReviewRetryMaterializationDecision } from '../agentReviewRetryMaterialization.mjs'
-import { agentReviewOutcomeReconciliationDecision } from '../agentReviewReconciliation.mjs'
+import { agentReviewCancellationFinalizeDecision, agentReviewCancellationRequestDecision, agentReviewExecutionClaimDecision, agentReviewTaskPutDecision, committedAgentReviewExecution } from '../agent/review/agentReviewExecution.mjs'
+import { agentReviewRetryMaterializationDecision } from '../agent/review/agentReviewRetryMaterialization.mjs'
+import { agentReviewOutcomeReconciliationDecision } from '../agent/review/agentReviewReconciliation.mjs'
 import {
   agentSubagentActivationClaimDecision,
   agentSubagentActivationSettleDecision,
@@ -28,13 +28,13 @@ import {
   normalizeRunnableAgentSubagentPage,
   publicAgentSubagent,
   publicAgentSubagentActivation,
-} from '../agentSubagentPersistence.mjs'
+} from '../agent/subagent/agentSubagentPersistence.mjs'
 import {
   agentContextStateCompareAndSetDecision,
   materializeAgentContextCommand,
   normalizeAgentContextCompactionPage,
   publicAgentContextCompaction,
-} from '../agentContextPersistence.mjs'
+} from '../agent/context/agentContextPersistence.mjs'
 
 const schemaVersion = 1
 

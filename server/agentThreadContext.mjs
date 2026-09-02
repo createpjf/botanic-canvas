@@ -15,10 +15,10 @@ import {
   agentContextMessageTokens,
   estimateAgentContextTokens,
   truncateAgentContextText,
-} from './agentContextBudget.mjs'
-import { createAgentContextCoordinator } from './agentContextCoordinator.mjs'
+} from './agent/context/agentContextBudget.mjs'
+import { createAgentContextCoordinator } from './agent/context/agentContextCoordinator.mjs'
 import { resolveAgentModelContextPolicy } from './agentModelContextPolicy.mjs'
-import { evaluateAgentContextShadow } from './agentContextShadowEvaluator.mjs'
+import { evaluateAgentContextShadow } from './agent/context/agentContextShadowEvaluator.mjs'
 import { agentMentionOnlyInstruction, agentMentionReferenceLine } from './agentMentionModelText.mjs'
 
 const MODEL_MESSAGE_LIMIT = 16

@@ -2,11 +2,11 @@
 import { validateAgentTurnCheckpoint } from './agentTurnCheckpoint.mjs'
 import { resolveBotanicAgentRuntimeRequest } from '../../agentRuntimeRequest.mjs'
 import { createAgentOperationalReaders } from '../../agentOperationalReaders.mjs'
-import { createAgentContextCoordinator } from '../../agentContextCoordinator.mjs'
+import { createAgentContextCoordinator } from '../context/agentContextCoordinator.mjs'
 import {
   createAgentContextCheckpointEnricher,
   createFlockContextSummaryInvoker,
-} from '../../agentContextSummarizer.mjs'
+} from '../context/agentContextSummarizer.mjs'
 import { projectPermissionDecision } from '../../authorization.mjs'
 import { assertAgentTargetBinding } from '../../agentTargetBinding.mjs'
 

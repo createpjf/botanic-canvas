@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createAgentThreadContext } from './agentThreadContext.mjs'
 import { encodeAgentMessageCursor } from './agentMessagePersistence.mjs'
-import { agentContextStateCompareAndSetDecision } from './agentContextPersistence.mjs'
+import { agentContextStateCompareAndSetDecision } from './agent/context/agentContextPersistence.mjs'
 
 const message = (id, role, content, createdAt) => ({
   id,

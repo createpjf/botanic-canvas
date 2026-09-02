@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createBotanicAgentPlanningToolRegistry } from './botanicAgentTools.mjs'
-import { createAgentSubagentRunner, subagentInstructions } from './agentSubagentRunner.mjs'
+import { createAgentSubagentRunner, subagentInstructions } from './agent/subagent/agentSubagentRunner.mjs'
 import { assertSubtaskToolAllowlist } from './agentSubtask.mjs'
 
 /**

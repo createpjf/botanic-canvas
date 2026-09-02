@@ -1,6 +1,6 @@
 // @ts-check
 
-import { estimateAgentContextTokens } from './agentContextBudget.mjs'
+import { estimateAgentContextTokens } from './agent/context/agentContextBudget.mjs'
 import { agentModelContextMeterProjection } from './agentModelContextSurface.mjs'
 
 export class AgentTokenMeterError extends TypeError {

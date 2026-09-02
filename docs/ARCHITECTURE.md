@@ -185,7 +185,7 @@ Provider SSE 只有 `[DONE]` 才正常结束；坏 JSON、未闭合 tail 或提�
 `Prefer: respond-async` 获得 `202 + runtimeTurn + observer`。Planner 子 Turn 的稳定键由来源根 Turn 派生，刷新后重新进入生成
 continuation 时只观察同一计划；Stop 在身份返回前保留取消意图，返回后走 durable cancel。
 
-`server/agentContextBudget.mjs` 和 `agentThreadContext.mjs` 共同把 Summary 与最近 Message 限在 8k token；Summary 最多 2k，最近窗口
+`server/agent/context/agentContextBudget.mjs` 和 `agentThreadContext.mjs` 共同把 Summary 与最近 Message 限在 8k token；Summary 最多 2k，最近窗口
 最多 16 条，当前输入本身超过总预算返回 413，不通过丢弃当前输入来“成功”。`agentToolRuntime.mjs` 把单个工具结果限在 2k、单轮
 累计限在 6k，超限时保留有效 JSON envelope 和截断原因。只有 Provider 明确返回 context overflow 时，`botanicAgentTurn.mjs` 才在
 同一 model step、任何工具调用尚未发生前做一次严格裁剪重试；system 与当前用户输入不变，历史 assistant tool-call 与 tool message
@@ -234,7 +234,7 @@ GenerationJob 四类恢复记录持久化 `recovery_updated_at_ms`，由全量�
 
 ## Agent 评审执行与原子重试
 
-`server/agentReviewService.mjs` 通过 ReviewTask execution generation、lease token 与 prepared checkpoint 执行评审；heartbeat、逐候选
+`server/agent/review/agentReviewService.mjs` 通过 ReviewTask execution generation、lease token 与 prepared checkpoint 执行评审；heartbeat、逐候选
 Result 和终态都必须由当前 fence 条件提交。prepared 后租约失效而无法证明 Provider 是否已执行时收敛为 `outcome_unknown`，不静默
 重跑视觉评审或 evaluator Skill。Provider 调用始终在数据库事务外，事务只提交已完成结果。
 
@@ -245,7 +245,7 @@ Redis 发布成功都不是退出证明。当前 Worker 真正退出时用匹配
 `retry_once` 在 Route 与三个 Adapter 内都重新校验生成权限。
 
 人工接受/拒绝由 `review_decide` 承载，只要求编辑权限；重新生成由独立 costly 工具 `review_retry` 承载，同时要求生成权限和用户确认。
-`server/agentReviewDecisionService.mjs` 与 `agentReviewRetryMaterialization.mjs` 让 Human Decision、每个结果上的
+`server/agent/review/agentReviewDecisionService.mjs` 与 `agentReviewRetryMaterialization.mjs` 让 Human Decision、每个结果上的
 `retryMaterialization` 绑定和稳定 queued Agent Run 在 ProductStore 同一原子操作内提交。重复请求返回同一 Run；批量中任一冲突整体零写；
 不同 Editor 重放不改 first-writer owner。事务提交后由 `run.submit` sweep 将 Run 物化为 Generation Job，因此决定事务内不调用 Provider。
 历史数据若已有 `retry_requested` 却没有可证明的物化绑定，返回 `outcome_unknown`，不能猜测并补建一份可能重复计费的 Run。

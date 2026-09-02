@@ -3,18 +3,18 @@ import { EventEmitter } from 'node:events'
 import test from 'node:test'
 import { createAgentRouteHandler, createServerSentEventWriter } from './agentRoutes.mjs'
 import { matchBotanicHttpRoutes } from './httpRouteTable.mjs'
-import { AgentSubagentServiceError } from './agentSubagentService.mjs'
-import { AgentSubagentPersistenceError } from './agentSubagentPersistence.mjs'
+import { AgentSubagentServiceError } from './agent/subagent/agentSubagentService.mjs'
+import { AgentSubagentPersistenceError } from './agent/subagent/agentSubagentPersistence.mjs'
 import { agentTurnIdForIdempotency, createAgentTurnRecord } from './agent/turn/botanicAgentTurnRuntime.mjs'
-import { agentReviewRetryMaterializationDecision } from './agentReviewRetryMaterialization.mjs'
+import { agentReviewRetryMaterializationDecision } from './agent/review/agentReviewRetryMaterialization.mjs'
 import {
   agentReviewCancellationRequestDecision,
   agentReviewExecutionClaimDecision,
   agentReviewPreparedCheckpoint,
   committedAgentReviewExecution,
-} from './agentReviewExecution.mjs'
-import { agentReviewOutcomeReconciliationDecision } from './agentReviewReconciliation.mjs'
-import { agentReviewResultId } from './agentReviewTask.mjs'
+} from './agent/review/agentReviewExecution.mjs'
+import { agentReviewOutcomeReconciliationDecision } from './agent/review/agentReviewReconciliation.mjs'
+import { agentReviewResultId } from './agent/review/agentReviewTask.mjs'
 import {
   agentTurnExecutionClaimDecision,
   committedAgentTurnExecution,

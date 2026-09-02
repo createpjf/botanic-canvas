@@ -1,7 +1,7 @@
 // @ts-check
 
 import { canonicalHash } from './canonicalHash.mjs'
-import { estimateAgentContextTokens } from './agentContextBudget.mjs'
+import { estimateAgentContextTokens } from './agent/context/agentContextBudget.mjs'
 
 const INTERNAL_FIELDS = new Set([
   'id',

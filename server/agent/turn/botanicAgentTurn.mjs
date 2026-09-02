@@ -17,7 +17,7 @@ import { botanicAgentWebResearchSourceLabels, createBotanicAgentWebResearchTools
 import { botanicAgentOperationalSourceLabels, createBotanicAgentOperationalToolDefinitions } from '../../botanicAgentOperationalTools.mjs'
 import { renderThreadSummary } from '../../agentThreadSummary.mjs'
 import { canonicalHash } from '../../canonicalHash.mjs'
-import { estimateAgentContextTokens, truncateAgentContextText } from '../../agentContextBudget.mjs'
+import { estimateAgentContextTokens, truncateAgentContextText } from '../context/agentContextBudget.mjs'
 import {
   GENERATION_ASPECT_RATIOS,
   GENERATION_RESOLUTIONS,
