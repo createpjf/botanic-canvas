@@ -178,11 +178,14 @@ test('project to canvas and Agent surfaces stay ordered across reload', async ({
   await page.getByRole('button', { name: '打开 Bob' }).click()
   await expect(page.getByRole('complementary', { name: 'Botanic Agent' })).toBeVisible()
   await expect(page.getByRole('complementary', { name: '素材库' })).toBeHidden()
-  const tabBarBox = await page.locator('.tab-bar').boundingBox()
-  const agentBox = await page.getByRole('complementary', { name: 'Botanic Agent' }).boundingBox()
-  expect(tabBarBox, '项目顶栏应可见').toBeTruthy()
-  expect(agentBox, 'Agent 面板应可见').toBeTruthy()
-  expect(agentBox!.y).toBeGreaterThanOrEqual(tabBarBox!.y + tabBarBox!.height)
+  // 面板刚切换时入场重排未结束，boundingBox 可能瞬时为 null（webkit/firefox 波动源）；整组几何断言按可重试处理。
+  await expect(async () => {
+    const tabBarBox = await page.locator('.tab-bar').boundingBox()
+    const agentBox = await page.getByRole('complementary', { name: 'Botanic Agent' }).boundingBox()
+    expect(tabBarBox, '项目顶栏应可见').toBeTruthy()
+    expect(agentBox, 'Agent 面板应可见').toBeTruthy()
+    expect(agentBox!.y).toBeGreaterThanOrEqual(tabBarBox!.y + tabBarBox!.height)
+  }).toPass({ timeout: 10_000 })
   await expect(page.getByRole('button', { name: '返回项目' })).toBeEnabled()
 
   await page.getByRole('button', { name: '换场景' }).click()
@@ -195,10 +198,14 @@ test('project to canvas and Agent surfaces stay ordered across reload', async ({
 
   // 菜单必须整体落在 Agent 面板内，且说明文字不被裁切——面板有 overflow: hidden，
   // 菜单一旦溢出，说明文案就会被切掉半句。
-  const menuBox = await modeMenu.boundingBox()
-  const panelBox = await page.getByRole('complementary', { name: 'Botanic Agent' }).boundingBox()
-  expect(menuBox!.x).toBeGreaterThanOrEqual(panelBox!.x - 1)
-  expect(menuBox!.x + menuBox!.width).toBeLessThanOrEqual(panelBox!.x + panelBox!.width + 1)
+  await expect(async () => {
+    const menuBox = await modeMenu.boundingBox()
+    const panelBox = await page.getByRole('complementary', { name: 'Botanic Agent' }).boundingBox()
+    expect(menuBox, '执行模式菜单应可见').toBeTruthy()
+    expect(panelBox, 'Agent 面板应可见').toBeTruthy()
+    expect(menuBox!.x).toBeGreaterThanOrEqual(panelBox!.x - 1)
+    expect(menuBox!.x + menuBox!.width).toBeLessThanOrEqual(panelBox!.x + panelBox!.width + 1)
+  }).toPass({ timeout: 10_000 })
   for (const modeName of ['计划模式', '自动模式']) {
     const clipped = await modeMenu.getByRole('button', { name: modeName }).locator('small')
       .evaluate((element) => element.scrollWidth > element.clientWidth + 1)
