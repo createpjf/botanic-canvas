@@ -11,6 +11,7 @@
     "test:e2e": "playwright test",
     "check:architecture": "node scripts/architectureBoundaries.mjs",
     "metrics:harness": "node scripts/harnessMetrics.mjs",
+    "metrics:outcomes": "node --env-file-if-exists=.env scripts/agentOutcomeReport.mjs",
     "check:security": "node scripts/securityGate.mjs",
     "build": "node scripts/generateAgentProtocol.mjs --check && tsc -b && vite build",
     "preview": "vite preview",

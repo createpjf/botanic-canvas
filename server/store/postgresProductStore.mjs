@@ -2690,6 +2690,20 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
       return rows.map(asPayload)
     },
 
+    async listAgentTurnsForProjectPage(userId, projectId, options = {}) {
+      const { afterId, limit } = normalizeAgentEntityIdPage(options)
+      const since = new Date(Number.isFinite(Number(options.since)) ? Number(options.since) : 0)
+      const until = new Date(Number.isFinite(Number(options.until)) ? Number(options.until) : 8_640_000_000_000_000)
+      const cursor = afterId === null ? sql`` : sql`and t.id > ${afterId}`
+      const rows = await sql`
+        select t.payload from agent_turns t join project_members m on m.project_id = t.project_id
+        where t.project_id = ${projectId} and t.owner_id = ${userId} and m.user_id = ${userId}
+          and t.created_at >= ${since} and t.created_at < ${until} ${cursor}
+        order by t.id asc limit ${limit}
+      `
+      return rows.map(asPayload)
+    },
+
     async appendAgentTurnEvent(userId, projectId, event) {
       const role = await memberRole(projectId, userId)
       assertProjectPermission(role, 'read', 'PROJECT_READ_FORBIDDEN')
@@ -3580,6 +3594,18 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
         select payload from agent_review_tasks
         where project_id = ${projectId} and run_id = ${runId}
         order by updated_at desc limit 50
+      `
+      return rows.map(asPayload)
+    },
+
+    async listAgentReviewTasksForRunPage(userId, projectId, runId, options = {}) {
+      if (!await memberRole(projectId, userId)) return undefined
+      const { afterId, limit } = normalizeAgentEntityIdPage(options)
+      const cursor = afterId === null ? sql`` : sql`and id > ${afterId}`
+      const rows = await sql`
+        select payload from agent_review_tasks
+        where project_id = ${projectId} and run_id = ${runId} ${cursor}
+        order by id asc limit ${limit}
       `
       return rows.map(asPayload)
     },

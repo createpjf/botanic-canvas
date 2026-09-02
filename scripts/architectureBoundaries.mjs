@@ -19,12 +19,14 @@ const agentSamplingTransportForbidden = Object.freeze([
 // 从此列表移除文件是唯一"毕业"方式;新增条目需要维护者明确批准。
 export const MODULE_SIZE_CEILING = 800
 export const legacyOversizeBudgets = Object.freeze({
-  'server/store/postgresProductStore.mjs': 3779,
+  // +26:AgentOutcome按项目时间窗读取需要稳定Turn/ReviewTask分页契约与DB层窗口过滤。
+  'server/store/postgresProductStore.mjs': 3805,
   'src/features/agent/AgentWorkspace.tsx': 3920,
   'src/features/canvas/CanvasWorkspace.tsx': 2930,
   'src/domain/agent.ts': 2229,
-  'server/store/supabaseProductStore.mjs': 2495,
-  'server/store/productStore.mjs': 2465,
+  // +24/+27:同一分页契约与窗口过滤的Supabase/Local实现。
+  'server/store/supabaseProductStore.mjs': 2519,
+  'server/store/productStore.mjs': 2492,
   'server/http/agentRoutes.mjs': 1849,
   'src/features/canvas/CanvasWorkspacePanels.tsx': 1921,
   'src/features/canvas/CanvasEditorViews.tsx': 1744,
@@ -37,7 +39,8 @@ export const legacyOversizeBudgets = Object.freeze({
   'server/agent/turn/botanicAgentTurn.mjs': 1273,
   'src/domain/agentTimeline.ts': 662,
   'src/lib/db.ts': 1102,
-  'server/store/productStoreContract.mjs': 1185,
+  // +3:声明AgentOutcome所需的Turn/ReviewTask分页接口。
+  'server/store/productStoreContract.mjs': 1188,
   'server/generation/generationProcessor.mjs': 1041,
   'server/agent/subagent/agentSubagentPersistence.mjs': 1001,
   'src/features/agent/AgentUtilityPanels.tsx': 955,

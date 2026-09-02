@@ -188,6 +188,21 @@ API 与 Worker 必须使用相同的图像 / 视频 Provider 配置。H3 当前�
 
 上线验收、告警阈值、备份恢复和发布门禁见 [安全运营与恢复](SECURITY_OPERATIONS.md)。
 
+## Agent 成功度量报告
+
+CLI 默认读取仓库 `.env`，使用与 API 相同的 ProductStore 配置；报告按当前成员在指定项目内创建的 Turn 统计，`--until` 为开区间。Turn 一旦落入窗口，其后续 Run、Job、Review 和交付事实会完整纳入。
+
+```bash
+npm run metrics:outcomes -- --project <project-id> --user <user-id> \
+  --since 2026-09-01T00:00:00Z --until 2026-09-08T00:00:00Z
+```
+
+可追加 `--turn <turn-id>` 只看单次任务。Local Store 使用 `BOTANIC_DATA_PATH`；生产 PostgreSQL 使用 `DATABASE_URL`。该命令是受成员权限约束的只读入口，不接受访问 token 代替用户身份，也不会绕过项目授权。原有完整 snapshot 模式继续可用：
+
+```bash
+npm run metrics:outcomes -- snapshot.json
+```
+
 ## 验证
 
 合并前必须全绿：

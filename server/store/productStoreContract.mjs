@@ -1096,6 +1096,8 @@ export const productStoreCoreMethods = Object.freeze([
   'readAgentTurn',
   'readAgentTurnForWorker',
   'listAgentTurnsForProject',
+  // 指标/导出等只读消费方按 ID 稳定分页，避免最近 100 条列表在长时间窗口静默漏数。
+  'listAgentTurnsForProjectPage',
   // 跨项目扫描超过租约未推进的非终态 Turn。与 readAgentTurnForWorker 一样是
   // Worker 侧方法：清扫是系统行为，没有发起它的用户，因此不做成员校验。
   'listStaleAgentTurns',
@@ -1133,6 +1135,7 @@ export const productStoreCoreMethods = Object.freeze([
   'readAgentReviewTask',
   'readAgentReviewTaskForWorker',
   'listAgentReviewTasksForRun',
+  'listAgentReviewTasksForRunPage',
   'listPendingAgentReviewTasks',
   'putAgentReview',
   'readAgentReview',

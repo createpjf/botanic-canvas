@@ -1719,6 +1719,21 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
         .map(clone)
     },
 
+    listAgentTurnsForProjectPage(userId, projectId, options = {}) {
+      const project = state.projects.find((item) => item.id === projectId)
+      if (!project || !canAccess(project, userId)) return undefined
+      const { afterId, limit } = normalizeAgentEntityIdPage(options)
+      const since = Number.isFinite(Number(options.since)) ? Number(options.since) : 0
+      const until = Number.isFinite(Number(options.until)) ? Number(options.until) : Number.POSITIVE_INFINITY
+      return state.agentTurns
+        .filter((turn) => turn.projectId === projectId && turn.ownerId === userId
+          && Number(turn.createdAt) >= since && Number(turn.createdAt) < until
+          && (afterId === null || turn.id.localeCompare(afterId) > 0))
+        .sort((left, right) => left.id.localeCompare(right.id))
+        .slice(0, limit)
+        .map(clone)
+    },
+
     appendAgentTurnEvent(userId, projectId, event) {
       const project = state.projects.find((item) => item.id === projectId)
       if (!project) throw productError('未找到项目。', 'PROJECT_NOT_FOUND')
@@ -2277,6 +2292,18 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
       return state.agentReviewTasks
         .filter((item) => item.projectId === projectId && item.runId === runId)
         .sort((left, right) => right.updatedAt - left.updatedAt)
+        .map(clone)
+    },
+
+    listAgentReviewTasksForRunPage(userId, projectId, runId, options = {}) {
+      const project = state.projects.find((item) => item.id === projectId)
+      if (!project || !canAccess(project, userId)) return undefined
+      const { afterId, limit } = normalizeAgentEntityIdPage(options)
+      return state.agentReviewTasks
+        .filter((item) => item.projectId === projectId && item.runId === runId
+          && (afterId === null || item.id.localeCompare(afterId) > 0))
+        .sort((left, right) => left.id.localeCompare(right.id))
+        .slice(0, limit)
         .map(clone)
     },
 

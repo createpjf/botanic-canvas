@@ -1940,6 +1940,19 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
       return (data ?? []).map((row) => clone(row.payload))
     },
 
+    async listAgentTurnsForProjectPage(userId, projectId, options = {}) {
+      if (!await memberRole(projectId, userId)) return undefined
+      const { afterId, limit } = normalizeAgentEntityIdPage(options)
+      let query = supabase.from('agent_turns').select('payload')
+        .eq('project_id', projectId).eq('owner_id', userId)
+      if (Number.isFinite(Number(options.since))) query = query.gte('created_at', new Date(Number(options.since)).toISOString())
+      if (Number.isFinite(Number(options.until))) query = query.lt('created_at', new Date(Number(options.until)).toISOString())
+      if (afterId !== null) query = query.gt('id', afterId)
+      const { data, error } = await supabaseRequest(() => query.order('id', { ascending: true }).limit(limit))
+      fail(error)
+      return (data ?? []).map((row) => clone(row.payload))
+    },
+
     /**
      * 跨项目扫描超过租约未推进的非终态 Turn，供派生任务队列回收孤儿。
      * 不做成员校验：清扫是系统行为，没有发起它的用户（与 readAgentTurnForWorker 同理）。
@@ -2302,6 +2315,17 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
       if (!await memberRole(projectId, userId)) return undefined
       const { data, error } = await supabaseRequest(() => supabase.from('agent_review_tasks').select('payload')
         .eq('project_id', projectId).eq('run_id', runId).order('updated_at', { ascending: false }).limit(50))
+      fail(error)
+      return (data ?? []).map((row) => clone(row.payload))
+    },
+
+    async listAgentReviewTasksForRunPage(userId, projectId, runId, options = {}) {
+      if (!await memberRole(projectId, userId)) return undefined
+      const { afterId, limit } = normalizeAgentEntityIdPage(options)
+      let query = supabase.from('agent_review_tasks').select('payload')
+        .eq('project_id', projectId).eq('run_id', runId)
+      if (afterId !== null) query = query.gt('id', afterId)
+      const { data, error } = await supabaseRequest(() => query.order('id', { ascending: true }).limit(limit))
       fail(error)
       return (data ?? []).map((row) => clone(row.payload))
     },
