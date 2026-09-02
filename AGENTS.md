@@ -30,7 +30,7 @@
 
 - 画布工作区交互：从 `src/features/canvas/CanvasWorkspace.tsx` 开始；节点、连线、布局规则从 `src/domain/canvas*.ts` 开始。
 - 生成、恢复、批量任务：从 `src/domain/generation*.ts`、`src/store/canvasStore.ts` 和 `server/generation/` 开始。
-- Agent 面板交互：从 `src/features/agent/AgentWorkspace.tsx` 开始；结果/记忆面板见 `AgentUtilityPanels.tsx`，离线消息与运行轨迹见对应 `useAgent*.ts`；对话、计划、执行、Artifact 语义从 `src/domain/agent*.ts` 和 `server/botanicAgent*.mjs`（Turn/Review 语义层在 `server/agent/` 各簇）开始。
+- Agent 面板交互：从 `src/features/agent/AgentWorkspace.tsx` 开始；结果/记忆面板见 `AgentUtilityPanels.tsx`，离线消息与运行轨迹见对应 `useAgent*.ts`；对话、计划、执行、Artifact 语义从 `src/domain/agent*.ts` 和 `server/agent/semantic/`（Turn/Review/Tools 等在 `server/agent/` 其余簇）开始。
 - Store 命令或状态形状：先核对 `src/store/canvasStore.types.ts`；Agent 实体命令从 `src/store/canvasAgentActions.ts` 开始，其余命令再进入 `src/store/canvasStore.ts`。
 - 浏览器会话、远端项目、协作：从 `src/lib/` 开始。
 - 画布同步协议（CRDT mutation log、Outbox、epoch）：服务端权威从 `server/canvas/canvasCollaborationRoom.mjs` 开始，浏览器侧从 `src/lib/canvasSyncOutbox.ts` 与 `src/domain/collaborativeGraph.ts` 开始；两侧清洗器由 `scripts/canvasCollaborationSanitizerContract.test.mjs` 锁一致，改一侧必须同步另一侧。

@@ -4,9 +4,9 @@ import { createConfiguredMcpRuntime } from './mcpClient.mjs'
 import { createAgentRunEventPublisher } from './agent/run/agentRunEventBus.mjs'
 import { createProductRuntime, loadLocalEnv, runtimeConfig } from './runtime.mjs'
 import { installDatabaseResilience } from './databaseResilience.mjs'
-import { createSecurityControls } from './securityControls.mjs'
+import { createSecurityControls } from './auth/securityControls.mjs'
 import { createBotanicHttpServer } from './http/httpServer.mjs'
-import { initializeBotanicTelemetry } from './botanicTelemetry.mjs'
+import { initializeBotanicTelemetry } from './observability/botanicTelemetry.mjs'
 import { captureException, flushSentry } from './sentry.mjs'
 
 loadLocalEnv()

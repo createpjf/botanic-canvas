@@ -7,9 +7,9 @@ import {
   createAgentModelContextSurface,
   sanitizeAgentModelContextCheckpoint,
 } from '../model/agentModelContextSurface.mjs'
-import { measureAgentModelContextSurface } from '../../agentTokenMeter.mjs'
-import { buildThreadSummaryCheckpoint, renderThreadSummary } from '../../agentThreadSummary.mjs'
-import { agentMentionOnlyInstruction, agentMentionReferenceLine } from '../../agentMentionModelText.mjs'
+import { measureAgentModelContextSurface } from '../thread/agentTokenMeter.mjs'
+import { buildThreadSummaryCheckpoint, renderThreadSummary } from '../thread/agentThreadSummary.mjs'
+import { agentMentionOnlyInstruction, agentMentionReferenceLine } from '../thread/agentMentionModelText.mjs'
 
 const triggers = new Set(['pre_step', 'overflow', 'manual'])
 const MESSAGE_TEXT_LIMIT = 4_000

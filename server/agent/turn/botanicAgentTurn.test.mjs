@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { BotanicAgentChatError } from '../../botanicAgentChat.mjs'
+import { BotanicAgentChatError } from '../semantic/botanicAgentChat.mjs'
 import { resolveBotanicAgentTurn, validateBotanicAgentTurnInput } from './botanicAgentTurn.mjs'
-import { botanicAgentContextBriefing, buildBotanicAgentOntology } from '../../botanicAgentOntology.mjs'
+import { botanicAgentContextBriefing, buildBotanicAgentOntology } from '../semantic/botanicAgentOntology.mjs'
 import { resolveAgentModelContextPolicy } from '../model/agentModelContextPolicy.mjs'
 import { canonicalHash } from '../../canonicalHash.mjs'
 

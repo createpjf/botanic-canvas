@@ -4,7 +4,7 @@ import { canonicalHash } from '../../canonicalHash.mjs'
 import {
   attachAgentTraceContext,
   withExtractedAgentTraceContext,
-} from '../../agentTraceContext.mjs'
+} from '../../observability/agentTraceContext.mjs'
 
 const queueName = 'botanic-subagent'
 const defaultJobOptions = {

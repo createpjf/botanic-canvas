@@ -1,6 +1,6 @@
 // @ts-check
 import { randomUUID } from 'node:crypto'
-import { outboundAgentTraceHeaders } from './agentTraceContext.mjs'
+import { outboundAgentTraceHeaders } from './observability/agentTraceContext.mjs'
 import { canonicalHash } from './canonicalHash.mjs'
 import {
   AgentStructuredContractError,

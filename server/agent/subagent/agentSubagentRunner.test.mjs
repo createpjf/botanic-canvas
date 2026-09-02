@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createAgentSubagentRunner } from './agentSubagentRunner.mjs'
 import { agentSubagentCapabilityHash } from './agentSubagentTools.mjs'
-import { createAgentToolRegistry } from '../../agentToolRuntime.mjs'
+import { createAgentToolRegistry } from '../tools/agentToolRuntime.mjs'
 
 const outputSchema = Object.freeze({
   type: 'object',

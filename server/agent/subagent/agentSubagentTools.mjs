@@ -1,7 +1,7 @@
 // @ts-check
 import { AgentSubtaskError, assertSubtaskToolAllowlist } from '../../agentSubtask.mjs'
 import { canonicalHash } from '../../canonicalHash.mjs'
-import { createAgentToolRegistry, freezeAgentStepSnapshot } from '../../agentToolRuntime.mjs'
+import { createAgentToolRegistry, freezeAgentStepSnapshot } from '../tools/agentToolRuntime.mjs'
 
 /**
  * 为一次子 Agent activation 冻结最小工具面。

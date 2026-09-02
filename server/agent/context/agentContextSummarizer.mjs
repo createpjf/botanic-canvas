@@ -3,7 +3,7 @@
 import { canonicalHash } from '../../canonicalHash.mjs'
 import { createBotanicAgentModelProvider } from '../model/botanicAgentModelProvider.mjs'
 import { sanitizeAgentModelContextCheckpoint } from '../model/agentModelContextSurface.mjs'
-import { redactSummaryText } from '../../agentThreadSummary.mjs'
+import { redactSummaryText } from '../thread/agentThreadSummary.mjs'
 
 const SUMMARY_TIMEOUT_MS = 8_000
 const NARRATIVE_CODE_POINT_LIMIT = 1_200

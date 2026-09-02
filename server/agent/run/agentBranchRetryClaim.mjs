@@ -1,5 +1,5 @@
 // @ts-check
-import { prepareAgentBranchRetry } from '../../botanicAgentRun.mjs'
+import { prepareAgentBranchRetry } from '../semantic/botanicAgentRun.mjs'
 import { matchingIdempotencyRequestBinding } from '../../idempotencyRequestBinding.mjs'
 
 function clone(value) {

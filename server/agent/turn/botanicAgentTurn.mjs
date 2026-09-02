@@ -1,21 +1,21 @@
-import { AgentToolRuntimeError, agentToolObject, agentToolText, createAgentToolRegistry, freezeAgentStepSnapshot, runAgentToolLoop } from '../../agentToolRuntime.mjs'
-import { botanicAgentProviderConfig } from '../../botanicAgentPlanner.mjs'
+import { AgentToolRuntimeError, agentToolObject, agentToolText, createAgentToolRegistry, freezeAgentStepSnapshot, runAgentToolLoop } from '../tools/agentToolRuntime.mjs'
+import { botanicAgentProviderConfig } from '../semantic/botanicAgentPlanner.mjs'
 import { createBotanicAgentModelProvider } from '../model/botanicAgentModelProvider.mjs'
-import { BotanicAgentChatError } from '../../botanicAgentChat.mjs'
+import { BotanicAgentChatError } from '../semantic/botanicAgentChat.mjs'
 import { normalizeBotanicAgentLocale, readBotanicAgentInstructions } from '../../agentInstructions.mjs'
-import { botanicAgentContextBriefing, buildBotanicAgentOntology, safeBotanicAgentMemory } from '../../botanicAgentOntology.mjs'
-import { BOTANIC_AGENT_MOUNTED_SKILL_LIMIT, botanicAgentMountedSkillBriefing, botanicAgentSearchableSkills, pinnedBotanicAgentProjectSkills, resolveBotanicAgentMountedSkills } from '../../botanicAgentTools.mjs'
+import { botanicAgentContextBriefing, buildBotanicAgentOntology, safeBotanicAgentMemory } from '../semantic/botanicAgentOntology.mjs'
+import { BOTANIC_AGENT_MOUNTED_SKILL_LIMIT, botanicAgentMountedSkillBriefing, botanicAgentSearchableSkills, pinnedBotanicAgentProjectSkills, resolveBotanicAgentMountedSkills } from '../tools/botanicAgentTools.mjs'
 import {
   botanicAgentMultimodalMessages,
   botanicAgentVisionBriefing,
   describeBotanicAgentContextImages,
   resolveBotanicAgentVisionParts,
-} from '../../botanicAgentVision.mjs'
-import { captionAgentVisionModel, nativeAgentVisionModel } from '../../botanicAgentVisionCapability.mjs'
-import { botanicAgentContextToolSourceLabels, createBotanicAgentReadToolDefinitions } from '../../botanicAgentContextTools.mjs'
-import { botanicAgentWebResearchSourceLabels, createBotanicAgentWebResearchTools } from '../../botanicAgentWebTools.mjs'
-import { botanicAgentOperationalSourceLabels, createBotanicAgentOperationalToolDefinitions } from '../../botanicAgentOperationalTools.mjs'
-import { renderThreadSummary } from '../../agentThreadSummary.mjs'
+} from '../semantic/botanicAgentVision.mjs'
+import { captionAgentVisionModel, nativeAgentVisionModel } from '../semantic/botanicAgentVisionCapability.mjs'
+import { botanicAgentContextToolSourceLabels, createBotanicAgentReadToolDefinitions } from '../tools/botanicAgentContextTools.mjs'
+import { botanicAgentWebResearchSourceLabels, createBotanicAgentWebResearchTools } from '../tools/botanicAgentWebTools.mjs'
+import { botanicAgentOperationalSourceLabels, createBotanicAgentOperationalToolDefinitions } from '../tools/botanicAgentOperationalTools.mjs'
+import { renderThreadSummary } from '../thread/agentThreadSummary.mjs'
 import { canonicalHash } from '../../canonicalHash.mjs'
 import { estimateAgentContextTokens, truncateAgentContextText } from '../context/agentContextBudget.mjs'
 import {

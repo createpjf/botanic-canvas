@@ -17,10 +17,10 @@
  * INVALID_PROVIDER_RESPONSE 502;context overflow 保留 AGENT_CONTEXT_OVERFLOW 原错误。
  * raw Provider body 不进入错误对象,只用于 overflow 判定后丢弃。
  */
-import { outboundAgentTraceHeaders } from '../../agentTraceContext.mjs'
-import { throwIfAgentProviderContextOverflow } from '../../agentProviderContextOverflow.mjs'
-import { BotanicAgentStreamError, readStreamedChatCompletion } from '../../botanicAgentStream.mjs'
-import { AGENT_SEMANTIC_EVENT_NAMES, writeAgentSemanticEvent } from '../../agentSemanticEvent.mjs'
+import { outboundAgentTraceHeaders } from '../../observability/agentTraceContext.mjs'
+import { throwIfAgentProviderContextOverflow } from '../thread/agentProviderContextOverflow.mjs'
+import { BotanicAgentStreamError, readStreamedChatCompletion } from '../semantic/botanicAgentStream.mjs'
+import { AGENT_SEMANTIC_EVENT_NAMES, writeAgentSemanticEvent } from '../../observability/agentSemanticEvent.mjs'
 
 /** 与既有 Planner 目录一致的缺省 Agent 模型。 */
 export const DEFAULT_AGENT_MODELS = Object.freeze(['deepseek-v4-flash-vision-exp', 'kimi-k3', 'gemini-3.7-flash', 'glm-5'])

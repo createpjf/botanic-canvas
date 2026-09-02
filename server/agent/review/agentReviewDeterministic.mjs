@@ -1,6 +1,6 @@
 // @ts-check
-import { aspectRatioLabel } from '../../mediaSpec.mjs'
-import { isCanonicalImageFormat } from '../../mediaFormats.mjs'
+import { aspectRatioLabel } from '../../media/mediaSpec.mjs'
+import { isCanonicalImageFormat } from '../../media/mediaFormats.mjs'
 
 /**
  * 评审第 1 层：确定性硬规格检查，**不调用模型**（ADR 0006）。

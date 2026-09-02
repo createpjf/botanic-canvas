@@ -2758,7 +2758,7 @@ test('旧版 Run 级评审没有 Artifact 权威身份时拒绝请求重试', as
 
 test('运维只读工具接入回合：模型能拿到真实任务状态，且不含媒体地址', async () => {
   // 「不根据对话文案猜任务状态」的落点：工具在回合注册表里，且返回结构化实体状态。
-  const { createBotanicAgentOperationalToolDefinitions } = await import('../botanicAgentOperationalTools.mjs')
+  const { createBotanicAgentOperationalToolDefinitions } = await import('../agent/tools/botanicAgentOperationalTools.mjs')
   const definitions = createBotanicAgentOperationalToolDefinitions({
     readRun: async () => ({ id: 'run-1', status: 'partial', branches: [{ id: 'b', status: 'failed', attempt: 1 }] }),
   })
@@ -2768,7 +2768,7 @@ test('运维只读工具接入回合：模型能拿到真实任务状态，且�
 })
 
 test('写工具按项目角色进注册表：Viewer 一个都拿不到', async () => {
-  const { createBotanicAgentActionToolRegistry } = await import('../botanicAgentTools.mjs')
+  const { createBotanicAgentActionToolRegistry } = await import('../agent/tools/botanicAgentTools.mjs')
   const executors = {
     cancelRun: async () => ({}), decideReview: async () => ({}),
     retryReview: async () => ({}),
@@ -2791,8 +2791,8 @@ test('写工具按项目角色进注册表：Viewer 一个都拿不到', async (
 
 test('服务端权限表与工具暴露判定同源，不会出现看不到却调得动', async () => {
   const { agentToolPermission } = await import('../agent/action/agentActionGovernance.mjs')
-  const { OPERATIONAL_ACTION_TOOLS, operationalActionToolsForRole } = await import('../botanicAgentOperationalTools.mjs')
-  const { projectPermissionDecision } = await import('../authorization.mjs')
+  const { OPERATIONAL_ACTION_TOOLS, operationalActionToolsForRole } = await import('../agent/tools/botanicAgentOperationalTools.mjs')
+  const { projectPermissionDecision } = await import('../auth/authorization.mjs')
   for (const role of ['viewer', 'editor', 'owner']) {
     const exposed = new Set(operationalActionToolsForRole(role))
     for (const name of OPERATIONAL_ACTION_TOOLS) {
@@ -2805,8 +2805,8 @@ test('服务端权限表与工具暴露判定同源，不会出现看不到却�
 test('七个运维写工具现在全部有执行器，Editor 能拿到完整一套', async () => {
   // agent_branch_retry 与 workflow_publish 此前因为逻辑埋在路由闭包里而不暴露；
   // 抽成共享服务后补齐，避免「声明了但永远调不到」。
-  const { createBotanicAgentActionToolRegistry } = await import('../botanicAgentTools.mjs')
-  const { OPERATIONAL_ACTION_TOOLS } = await import('../botanicAgentOperationalTools.mjs')
+  const { createBotanicAgentActionToolRegistry } = await import('../agent/tools/botanicAgentTools.mjs')
+  const { OPERATIONAL_ACTION_TOOLS } = await import('../agent/tools/botanicAgentOperationalTools.mjs')
   const registry = createBotanicAgentActionToolRegistry({
     role: 'editor',
     retryBranch: async () => ({}), cancelRun: async () => ({}), promoteArtifact: async () => ({}),

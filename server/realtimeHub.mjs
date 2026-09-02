@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { WebSocket, WebSocketServer } from 'ws'
 import { createCanvasCollaborationRoom } from './canvas/canvasCollaborationRoom.mjs'
-import { verifyRealtimeTicket } from './realtimeTicket.mjs'
+import { verifyRealtimeTicket } from './auth/realtimeTicket.mjs'
 import { collaborationChangeFromDocuments } from './collaborationActivityPersistence.mjs'
 import { canvasMutationConflictCode, canvasSyncEpochStaleError } from './store/productStoreContract.mjs'
 

@@ -1,10 +1,10 @@
 // @ts-check
 
-import { activeBotanicTraceFields } from '../../executionTelemetry.mjs'
+import { activeBotanicTraceFields } from '../../observability/executionTelemetry.mjs'
 import {
   AGENT_SEMANTIC_EVENT_NAMES,
   writeAgentSemanticEvent,
-} from '../../agentSemanticEvent.mjs'
+} from '../../observability/agentSemanticEvent.mjs'
 
 function identifiers(event) {
   return { ...(event?.ids ?? {}), ...(event?.identity ?? {}) }

@@ -1,8 +1,8 @@
 import { GenerationError, generateImages } from './generationProvider.mjs'
 import { providerForModel } from './generationModels.mjs'
-import { composeOverlayImages, jobRequestsPixelOverlay } from '../imageOverlay.mjs'
-import { generateMiniMaxImages, generateMiniMaxVideos } from '../minimaxGenerationProvider.mjs'
-import { generateFlockImages } from '../flockGenerationProvider.mjs'
+import { composeOverlayImages, jobRequestsPixelOverlay } from '../media/imageOverlay.mjs'
+import { generateMiniMaxImages, generateMiniMaxVideos } from '../providers/minimaxGenerationProvider.mjs'
+import { generateFlockImages } from '../providers/flockGenerationProvider.mjs'
 
 function configuredModel(config, modelId) {
   const declared = providerForModel(config.modelOptions ?? [], modelId)

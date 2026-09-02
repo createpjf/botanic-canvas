@@ -8,7 +8,7 @@ import { WebSocket } from 'ws'
 import * as Y from 'yjs'
 import { createProductStore } from './store/productStore.mjs'
 import { createProjectRealtimeHub } from './realtimeHub.mjs'
-import { issueRealtimeTicket } from './realtimeTicket.mjs'
+import { issueRealtimeTicket } from './auth/realtimeTicket.mjs'
 
 const testOrigin = 'http://localhost'
 

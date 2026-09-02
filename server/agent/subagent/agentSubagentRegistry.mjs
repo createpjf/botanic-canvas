@@ -1,8 +1,8 @@
 // @ts-check
-import { createAgentOperationalReaders } from '../../agentOperationalReaders.mjs'
-import { createAgentToolRegistry } from '../../agentToolRuntime.mjs'
-import { createBotanicAgentOperationalToolDefinitions } from '../../botanicAgentOperationalTools.mjs'
-import { createBotanicAgentWebResearchTools } from '../../botanicAgentWebTools.mjs'
+import { createAgentOperationalReaders } from '../../observability/agentOperationalReaders.mjs'
+import { createAgentToolRegistry } from '../tools/agentToolRuntime.mjs'
+import { createBotanicAgentOperationalToolDefinitions } from '../tools/botanicAgentOperationalTools.mjs'
+import { createBotanicAgentWebResearchTools } from '../tools/botanicAgentWebTools.mjs'
 
 function safeLabel(node) {
   const value = node?.data?.title ?? node?.data?.label ?? node?.data?.name

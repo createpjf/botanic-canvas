@@ -2,7 +2,7 @@ import { generationJobTimedOut, generationTimeoutForModel, timedOutGenerationJob
 import { cancelGenerationJob } from './generationCancellation.mjs'
 import { publicGenerationJob } from './generationProvider.mjs'
 import { reconcileGenerationResults } from './generationResultReconciliation.mjs'
-import { requireProjectPermission } from '../projectAuthorization.mjs'
+import { requireProjectPermission } from '../auth/projectAuthorization.mjs'
 import { compareAndSetGenerationJob } from './generationJobCas.mjs'
 import {
   canvasProjectMutationId,

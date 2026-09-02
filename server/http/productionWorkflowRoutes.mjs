@@ -8,13 +8,13 @@ import {
   withWorkflowBrandRules,
   retryFailedWorkflowItems,
   transitionProductionWorkflowRun,
-} from '../productionWorkflow.mjs'
-import { buildDeliveryManifest } from '../deliveryManifest.mjs'
-import { createDeliveryPackage } from '../deliveryPackage.mjs'
-import { createProductionWorkflowPublishService } from '../productionWorkflowPublishService.mjs'
+} from '../workflow/productionWorkflow.mjs'
+import { buildDeliveryManifest } from '../workflow/deliveryManifest.mjs'
+import { createDeliveryPackage } from '../workflow/deliveryPackage.mjs'
+import { createProductionWorkflowPublishService } from '../workflow/productionWorkflowPublishService.mjs'
 import { cancelGenerationJob } from '../generation/generationCancellation.mjs'
 import { publicGenerationJob } from '../generation/generationProvider.mjs'
-import { requireProjectPermission } from '../projectAuthorization.mjs'
+import { requireProjectPermission } from '../auth/projectAuthorization.mjs'
 
 const clone = (value) => structuredClone(value)
 

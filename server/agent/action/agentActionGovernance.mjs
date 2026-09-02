@@ -1,5 +1,5 @@
 import { createHmac, timingSafeEqual } from 'node:crypto'
-import { AgentToolRuntimeError } from '../../agentToolRuntime.mjs'
+import { AgentToolRuntimeError } from '../tools/agentToolRuntime.mjs'
 import { canonicalHash } from '../../canonicalHash.mjs'
 
 const permissions = Object.freeze({

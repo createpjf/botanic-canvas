@@ -1,5 +1,5 @@
 // @ts-check
-import { stageError } from './executionTrace.mjs'
+import { stageError } from './observability/executionTrace.mjs'
 import { validateAgentTurnCheckpoint } from './agent/turn/agentTurnCheckpoint.mjs'
 
 /** 非终态 Turn 状态。终态 Turn 不参与回收。 */

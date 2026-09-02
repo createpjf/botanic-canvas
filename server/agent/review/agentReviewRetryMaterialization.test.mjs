@@ -9,7 +9,7 @@ import {
   createReviewRetryAgentRunInput,
   storedAgentRunSubmissionBinding,
   validateAgentRunCreation,
-} from '../../botanicAgentRun.mjs'
+} from '../semantic/botanicAgentRun.mjs'
 import { createIdempotencyRequestBinding } from '../../idempotencyRequestBinding.mjs'
 
 const artifactId = 'generation:job-source:output-source'

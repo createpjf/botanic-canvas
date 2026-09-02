@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { generateFlockImages } from '../flockGenerationProvider.mjs'
+import { generateFlockImages } from '../providers/flockGenerationProvider.mjs'
 import { generateImages } from './generationProvider.mjs'
-import { encodeRgbaPng } from '../imageOverlay.mjs'
+import { encodeRgbaPng } from '../media/imageOverlay.mjs'
 
 const pngBase64 = encodeRgbaPng({
   width: 2,

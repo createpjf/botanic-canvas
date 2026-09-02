@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { canonicalHash } from './canonicalHash.mjs'
 import { actionArgumentsHash } from './agent/action/agentActionGovernance.mjs'
-import { creativePlanHash } from './botanicCreativePlanCompiler.mjs'
+import { creativePlanHash } from './agent/semantic/botanicCreativePlanCompiler.mjs'
 
 test('键序不影响哈希', () => {
   // 否则「重试是否漂移」会被字段书写顺序这种无意义差异触发。

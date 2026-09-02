@@ -1,5 +1,5 @@
-import { refinePrompt, validatePromptRefinementInput } from '../promptRefinementProvider.mjs'
-import { requireProjectPermission } from '../projectAuthorization.mjs'
+import { refinePrompt, validatePromptRefinementInput } from '../providers/promptRefinementProvider.mjs'
+import { requireProjectPermission } from '../auth/projectAuthorization.mjs'
 
 export function createPromptMediaRouteHandler({
   config,

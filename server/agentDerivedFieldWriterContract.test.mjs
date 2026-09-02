@@ -7,7 +7,7 @@ import test from 'node:test'
 const postgres = readFileSync(new URL('./store/postgresProductStore.mjs', import.meta.url), 'utf8')
 const supabase = readFileSync(new URL('./store/supabaseProductStore.mjs', import.meta.url), 'utf8')
 const local = readFileSync(new URL('./store/productStore.mjs', import.meta.url), 'utf8')
-const persistence = readFileSync(new URL('./botanicAgentPersistence.mjs', import.meta.url), 'utf8')
+const persistence = readFileSync(new URL('./agent/semantic/botanicAgentPersistence.mjs', import.meta.url), 'utf8')
 const productStoreContract = readFileSync(new URL('./store/productStoreContract.mjs', import.meta.url), 'utf8')
 const migration = readFileSync(new URL('../supabase/migrations/20260827180000_agent_thread_summary_cas.sql', import.meta.url), 'utf8')
 const sessionSettingsMigration = readFileSync(new URL('../supabase/migrations/20260830052434_agent_session_settings_cas.sql', import.meta.url), 'utf8')
@@ -65,7 +65,7 @@ test('PostgreSQL Message writer 在锁内共用单调生命周期与 sticky 请�
     'async putAgentMessage(userId, projectId, sessionId, input)',
     'async putAgentMemoryItem(userId, projectId, input)',
   )
-  assert.match(postgres, /import \{ mergeAgentMessageForWrite \} from '\.\.\/agentMessageMerge\.mjs'/u)
+  assert.match(postgres, /import \{ mergeAgentMessageForWrite \} from '\.\.\/agent\/thread\/agentMessageMerge\.mjs'/u)
   for (const writer of [sync, putMessage]) {
     assert.match(writer, /mergeAgentMessageForWrite/u)
     assert.match(writer, /for update/u)

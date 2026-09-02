@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
-import { createAgentThreadContext } from '../agentThreadContext.mjs'
+import { createAgentThreadContext } from '../agent/thread/agentThreadContext.mjs'
 import { canonicalHash } from '../canonicalHash.mjs'
 import { agentTurnRequestHash } from '../agent/turn/agentTurnRequestIdentity.mjs'
 import { createAgentSkill, deprecateAgentSkill, updateAgentSkill } from '../agent/action/botanicAgentSkill.mjs'

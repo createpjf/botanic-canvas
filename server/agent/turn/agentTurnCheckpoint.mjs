@@ -1,7 +1,7 @@
 // @ts-check
 import { canonicalHash } from '../../canonicalHash.mjs'
 import { validateAgentToolEntityReferences } from '../../agentEntityReferences.mjs'
-import { classifyPublicHttpUrl } from '../../agentWebResearch.mjs'
+import { classifyPublicHttpUrl } from '../tools/agentWebResearch.mjs'
 
 const CHECKPOINT_VERSION = 1
 /** Checkpoint V2（H6A，ADR 0004/0008 2026-09-01 修订）：每 call lifecycle 与安全 result envelope。 */

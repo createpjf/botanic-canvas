@@ -1,5 +1,5 @@
-import { issueRealtimeTicket } from '../realtimeTicket.mjs'
-import { requireProjectPermission } from '../projectAuthorization.mjs'
+import { issueRealtimeTicket } from '../auth/realtimeTicket.mjs'
+import { requireProjectPermission } from '../auth/projectAuthorization.mjs'
 
 export function createRealtimeTicketRouteHandler({ config, productStore, json, readJson, text, requireUser, enforceRateLimit, HttpError }) {
   return async function handleRealtimeTicketRoute(request, response, url) {

@@ -1,9 +1,9 @@
 // @ts-check
 import { createHash } from 'node:crypto'
 import { agentReviewHumanDecisionCommitDecision } from './agentReviewExecution.mjs'
-import { storedAgentRunSubmissionBinding } from '../../botanicAgentRun.mjs'
+import { storedAgentRunSubmissionBinding } from '../semantic/botanicAgentRun.mjs'
 import { createIdempotencyRequestBinding, matchingIdempotencyRequestBinding } from '../../idempotencyRequestBinding.mjs'
-import { generationArtifactId } from '../../productionWorkflow.mjs'
+import { generationArtifactId } from '../../workflow/productionWorkflow.mjs'
 
 function clone(value) {
   return value === undefined ? undefined : structuredClone(value)

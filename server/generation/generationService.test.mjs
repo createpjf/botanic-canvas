@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { generateMedia } from './generationService.mjs'
-import { encodeRgbaPng } from '../imageOverlay.mjs'
+import { encodeRgbaPng } from '../media/imageOverlay.mjs'
 
 function solidPng(width, height, rgba) {
   const pixels = Buffer.alloc(width * height * 4)

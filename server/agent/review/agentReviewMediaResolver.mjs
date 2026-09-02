@@ -1,5 +1,5 @@
 // @ts-check
-import { resolveBotanicAgentImageDataUrl } from '../../botanicAgentVision.mjs'
+import { resolveBotanicAgentImageDataUrl } from '../semantic/botanicAgentVision.mjs'
 
 /** Review 取图必须复用 Generation 的 owner/project 授权边界。 */
 export function createAgentReviewMediaResolver(mediaService) {

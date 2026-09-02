@@ -1,6 +1,6 @@
 // @ts-check
-import { executionTraceId, isExecutionStage, redactSensitive } from '../../executionTrace.mjs'
-import { AGENT_SEMANTIC_EVENT_NAMES, createAgentSemanticEvent } from '../../agentSemanticEvent.mjs'
+import { executionTraceId, isExecutionStage, redactSensitive } from '../../observability/executionTrace.mjs'
+import { AGENT_SEMANTIC_EVENT_NAMES, createAgentSemanticEvent } from '../../observability/agentSemanticEvent.mjs'
 
 const finiteNumber = (value) => Number.isFinite(value) ? value : undefined
 const w3cTraceId = (value) => typeof value === 'string' && /^[0-9a-f]{32}$/iu.test(value) ? value : undefined
