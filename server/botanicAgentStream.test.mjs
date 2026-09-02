@@ -37,16 +37,15 @@ test('SSE 读取容忍跨网络块切断的行、注释与心跳', async () => {
   assert.equal(chunks[1].choices[0].delta.content, '好')
 })
 
-test('SSE 读取跳过无法解析的事件，并处理结尾没有空行的情况', async () => {
-  const chunks = []
-  const stream = byteStream([
-    'data: {"broken"\n\n',
-    'data: {"choices":[{"delta":{"content":"末尾"}}]}',
-  ])
-  for await (const chunk of readServerSentEvents(stream)) chunks.push(chunk)
-
-  assert.equal(chunks.length, 1)
-  assert.equal(chunks[0].choices[0].delta.content, '末尾')
+test('Provider SSE 对坏 JSON、缺 DONE 与未闭合 tail fail closed', async () => {
+  const collect = async (pieces) => {
+    const values = []
+    for await (const value of readServerSentEvents(byteStream(pieces))) values.push(value)
+    return values
+  }
+  await assert.rejects(collect(['data: {bad}\n\n', 'data: [DONE]\n\n']), (error) => error.code === 'PROVIDER_STREAM_MALFORMED')
+  await assert.rejects(collect([sse({ choices: [{ delta: { content: '半截' }, finish_reason: 'stop' }] })]), (error) => error.code === 'PROVIDER_STREAM_CLOSED')
+  await assert.rejects(collect(['data: ' + JSON.stringify({ choices: [{ delta: { content: 'tail' } }] })]), (error) => error.code === 'PROVIDER_STREAM_CLOSED')
 })
 
 test('SSE 读取支持 web ReadableStream 与纯文本块', async () => {
@@ -64,6 +63,7 @@ test('SSE 读取支持 web ReadableStream 与纯文本块', async () => {
   const fromText = []
   for await (const chunk of readServerSentEvents((async function* stream() {
     yield sse({ choices: [{ delta: { content: 'B' } }] })
+    yield 'data: [DONE]\n\n'
   })())) fromText.push(chunk)
   assert.deepEqual(fromText.map((chunk) => chunk.choices[0].delta.content), ['B'])
 })

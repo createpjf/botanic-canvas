@@ -22,7 +22,7 @@ export const AGENT_TURN_PUBLIC_STATUSES = Object.freeze([
 
 /** 实时通道事件类型(chat/turn/plan 共用)。 */
 export const AGENT_STREAM_EVENT_TYPES = Object.freeze([
-  'accepted', 'handoff', 'reasoning', 'answer', 'tool', 'done', 'error',
+  'attempt', 'accepted', 'handoff', 'reasoning', 'answer', 'answer_snapshot', 'tool', 'done', 'error',
 ])
 
 /** 工具调用公开状态(含 H4 的 aborted)。 */
@@ -44,6 +44,7 @@ export const AGENT_PUBLIC_ERROR_CODES = Object.freeze([
   'AGENT_TURN_CANCELLED', 'AGENT_TURN_FAILED', 'AGENT_TURN_RESULT_MISSING',
   'AGENT_TURN_NOT_REPLAYABLE', 'AGENT_TURN_DEADLINE_EXCEEDED', 'AGENT_TURN_RESUME_LIMIT_REACHED',
   'AGENT_TURN_DURABILITY_UNAVAILABLE', 'AGENT_PROTOCOL_VERSION_UNSUPPORTED', 'REQUEST_CANCELLED',
+  'AGENT_PLAN_FAILED', 'AGENT_CHAT_FAILED',
   // 工具与循环
   'TOOL_LOOP_LIMIT_REACHED', 'TOOL_NO_PROGRESS', 'TOOL_CALL_LIMIT_REACHED',
   'AGENT_TOOL_OUTCOME_UNKNOWN', 'AGENT_TOOL_DUPLICATE_DISPATCH',
@@ -54,6 +55,7 @@ export const AGENT_PUBLIC_ERROR_CODES = Object.freeze([
   // Provider(1A 统一后的具名传输错误)
   'PROVIDER_NOT_CONFIGURED', 'PROVIDER_TIMEOUT', 'PROVIDER_AUTH_FAILED',
   'PROVIDER_RATE_LIMITED', 'PROVIDER_UNAVAILABLE', 'PROVIDER_REJECTED',
+  'PROVIDER_STREAM_CLOSED', 'PROVIDER_STREAM_MALFORMED',
   'INVALID_PROVIDER_RESPONSE', 'AGENT_CONTEXT_OVERFLOW',
 ])
 

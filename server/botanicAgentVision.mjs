@@ -202,6 +202,7 @@ export async function describeBotanicAgentContextImages({
   }
 
   const settled = await Promise.allSettled(resolvedCandidates.map(describeOne))
+  signal?.throwIfAborted()
   return settled.flatMap((entry) => (entry.status === 'fulfilled' && entry.value
     ? [{
       nodeId: entry.value.nodeId,

@@ -17,7 +17,8 @@ import { AGENT_STREAM_EVENT_TYPE_VALUES } from './agentProtocol.generated.ts'
  * 续读，因此它必须随事件体下发 —— 只写 SSE 的 `id:` 行不够：本仓库用 fetch 手工
  * 解析而不是原生 EventSource，`Last-Event-ID` 需要我们自己带上去。
  */
-export type BotanicAgentStreamEvent = ({ sequence?: number }) & (
+export type BotanicAgentStreamEvent = ({ sequence?: number; attemptId?: string }) & (
+  | { type: 'attempt'; action: 'start'; attemptId: string }
   | {
       type: 'accepted'
       turnId: string
@@ -34,8 +35,9 @@ export type BotanicAgentStreamEvent = ({ sequence?: number }) & (
       }
       observer: { url: string }
     }
-  | { type: 'reasoning'; step: number; delta: string }
-  | { type: 'answer'; step: number; delta: string }
+  | { type: 'reasoning'; step: number; delta: string; chunkIndex?: number }
+  | { type: 'answer'; step: number; delta: string; chunkIndex?: number }
+  | { type: 'answer_snapshot'; attemptId: string; revision: number; step: number; text: string; truncated?: boolean }
   | { type: 'tool'; step: number; toolCall: AgentToolCallTrace; presentation?: TimelineToolPresentation }
   | {
       type: 'done'

@@ -1355,15 +1355,18 @@ test('回合流式通道发出工具步，服务端和用户开关同时打开�
     }), { status: 200 }),
   })
 
-  assert.deepEqual(events.map((event) => event.type === 'reasoning'
-    ? `reasoning:${event.delta}`
-    : event.type === 'answer'
-      ? `answer:${event.delta}`
-      : `tool:${event.toolCall.id}:${event.toolCall.status}`), [
-    'reasoning:先搜官网。',
-    'tool:call-web:running',
-    'tool:call-web:succeeded',
-    'answer:和光是灯具品牌。',
+  assert.deepEqual(events.map((event) => event.type === 'attempt'
+    ? `attempt:${event.attemptId}`
+    : event.type === 'reasoning'
+      ? `reasoning:${event.attemptId}:${event.chunkIndex}:${event.delta}`
+      : event.type === 'answer'
+        ? `answer:${event.attemptId}:${event.chunkIndex}:${event.delta}`
+        : `tool:${event.attemptId}:${event.toolCall.id}:${event.toolCall.status}`), [
+    'attempt:text',
+    'reasoning:text:0:先搜官网。',
+    'tool:text:call-web:running',
+    'tool:text:call-web:succeeded',
+    'answer:text:0:和光是灯具品牌。',
   ])
   assert.equal(result.kind, 'chat')
   assert.ok(result.reasoning?.some((entry) => entry.source === 'raw' && entry.text.includes('先搜官网')))
@@ -1683,4 +1686,43 @@ test('目标图片无法读取时 fail closed，不调用文本模型生成编�
     && caught.code === 'AGENT_TARGET_VISION_UNAVAILABLE'
     && caught.statusCode === 503)
   assert.equal(providerCalls, 0)
+})
+
+test('视觉流吐出前缀后截断回退文本 attempt,事件携带新 attempt 供客户端清除废弃前缀', async () => {
+  const visionDocument = {
+    ...document,
+    nodes: document.nodes.map((node) => node.id === 'asset-mia-portrait'
+      ? { ...node, data: { ...node.data, image: 'data:image/png;base64,TUlB' } }
+      : node),
+  }
+  const events = []
+  let modelCalls = 0
+  const result = await resolveBotanicAgentTurn({
+    projectId: 'project-turn', plannerModel: 'gemini-3.7-flash',
+    messages: [{ role: 'user', content: '看图后回答' }],
+    contextNodeIds: ['asset-mia-portrait'], hasTarget: false, generationModels,
+  }, { ...runtime, agentVisionModel: 'gemini-3.7-flash' }, {
+    document: visionDocument,
+    onEvent: (event) => events.push(event),
+    fetchImpl: async () => {
+      modelCalls += 1
+      if (modelCalls === 1) return new Response(
+        'data: ' + JSON.stringify({ choices: [{ delta: { content: '废弃视觉前缀' } }] }) + '\n\n',
+        { status: 200, headers: { 'Content-Type': 'text/event-stream' } },
+      )
+      return streamResponse([
+        { choices: [{ delta: { content: '最终文本答案' } }] },
+        { choices: [{ delta: {}, finish_reason: 'stop' }] },
+      ])
+    },
+    visionFetchImpl: async () => new Response(JSON.stringify({
+      choices: [{ message: { content: '画面是一张人物商品图。' } }],
+    }), { status: 200 }),
+  })
+  assert.equal(result.kind, 'chat')
+  assert.equal(result.answer, '最终文本答案')
+  assert.deepEqual(events.filter((event) => event.type === 'attempt').map((event) => event.attemptId), ['vision', 'text'])
+  assert.deepEqual(events.filter((event) => event.type === 'answer').map((event) => [event.attemptId, event.delta]), [
+    ['vision', '废弃视觉前缀'], ['text', '最终文本答案'],
+  ])
 })

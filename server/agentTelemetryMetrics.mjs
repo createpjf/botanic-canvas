@@ -46,6 +46,12 @@ export function initializeAgentTelemetryMetrics(input) {
     const generationHistogram = meter.createHistogram('botanic.agent.turn.generation', {
       description: 'Turn 恢复代际分布(resume_limit/deadline 事件附带)。',
     })
+    const providerChunkHistogram = meter.createHistogram('botanic.agent.provider.chunk_count', {
+      description: '单次Provider流的安全语义chunk数量。', unit: '{chunk}',
+    })
+    const providerChunkGapHistogram = meter.createHistogram('botanic.agent.provider.max_chunk_gap', {
+      description: '单次Provider流的最大安全语义chunk间隔。', unit: 'ms',
+    })
     activeRecorder = Object.freeze({
       enabled: true,
       /** @param {Record<string, any>} event 已通过 agentSemanticEvent schema 的事件 */
@@ -59,6 +65,8 @@ export function initializeAgentTelemetryMetrics(input) {
           if (Number.isSafeInteger(event.generation)) {
             generationHistogram.record(event.generation, attributes)
           }
+          if (Number.isSafeInteger(event.chunkCount)) providerChunkHistogram.record(event.chunkCount, attributes)
+          if (Number.isSafeInteger(event.maxChunkGapMs)) providerChunkGapHistogram.record(event.maxChunkGapMs, attributes)
         } catch { /* metrics 旁路 fail-open。 */ }
       },
     })

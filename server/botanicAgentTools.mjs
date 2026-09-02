@@ -827,7 +827,7 @@ const skillToolRiskCatalog = Object.freeze({
   skill_create_propose: 'read',
   mcp_propose: 'read',
   canvas_edit_propose: 'read',
-  subagent_research: 'read',
+  subagent_research: 'costly',
   generation_ask_clarification: 'read',
   generation_create_plan: 'read',
   ask_clarification: 'read',
@@ -1105,8 +1105,10 @@ export function createBotanicAgentPlanningToolRegistry({ input, finalizePlan, fi
     ...(typeof subagentRunner === 'function' ? [{
       name: 'subagent_research',
       label: '并行调研',
-      description: `就 2–3 个不同角度并行做一次只读调研，返回结构化提案供你参考。可用角色：${SUBAGENT_PARALLEL_ROLES.join('、')}。子任务无权修改画布、提交生成或调用外部系统；它们的结论只是建议，最终仍由你和用户决定。`,
-      risk: 'read',
+      description: `就 2–3 个不同角度并行做一次只读调研，会产生额外模型调用费用，返回结构化提案供你参考。可用角色：${SUBAGENT_PARALLEL_ROLES.join('、')}。子任务无权修改画布、提交生成或调用外部系统；它们的结论只是建议，最终仍由你和用户决定。`,
+      risk: 'costly',
+      // 子任务 ID 由根 Turn 与输入指纹派生，Durable Broker 重放会复用同一任务。
+      recovery: 'reexecute',
       parameters: {
         type: 'object', additionalProperties: false,
         properties: {

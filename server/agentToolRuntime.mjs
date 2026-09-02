@@ -1,6 +1,7 @@
 import { agentToolCallSummary, appendAgentReasoning, extractProviderReasoning } from './botanicAgentReasoning.mjs'
 import { presentationWebSources } from './agentWebResearch.mjs'
 import {
+  AGENT_TURN_TERMINAL_CONTENT_LIMIT,
   completeAgentTurnCheckpoint,
   agentTurnCheckpointResultEnvelopeUrls,
   journalAgentTurnCheckpointCall,
@@ -212,6 +213,13 @@ export class AgentToolRuntimeError extends Error {
     this.code = code
     this.statusCode = statusCode
   }
+}
+
+function terminalModelContent(value) {
+  if (typeof value !== 'string' || !value.trim() || value.trim().length > AGENT_TURN_TERMINAL_CONTENT_LIMIT) {
+    throw new AgentToolRuntimeError('INVALID_PROVIDER_RESPONSE', 'Agent 模型未返回有效的最终回答。', 502)
+  }
+  return value.trim()
 }
 
 function knownPreEffectFailure(error) {
@@ -1089,6 +1097,10 @@ export async function runAgentToolLoop({
           compact: false,
           serialized: entry.reuseEnvelope,
         })
+        if (emitEvents) emit({
+          type: 'tool', step, toolCall: reused,
+          ...(runningPresentation ? { presentation: runningPresentation } : {}),
+        })
         continue
       }
       if (entry.recoverResultRef) {
@@ -1098,8 +1110,14 @@ export async function runAgentToolLoop({
           toolCall: structuredClone(entry.descriptor),
           context,
         }))
-        toolCalls.push({ ...trace, status: 'succeeded' })
+        const recovered = { ...trace, status: 'succeeded' }
+        toolCalls.push(recovered)
         appendToolOutput(entry, output)
+        const recoveredPresentation = toolEventPresentation(trace.name, output)
+        if (emitEvents) emit({
+          type: 'tool', step, toolCall: recovered,
+          ...(recoveredPresentation ? { presentation: recoveredPresentation } : {}),
+        })
         continue
       }
       // journal（H6B）:请求交给 client 前先 durable 写 dispatched;此后不能再假设「没执行」。
@@ -1392,13 +1410,14 @@ export async function runAgentToolLoop({
     })
     const calls = Array.isArray(message?.tool_calls) ? message.tool_calls : []
     if (!calls.length) {
+      const content = terminalModelContent(message?.content)
       if (!checkpointing) {
         return {
-          output: message?.content, toolCalls,
+          output: content, toolCalls,
           entityReferences: structuredClone(entityReferences), reasoning, steps,
         }
       }
-      const terminal = terminalAgentTurnCheckpoint(checkpoint, { attempt, step, content: message?.content })
+      const terminal = terminalAgentTurnCheckpoint(checkpoint, { attempt, step, content })
       await persistCheckpoint(terminal)
       return {
         output: terminal.terminalContent, toolCalls,
@@ -1475,8 +1494,7 @@ export async function runAgentToolLoop({
       }))
     }
     const message = response?.choices?.[0]?.message
-    const content = typeof message?.content === 'string' ? message.content : undefined
-    if (!content?.trim()) throw new AgentToolRuntimeError('TOOL_LOOP_LIMIT_REACHED', 'Agent 工具调用步骤过多，已停止执行。')
+    const content = terminalModelContent(message?.content)
     emitHarness('loop', 'final_synthesis', { step: maximumSteps })
     reasoning = appendAgentReasoning(reasoning, {
       step: maximumSteps,
@@ -1499,6 +1517,7 @@ export async function runAgentToolLoop({
     // 综合失败回退原错误码,保留已完成工具摘要在 toolCalls 中;取消/deadline 原样透传。
     emitHarness('loop', 'final_synthesis', { step: maximumSteps, reason: typeof caught?.code === 'string' ? caught.code : 'FAILED' })
     if (caught?.code === 'REQUEST_CANCELLED' || caught?.code === 'AGENT_TURN_DEADLINE_EXCEEDED') throw caught
+    if (caught?.code === 'INVALID_PROVIDER_RESPONSE') throw caught
     if (caught?.code === 'TOOL_LOOP_LIMIT_REACHED') throw caught
     throw new AgentToolRuntimeError('TOOL_LOOP_LIMIT_REACHED', 'Agent 工具调用步骤过多，已停止执行。')
   }

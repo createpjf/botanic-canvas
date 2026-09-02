@@ -192,6 +192,9 @@ export function validateBotanicAgentPlanInput(raw) {
   const projectId = requiredText(input.projectId, '项目', 160)
   const locale = normalizeBotanicAgentLocale(input.locale)
   const plannerModel = optionalText(input.plannerModel, 'Agent 模型', 160)
+  if (input.showRawReasoning !== undefined && typeof input.showRawReasoning !== 'boolean') {
+    invalidRequest('Agent 推理原文设置无效。')
+  }
   const instruction = requiredText(input.instruction, '修改要求', 4000)
   // 用户原话：综合 Prompt 链路里 instruction 是模型写的画面描述，变体轴只允许从原话解析。
   const sourceInstruction = optionalText(input.sourceInstruction, '用户原话', 4000)
@@ -385,6 +388,7 @@ export function validateBotanicAgentPlanInput(raw) {
     projectId,
     locale,
     ...(plannerModel ? { plannerModel } : {}),
+    ...(input.showRawReasoning === true ? { showRawReasoning: true } : {}),
     instruction,
     ...(sourceInstruction ? { sourceInstruction } : {}),
     ...(structuredVariants ? { structuredVariants } : {}),
@@ -670,7 +674,7 @@ async function plannerInstructions(locale) {
 }
 
 function plannerModelInput(input) {
-  const { projectSkills, ...safeInput } = input
+  const { projectSkills, showRawReasoning: _showRawReasoning, ...safeInput } = input
   const effectiveProjectSkills = pinnedBotanicAgentProjectSkills(input.skillCatalogSnapshot, projectSkills)
   const frozenBuiltInSkills = input.skillCatalogSnapshot?.builtIn
   const availableSkills = botanicAgentSearchableSkills(effectiveProjectSkills, { builtIn: frozenBuiltInSkills }).map((skill) => ({ id: skill.id, name: skill.name }))
@@ -750,7 +754,7 @@ export async function planBotanicGeneration(input, runtimeConfig, options = {}) 
   })
   const hasWebTools = Boolean(registry.get('web_search') || registry.get('web_fetch'))
   const streaming = typeof options.onEvent === 'function'
-  const allowRawReasoning = Boolean(runtimeConfig?.agentRawReasoning)
+  const allowRawReasoning = Boolean(runtimeConfig?.agentRawReasoning && input?.showRawReasoning)
   const contextBinding = plannerModelContextBinding(options, config.model)
   const snapshot = freezeAgentStepSnapshot({
     registry,
@@ -765,10 +769,14 @@ export async function planBotanicGeneration(input, runtimeConfig, options = {}) 
     model: config.model,
     snapshotHash: canonicalHash(snapshot),
   }
-  const emitEvent = (event) => {
+  const emitEvent = async (event) => {
     if (!streaming) return
-    try { options.onEvent(event) } catch { /* 展示层异常不得中断本轮规划。 */ }
+    try { await options.onEvent({ ...event, attemptId: attempt.id }) } catch (caught) {
+      if (event.type === 'attempt' && options.requireDurableAttemptReset === true) throw caught
+      // 非durable展示层异常不得中断本轮规划。
+    }
   }
+  await emitEvent({ type: 'attempt', action: 'start' })
   try {
     const result = await runAgentToolLoop({
       registry,
@@ -804,10 +812,10 @@ export async function planBotanicGeneration(input, runtimeConfig, options = {}) 
         onEvent: streaming
           ? (event) => {
               if (event.type === 'reasoning') {
-                if (allowRawReasoning) emitEvent({ type: 'reasoning', step, delta: event.delta })
+                if (allowRawReasoning) emitEvent({ type: 'reasoning', step, delta: event.delta, chunkIndex: event.chunkIndex })
                 return
               }
-              if (event.type === 'answer') emitEvent({ type: 'answer', step, delta: event.delta })
+              if (event.type === 'answer') emitEvent({ type: 'answer', step, delta: event.delta, chunkIndex: event.chunkIndex })
             }
           : undefined,
       }),

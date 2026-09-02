@@ -105,6 +105,14 @@ export function aggregateOperationalMetrics(events = [], { minimumPercentileSamp
   const duplicateDispatch = harnessOf('recovery', 'duplicate_dispatch')
   const providerRetries = harnessOf('provider', 'retry')
   const providerCallTimeouts = harnessOf('provider', 'call_timeout')
+  const providerFirstTokens = harnessOf('provider', 'first_token')
+  const providerStreams = harnessOf('provider', 'stream_completed')
+  const providerStreamClosed = harnessOf('provider', 'stream_closed')
+  const providerStreamMalformed = harnessOf('provider', 'stream_malformed')
+  const providerFirstTokenMs = providerFirstTokens.map((event) => Number(event.durationMs)).filter(Number.isFinite)
+  const providerStreamDurationMs = providerStreams.map((event) => Number(event.durationMs)).filter(Number.isFinite)
+  const providerChunkCounts = providerStreams.map((event) => Number(event.chunkCount)).filter(Number.isFinite)
+  const providerMaxChunkGapMs = providerStreams.map((event) => Number(event.maxChunkGapMs)).filter(Number.isFinite)
   const deadlineExceeded = harnessOf('provider', 'deadline_exceeded')
   const resumeLimit = harnessOf('provider', 'resume_limit')
   const generations = harness.map((event) => Number(event.generation)).filter(Number.isFinite)
@@ -190,6 +198,17 @@ export function aggregateOperationalMetrics(events = [], { minimumPercentileSamp
       recoveryUnknownCount: recoveryUnknown.length,
       providerRetryCount: providerRetries.length,
       providerCallTimeoutCount: providerCallTimeouts.length,
+      providerFirstTokenSampleCount: providerFirstTokens.length,
+      providerFirstTokenP50Ms: percentile(providerFirstTokenMs, 0.5, percentileOptions),
+      providerFirstTokenP95Ms: percentile(providerFirstTokenMs, 0.95, percentileOptions),
+      providerStreamCompletedCount: providerStreams.length,
+      providerStreamClosedCount: providerStreamClosed.length,
+      providerStreamMalformedCount: providerStreamMalformed.length,
+      providerStreamP50DurationMs: percentile(providerStreamDurationMs, 0.5, percentileOptions),
+      providerStreamP95DurationMs: percentile(providerStreamDurationMs, 0.95, percentileOptions),
+      providerChunkP50Count: percentile(providerChunkCounts, 0.5, percentileOptions),
+      providerChunkP95Count: percentile(providerChunkCounts, 0.95, percentileOptions),
+      providerMaxChunkGapP95Ms: percentile(providerMaxChunkGapMs, 0.95, percentileOptions),
       deadlineExceededCount: deadlineExceeded.length,
       resumeLimitCount: resumeLimit.length,
       generationP95: percentile(generations, 0.95, percentileOptions),

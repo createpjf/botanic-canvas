@@ -1,4 +1,5 @@
 import { isBotanicAgentProcessLabel, type AgentToolCallTrace, type BotanicAgentRun, type BotanicAgentRunBranch } from './agent.ts'
+import type { BotanicAgentChatStreamEvent } from './agentChatStream.ts'
 import {
   isCollapsedWebSearchToolName,
   isWebSourceToolName,
@@ -17,7 +18,7 @@ export {
   timelineWebSourceHref,
 } from './agentTimelineWebSources.ts'
 
-export type TimelineStepKind = 'search' | 'fetch' | 'read_skill' | 'connect_runtime' | 'subagent' | 'read' | 'write' | 'other'
+export type TimelineStepKind = 'search' | 'fetch' | 'read_skill' | 'connect_runtime' | 'subagent' | 'no_progress' | 'read' | 'write' | 'other'
 
 /** thinking-orbs 的九态；只决定动画，不决定界面文案。 */
 export type AgentTimelineOrbState =
@@ -62,13 +63,17 @@ export type TimelineBlock =
 
 export type AgentTimelineState = {
   blocks: TimelineBlock[]
+  /** Live-only attempt/chunk cursor;不进入durable Turn Event。 */
+  stream?: { attemptId?: string; answerChunkIndex?: number; reasoningChunkIndex?: number; previewRevision?: number }
   truncation?: { loadedCount: number; nextAfter: number }
 }
 
 export type AgentTimelineEvent =
-  | { type: 'reasoning'; step: number; delta: string; receivedAt: number }
-  | { type: 'answer'; step: number; delta: string; receivedAt: number }
-  | { type: 'tool'; step: number; toolCall: AgentToolCallTrace; presentation?: TimelineToolPresentation; receivedAt: number }
+  | { type: 'attempt'; action: 'start'; attemptId: string; receivedAt: number }
+  | { type: 'reasoning'; step: number; delta: string; attemptId?: string; chunkIndex?: number; receivedAt: number }
+  | { type: 'answer'; step: number; delta: string; attemptId?: string; chunkIndex?: number; receivedAt: number }
+  | { type: 'answer_snapshot'; attemptId: string; revision: number; step: number; text: string; truncated?: boolean; receivedAt: number }
+  | { type: 'tool'; step: number; toolCall: AgentToolCallTrace; presentation?: TimelineToolPresentation; attemptId?: string; receivedAt: number }
   | { type: 'handoff'; receivedAt: number }
   | { type: 'done'; receivedAt: number }
   | { type: 'error'; message?: string; receivedAt: number }
@@ -430,19 +435,87 @@ export function persistAgentLiveTimeline(
  * 把一轮对话的实时事件拆到两处：回答增量追加到正文，思考/工具进入时间线。
  * 正文只出现一次；时间线不再复制旁白。
  */
+export function agentTimelineEventFromStream(
+  event: BotanicAgentChatStreamEvent,
+  receivedAt: number,
+): AgentTimelineEvent {
+  if (event.type === 'attempt') return { type: 'attempt', action: 'start', attemptId: event.attemptId, receivedAt }
+  if (event.type === 'handoff') return { type: 'handoff', receivedAt }
+  if (event.type === 'reasoning' || event.type === 'answer') return {
+    type: event.type, step: event.step, delta: event.delta,
+    ...(event.attemptId ? { attemptId: event.attemptId } : {}),
+    ...(event.chunkIndex === undefined ? {} : { chunkIndex: event.chunkIndex }), receivedAt,
+  }
+  if (event.type === 'answer_snapshot') return {
+    type: 'answer_snapshot', attemptId: event.attemptId, revision: event.revision,
+    step: event.step, text: event.text, ...(event.truncated ? { truncated: true } : {}), receivedAt,
+  }
+  if (event.type === 'tool') return {
+    type: event.type, step: event.step, toolCall: event.toolCall,
+    ...(event.attemptId ? { attemptId: event.attemptId } : {}),
+    ...(event.presentation ? { presentation: event.presentation } : {}), receivedAt,
+  }
+  if (event.type === 'error') return { type: 'error', ...(event.message ? { message: event.message } : {}), receivedAt }
+  return { type: 'done', receivedAt }
+}
+
 export function applyAgentConversationStreamEvent(
   state: { content: string; timeline: AgentTimelineState },
   event: AgentTimelineEvent,
 ): { content: string; timeline: AgentTimelineState } {
+  if (event.type === 'attempt') {
+    if (state.timeline.stream?.attemptId === event.attemptId) return state
+    return { content: '', timeline: { ...createAgentTimeline(event.receivedAt), stream: { attemptId: event.attemptId } } }
+  }
+  if (event.type === 'answer_snapshot') {
+    const cursor = state.timeline.stream
+    if (!Number.isSafeInteger(event.revision) || event.revision < 1
+      || (cursor?.previewRevision !== undefined && event.revision <= cursor.previewRevision)) return state
+    const sameAttempt = cursor?.attemptId === event.attemptId
+    const timeline = sameAttempt ? state.timeline : createAgentTimeline(event.receivedAt)
+    return {
+      content: event.text.slice(0, 12_288),
+      timeline: {
+        ...timeline,
+        stream: { ...(sameAttempt ? cursor : {}), attemptId: event.attemptId, previewRevision: event.revision },
+      },
+    }
+  }
+  const cursor = state.timeline.stream
+  const eventAttemptId = 'attemptId' in event ? event.attemptId : undefined
+  if (eventAttemptId && cursor?.attemptId && eventAttemptId !== cursor.attemptId) return state
+  const attemptId = eventAttemptId ?? cursor?.attemptId
   if (event.type === 'answer') {
     if (!event.delta) return state
-    return { content: `${state.content}${event.delta}`, timeline: state.timeline }
+    if (event.chunkIndex !== undefined && cursor?.answerChunkIndex !== undefined && event.chunkIndex <= cursor.answerChunkIndex) return state
+    return {
+      content: `${state.content}${event.delta}`,
+      timeline: {
+        ...state.timeline,
+        stream: { ...cursor, ...(attemptId ? { attemptId } : {}), ...(event.chunkIndex === undefined ? {} : { answerChunkIndex: event.chunkIndex }) },
+      },
+    }
   }
-  return { content: state.content, timeline: reduceAgentTimeline(state.timeline, event) }
+  if (event.type === 'reasoning' && event.chunkIndex !== undefined
+    && cursor?.reasoningChunkIndex !== undefined && event.chunkIndex <= cursor.reasoningChunkIndex) return state
+  const timeline = reduceAgentTimeline(state.timeline, event)
+  return {
+    content: state.content,
+    timeline: {
+      ...timeline,
+      ...(cursor || attemptId ? {
+        stream: {
+          ...cursor,
+          ...(attemptId ? { attemptId } : {}),
+          ...(event.type === 'reasoning' && event.chunkIndex !== undefined ? { reasoningChunkIndex: event.chunkIndex } : {}),
+        },
+      } : {}),
+    },
+  }
 }
 
 export function reduceAgentTimeline(prev: AgentTimelineState, event: AgentTimelineEvent): AgentTimelineState {
-  if (event.type === 'handoff') return prev
+  if (event.type === 'attempt' || event.type === 'handoff') return prev
   if (event.type === 'reasoning') {
     const rawGroup = timelineRawGroup(prev.blocks)
     const blocks = semanticBlocks(prev.blocks)
@@ -462,7 +535,7 @@ export function reduceAgentTimeline(prev: AgentTimelineState, event: AgentTimeli
     return { blocks: rawGroup ? withRawGroup(blocks, rawGroup.items, rawGroup.open) : blocks }
   }
   // 回答属于气泡正文，不进入时间线；连续工具步骤因此不会被旁白打断。
-  if (event.type === 'answer') return prev
+  if (event.type === 'answer' || event.type === 'answer_snapshot') return prev
   if (event.type === 'tool') return reduceToolEvent(prev, event)
   if (event.type === 'done') {
     return {

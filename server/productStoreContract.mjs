@@ -3,6 +3,7 @@
 import { createHash } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 import { agentTurnRequestHash, agentTurnRequestHashVersion, storedAgentTurnRequestBinding } from './agentTurnRequestIdentity.mjs'
+import { agentTurnOutputPreviewCommitDecision, agentTurnOutputPreviewEventPayload } from './agentTurnOutputPreview.mjs'
 import {
   BotanicAgentSkillError,
   agentSkillExecutionContentHash,
@@ -488,6 +489,18 @@ export function committedAgentTurnExecution(existing, command) {
   }
 
   const observedAt = Number(command.observedAt) || Date.now()
+  const previewRequested = Object.hasOwn(command, 'outputPreview')
+  const previewDecision = previewRequested
+    ? agentTurnOutputPreviewCommitDecision(stored.outputPreview, command.outputPreview, observedAt)
+    : undefined
+  if (previewDecision?.kind === 'conflict') return { kind: 'conflict', turn: stored, changed: false }
+  if (previewDecision?.kind === 'stale') return { kind: 'stale', turn: stored, changed: false }
+  if (previewRequested && (!previewDecision?.preview
+    || command.event?.type !== 'turn.output_preview.updated'
+    || !isDeepStrictEqual(command.event?.payload, agentTurnOutputPreviewEventPayload(previewDecision.preview)))) {
+    return { kind: 'conflict', turn: stored, changed: false }
+  }
+  if (previewDecision?.kind === 'replay') return { kind: 'replay', turn: stored, changed: false }
   const turn = { ...stored, status: requestedStatus, updatedAt: observedAt }
   if (requestedStatus === 'running') {
     turn.execution = {
@@ -496,10 +509,12 @@ export function committedAgentTurnExecution(existing, command) {
       lastHeartbeatAt: observedAt,
     }
     if (Object.hasOwn(command, 'checkpoint')) turn.checkpoint = structuredClone(command.checkpoint)
+    if (previewDecision?.kind === 'committed') turn.outputPreview = previewDecision.preview
     delete turn.result
     delete turn.error
   } else {
     turn.execution = { ...stored.execution, settledAt: observedAt }
+    delete turn.outputPreview
     if (requestedStatus === 'completed' || requestedStatus === 'waiting_user') {
       turn.result = structuredClone(command.result)
       delete turn.error
@@ -554,6 +569,7 @@ export function finalizedAgentTurnCancellation(existing, command) {
     },
   }
   delete turn.result
+  delete turn.outputPreview
   return { kind: 'finalized', turn, changed: true }
 }
 
@@ -1027,6 +1043,7 @@ export const productStoreCoreMethods = Object.freeze([
   'deleteGlobalAsset',
   'readAgentState',
   'listAgentSessions',
+  'readAgentSession',
   'listAgentSessionMessages',
   'putAgentSessionReadReceipt',
   'listCollaborationActivities',

@@ -1996,6 +1996,16 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
       return state.sessions.slice(0, limit).map((session) => ({ ...session, messages: [] }))
     },
 
+    async readAgentSession(userId, projectId, sessionId, options = {}) {
+      if (!await memberRole(projectId, userId)) return undefined
+      const [row] = await sql`
+        select payload from agent_sessions
+        where project_id = ${projectId} and id = ${sessionId}
+          and (${options.includeSubagents === true} or coalesce(payload->>'kind', 'primary') <> 'subagent')
+      `
+      return row ? { ...asPayload(row), messages: [] } : undefined
+    },
+
     async listAgentSessionMessages(userId, projectId, sessionId, options = {}) {
       if (!await memberRole(projectId, userId)) return undefined
       const [sessionRow] = await sql`select 1 from agent_sessions where project_id = ${projectId} and id = ${sessionId}`

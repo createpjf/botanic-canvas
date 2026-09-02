@@ -110,11 +110,15 @@ test('Turn Runtime 为同一幂等键复用结果，并且不持久化 reasoning
   const id = agentTurnIdForIdempotency('user-1', 'project-1', 'key-1')
   const events = []
   let toolEventWasPersistedBeforeDelivery = false
+  let attemptResetWasDurableBeforeAnswer = false
   const input = {
     userId: 'user-1', projectId: 'project-1', id, idempotencyKey: 'key-1',
     resolve: async ({ onEvent }) => {
-      onEvent({ type: 'reasoning', step: 0, delta: 'secret chain' })
-      onEvent({ type: 'tool', step: 0, toolCall: { id: 'tool-1', name: 'project_read', status: 'succeeded' } })
+      await onEvent({ type: 'attempt', action: 'start', attemptId: 'text' })
+      attemptResetWasDurableBeforeAnswer = store.turns.get(id)?.outputPreview?.text === ''
+      onEvent({ type: 'answer', attemptId: 'text', step: 0, delta: '运行中回答' })
+      onEvent({ type: 'reasoning', attemptId: 'text', step: 0, delta: 'secret chain' })
+      onEvent({ type: 'tool', attemptId: 'text', step: 0, toolCall: { id: 'tool-1', name: 'project_read', status: 'succeeded' } })
       return {
         kind: 'chat', answer: '完成',
         entityReferences: [{ type: 'agent_run', id: 'run-1' }],
@@ -135,9 +139,44 @@ test('Turn Runtime 为同一幂等键复用结果，并且不持久化 reasoning
   assert.deepEqual(store.turns.get(id).result.entityReferences, [{ type: 'agent_run', id: 'run-1' }])
   assert.deepEqual(first.turn.result.entityReferences, [{ type: 'agent_run', id: 'run-1' }])
   assert.equal(store.events.get(id).some((event) => event.type === 'turn.tool'), true)
+  const previewEvents = store.events.get(id).filter((event) => event.type === 'turn.output_preview.updated')
+  assert.equal(previewEvents.length, 2)
+  assert.equal(previewEvents.some((event) => JSON.stringify(event).includes('运行中回答')), false)
+  assert.equal(events.some((event) => event.type === 'answer_snapshot' && event.text === '运行中回答'), true)
+  assert.equal(first.events.some((event) => ['attempt', 'answer', 'reasoning'].includes(event.type)), false)
+  assert.equal(store.turns.get(id).outputPreview, undefined, 'completed终态必须清除运行中preview')
   assert.equal(store.events.get(id).some((event) => JSON.stringify(event).includes('secret chain')), false)
   assert.equal(toolEventWasPersistedBeforeDelivery, true)
-  assert.equal(events[0].type, 'reasoning')
+  assert.equal(attemptResetWasDurableBeforeAnswer, true)
+  assert.equal(events[0].type, 'attempt')
+})
+
+test('同一工具的流式 running 进度只持久化首帧与终态，实时观察仍完整', async () => {
+  const store = fakeStore()
+  const runtime = createBotanicAgentTurnRuntime({ productStore: store })
+  const observed = []
+  await runtime.execute({
+    userId: 'u', projectId: 'p', id: 'turn-progress-coalesce', idempotencyKey: 'progress-coalesce',
+    onEvent: (event) => { if (event.type === 'tool') observed.push(event) },
+    resolve: async ({ onEvent }) => {
+      for (const summary of ['启动', '完成 1/3', '完成 2/3']) {
+        void onEvent({
+          type: 'tool', step: 1,
+          toolCall: { id: 'tool-progress', name: 'subagent_research', status: 'running', risk: 'costly', summary },
+        })
+      }
+      void onEvent({
+        type: 'tool', step: 1,
+        toolCall: { id: 'tool-progress', name: 'subagent_research', status: 'succeeded', risk: 'costly' },
+      })
+      return { kind: 'chat', answer: '完成' }
+    },
+  })
+
+  assert.equal(observed.length, 4)
+  assert.deepEqual(store.events.get('turn-progress-coalesce')
+    .filter((event) => event.type === 'turn.tool')
+    .map((event) => event.payload.status), ['running', 'succeeded'])
 })
 
 test('Turn Runtime 持久化边界拒绝 URL/未知类型业务引用，不把恶意 refs 写入结果', async () => {
@@ -148,10 +187,15 @@ test('Turn Runtime 持久化边界拒绝 URL/未知类型业务引用，不把�
   await assert.rejects(
     () => runtime.execute({
       userId: 'u', projectId: 'p', id, idempotencyKey: 'invalid-entity-reference',
-      resolve: async () => ({
-        kind: 'chat', answer: '不应完成',
-        entityReferences: [{ type: 'artifact', id: 'https://evil.test/private.png' }],
-      }),
+      resolve: async ({ onEvent }) => {
+        await onEvent({ type: 'attempt', action: 'start', attemptId: 'text' })
+        onEvent({ type: 'answer', attemptId: 'text', step: 0, delta: '失败前预览' })
+        onEvent({ type: 'tool', attemptId: 'text', step: 0, toolCall: { id: 'read-1', name: 'project_read', status: 'succeeded' } })
+        return {
+          kind: 'chat', answer: '不应完成',
+          entityReferences: [{ type: 'artifact', id: 'https://evil.test/private.png' }],
+        }
+      },
     }),
     (caught) => {
       failure = caught
@@ -161,6 +205,7 @@ test('Turn Runtime 持久化边界拒绝 URL/未知类型业务引用，不把�
 
   assert.equal(failure.turn.status, 'failed')
   assert.equal(failure.turn.error.code, 'AGENT_ENTITY_REFERENCES_INVALID')
+  assert.equal(failure.turn.outputPreview, undefined)
   assert.equal(store.turns.get(id).result, undefined)
 })
 
@@ -865,6 +910,28 @@ test('慢模型期间 heartbeat 持续续租，避免被 Sweep 误判为孤儿',
   })
   const stored = store.turns.get('turn-heartbeat')
   assert.ok(stored.execution.lastHeartbeatAt > stored.execution.claimedAt)
+})
+
+test('resolver 完成后持久化队列卡住时有界失败，不永久占用执行 lease', async () => {
+  const store = fakeStore()
+  const commit = store.commitAgentTurnExecution.bind(store)
+  store.commitAgentTurnExecution = async (userId, command) => {
+    if (command.event?.type === 'turn.tool') return new Promise(() => {})
+    return commit(userId, command)
+  }
+  const runtime = createBotanicAgentTurnRuntime({ productStore: store, durabilityDrainMs: 10 })
+
+  await assert.rejects(runtime.execute({
+    userId: 'u', projectId: 'p', id: 'turn-drain-timeout', idempotencyKey: 'drain-timeout',
+    resolve: async ({ onEvent }) => {
+      void onEvent({
+        type: 'tool', step: 1,
+        toolCall: { id: 'tool-stuck', name: 'project_read', status: 'succeeded', risk: 'read' },
+      })
+      return { kind: 'chat', answer: '完成' }
+    },
+  }), (caught) => caught?.code === 'AGENT_TURN_DURABILITY_UNAVAILABLE' && caught?.statusCode === 503)
+  assert.equal(store.turns.get('turn-drain-timeout').status, 'failed')
 })
 
 test('Turn 取消后 resolver 即使忽略 AbortSignal，原执行者仍续 cancellation lease，真实退出后才 ack', async () => {

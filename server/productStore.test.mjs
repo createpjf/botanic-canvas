@@ -773,6 +773,24 @@ test('Agent Turn 用原子 claim 与 fenced commit 保存 checkpoint、事件和
   assert.equal(checkpointed.event.sequence, 1)
   assert.equal(store.listAgentTurnEvents(owner.id, turn.projectId, turn.id)[0].id, event.id)
 
+  const outputPreview = { version: 1, attemptId: 'text', revision: 1, step: 0, text: '运行中', updatedAt: 201 }
+  const previewEvent = {
+    id: 'turn-preview-1', turnId: turn.id, projectId: turn.projectId,
+    type: 'turn.output_preview.updated', createdAt: 201,
+    payload: { revision: 1, attemptId: 'text', step: 0, charCount: 3 },
+  }
+  const previewed = store.commitAgentTurnExecution(owner.id, {
+    id: turn.id, projectId: turn.projectId, leaseToken: 'turn-lease-1', executionGeneration: 1,
+    status: 'running', outputPreview, event: previewEvent,
+  })
+  assert.equal(previewed.kind, 'committed')
+  assert.equal(previewed.turn.outputPreview.text, '运行中')
+  assert.equal(previewed.event.sequence, 2)
+  assert.equal(store.commitAgentTurnExecution(owner.id, {
+    id: turn.id, projectId: turn.projectId, leaseToken: 'turn-lease-1', executionGeneration: 1,
+    status: 'running', outputPreview, event: previewEvent,
+  }).kind, 'replay')
+
   const stale = store.commitAgentTurnExecution(owner.id, {
     id: turn.id, projectId: turn.projectId, leaseToken: 'turn-lease-old', executionGeneration: 1,
     status: 'completed', result: { kind: 'chat' },
@@ -786,6 +804,7 @@ test('Agent Turn 用原子 claim 与 fenced commit 保存 checkpoint、事件和
   })
   assert.equal(completed.kind, 'committed')
   assert.equal(store.readAgentTurn(owner.id, turn.id).result.answer, '完成')
+  assert.equal(store.readAgentTurn(owner.id, turn.id).outputPreview, undefined)
   assert.equal(store.commitAgentTurnExecution(owner.id, {
     id: turn.id, projectId: turn.projectId, leaseToken: 'turn-lease-1', executionGeneration: 1,
     status: 'completed', result: { kind: 'chat', answer: '不能覆盖' },
@@ -846,11 +865,21 @@ test('Agent Turn waiting_user 可取消并由独立原子方法收口 cancelled'
     status: 'queued', createdAt: 100, updatedAt: 100,
   }
   const claimed = store.claimAgentTurnExecution(owner.id, { turn, leaseToken: 'lease-1' })
+  store.commitAgentTurnExecution(owner.id, {
+    id: turn.id, projectId, leaseToken: 'lease-1', executionGeneration: claimed.turn.execution.generation,
+    status: 'running',
+    outputPreview: { version: 1, attemptId: 'plan', revision: 1, step: 0, text: '待确认前预览', updatedAt: 101 },
+    event: {
+      id: 'turn-preview-waiting-1', turnId: turn.id, projectId,
+      type: 'turn.output_preview.updated', payload: { revision: 1, attemptId: 'plan', step: 0, charCount: 6 },
+    },
+  })
   const waiting = store.commitAgentTurnExecution(owner.id, {
     id: turn.id, projectId, leaseToken: 'lease-1', executionGeneration: claimed.turn.execution.generation,
     status: 'waiting_user', result: { kind: 'clarification', question: '请选择' },
   })
   assert.equal(waiting.turn.status, 'waiting_user')
+  assert.equal(waiting.turn.outputPreview, undefined)
   assert.equal(store.claimAgentTurnExecution(owner.id, { turn, leaseToken: 'lease-2' }).kind, 'waiting_user')
 
   store.requestAgentTurnCancellation(owner.id, {
@@ -863,7 +892,7 @@ test('Agent Turn waiting_user 可取消并由独立原子方法收口 cancelled'
   })
   assert.equal(finalized.kind, 'finalized')
   assert.equal(finalized.turn.status, 'cancelled')
-  assert.equal(finalized.event.sequence, 2)
+  assert.equal(finalized.event.sequence, 3)
   assert.equal(store.commitAgentTurnExecution(owner.id, {
     id: turn.id, projectId, leaseToken: 'lease-1', executionGeneration: claimed.turn.execution.generation,
     status: 'completed', result: { kind: 'chat', answer: '迟到结果' },

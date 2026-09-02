@@ -3,6 +3,7 @@ import test from 'node:test'
 import {
   agentTurnStreamFailureMustReject,
   agentTurnEventAsStreamEvent,
+  botanicAgentTurnOutputPreviewAsStreamEvent,
   botanicAgentTurnProjectionMessageId,
   botanicAgentTurnRecoveryKey,
   botanicAgentTurnRequestKey,
@@ -124,6 +125,24 @@ test('Turn 续读只把安全的工具投影恢复成时间线事件', () => {
   assert.equal(agentTurnEventAsStreamEvent({ type: 'turn.started', sequence: 1 }), undefined)
 })
 
+test('Turn 续读保留 no_progress，未知工具状态不伪装成 running', () => {
+  const noProgress = agentTurnEventAsStreamEvent({
+    type: 'turn.tool',
+    sequence: 3,
+    payload: {
+      toolName: 'web_search',
+      status: 'failed',
+      presentation: { kind: 'no_progress', title: '工具在原地打转' },
+    },
+  })
+  assert.equal(noProgress?.type === 'tool' ? noProgress.presentation?.kind : undefined, 'no_progress')
+  assert.equal(agentTurnEventAsStreamEvent({
+    type: 'turn.tool',
+    sequence: 4,
+    payload: { toolName: 'web_search', status: 'unknown' },
+  }), undefined)
+})
+
 test('Turn 来源恢复只接受有界 HTTPS 展示形状，丢弃畸形与超大字段', () => {
   const recovered = agentTurnEventAsStreamEvent({
     type: 'turn.tool',
@@ -160,7 +179,7 @@ test('Turn 来源恢复只接受有界 HTTPS 展示形状，丢弃畸形与超�
 
   assert.equal(agentTurnEventAsStreamEvent({
     type: 'turn.tool',
-    payload: { toolName: 'x'.repeat(121), presentation: { kind: 'fetch', title: 't'.repeat(121) } },
+    payload: { toolName: 'x'.repeat(121), status: 'succeeded', presentation: { kind: 'fetch', title: 't'.repeat(121) } },
   })?.type === 'tool', true)
   assert.equal(agentTurnEventAsStreamEvent({ type: 'turn.tool', payload: [] as unknown as Record<string, unknown> }), undefined)
 })
@@ -541,4 +560,20 @@ test('Stop 收到 cancelling 后继续请求，直到服务端确认 cancelled',
   })
   assert.equal(attempts, 2)
   assert.equal(waits, 1)
+})
+
+test('TurnOutputPreview reader只投影新revision且拒绝越界正文', () => {
+  const turn = {
+    outputPreview: {
+      version: 1 as const, attemptId: 'text', revision: 2, step: 0,
+      text: '已恢复正文', updatedAt: 100,
+    },
+  }
+  assert.deepEqual(botanicAgentTurnOutputPreviewAsStreamEvent(turn, 1), {
+    type: 'answer_snapshot', attemptId: 'text', revision: 2, step: 0, text: '已恢复正文',
+  })
+  assert.equal(botanicAgentTurnOutputPreviewAsStreamEvent(turn, 2), undefined)
+  assert.equal(botanicAgentTurnOutputPreviewAsStreamEvent({
+    outputPreview: { ...turn.outputPreview, text: 'x'.repeat(12_289) },
+  }, 0), undefined)
 })

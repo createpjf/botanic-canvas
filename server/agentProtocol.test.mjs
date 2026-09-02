@@ -32,6 +32,8 @@ test('协议 catalog 与生成物一致:服务端 guard、前端类型、JSON Sc
   assert.equal(isAgentToolCallPublicStatus('aborted'), true)
   assert.equal(isAgentPublicErrorCode('AGENT_TOOL_OUTCOME_UNKNOWN'), true)
   assert.equal(isAgentPublicErrorCode('AGENT_PROTOCOL_VERSION_UNSUPPORTED'), true)
+  assert.equal(isAgentPublicErrorCode('PROVIDER_STREAM_CLOSED'), true)
+  assert.equal(isAgentPublicErrorCode('PROVIDER_STREAM_MALFORMED'), true)
 })
 
 test('未知值具名拒绝:guard 不放行未登记的状态/事件/错误码', () => {

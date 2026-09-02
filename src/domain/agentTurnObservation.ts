@@ -53,7 +53,29 @@ export type BotanicAgentObservedTurn<TResult = BotanicAgentTurnResult> = {
   status: BotanicAgentTurnRuntimeStatus
   result?: TResult
   error?: { code?: string; message?: string }
+  outputPreview?: {
+    version: 1; attemptId: string; revision: number; step: number; text: string
+    truncated?: boolean; updatedAt: number
+  }
   lastSequence?: number
+}
+
+const outputPreviewAttemptId = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$/u
+
+export function botanicAgentTurnOutputPreviewAsStreamEvent(
+  turn: Pick<BotanicAgentObservedTurn, 'outputPreview'>,
+  afterRevision = 0,
+): Extract<BotanicAgentStreamEvent, { type: 'answer_snapshot' }> | undefined {
+  const preview = turn.outputPreview
+  if (!preview || preview.version !== 1
+    || typeof preview.attemptId !== 'string' || !outputPreviewAttemptId.test(preview.attemptId)
+    || !Number.isSafeInteger(preview.revision) || preview.revision <= afterRevision
+    || !Number.isInteger(preview.step) || preview.step < 0 || preview.step > 64
+    || typeof preview.text !== 'string' || preview.text.length > 12_288) return undefined
+  return {
+    type: 'answer_snapshot', attemptId: preview.attemptId, revision: preview.revision,
+    step: preview.step, text: preview.text, ...(preview.truncated ? { truncated: true } : {}),
+  }
 }
 
 export type BotanicAgentTurnEventRecord = {
@@ -412,7 +434,7 @@ export function monotonicAgentTurnEventDecision(
 
 const toolRisks: ReadonlySet<string> = new Set(AGENT_TOOL_CALL_PUBLIC_RISK_VALUES)
 const toolStatuses: ReadonlySet<string> = new Set(AGENT_TOOL_CALL_PUBLIC_STATUS_VALUES)
-const presentationKinds = new Set<TimelineStepKind>(['search', 'fetch', 'read_skill', 'connect_runtime', 'subagent', 'read', 'write', 'other'])
+const presentationKinds = new Set<TimelineStepKind>(['search', 'fetch', 'read_skill', 'connect_runtime', 'subagent', 'no_progress', 'read', 'write', 'other'])
 
 function stringValue(value: unknown, fallback = '') {
   return typeof value === 'string' && value.trim() ? value.trim() : fallback
@@ -448,7 +470,8 @@ export function agentTurnEventAsStreamEvent(event: BotanicAgentTurnEventRecord):
   const name = boundedStringValue(payload.toolName, 120, 'agent_tool')
   const label = boundedStringValue(payload.label, 120, name)
   const risk = toolRisks.has(payload.risk as AgentToolCallTrace['risk']) ? payload.risk as AgentToolCallTrace['risk'] : 'read'
-  const status = toolStatuses.has(payload.status as AgentToolCallTrace['status']) ? payload.status as AgentToolCallTrace['status'] : 'running'
+  if (!toolStatuses.has(payload.status as AgentToolCallTrace['status'])) return undefined
+  const status = payload.status as AgentToolCallTrace['status']
   const summary = boundedStringValue(payload.summary, 120)
   const presentation = safePresentation(payload.presentation)
   return {

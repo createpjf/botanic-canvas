@@ -162,6 +162,30 @@ test('线程投影只读当前 Session 与其消息页，不拉整个项目的 M
   ])
 })
 
+test('线程投影按 Session ID 精确读取，不受最近会话列表窗口限制', async () => {
+  const session = {
+    id: 'session-older-than-list-window', title: '历史会话', executionMode: 'manual', contextNodeIds: [],
+    createdAt: 1, updatedAt: 1,
+  }
+  const context = createAgentThreadContext({
+    productStore: {
+      async readAgentSession(_userId, _projectId, sessionId) {
+        return sessionId === session.id ? session : undefined
+      },
+      async listAgentSessions() { throw new Error('精确读取时不应扫描最近会话列表') },
+      async listAgentSessionMessages() { return { messages: [] } },
+      async compareAndSetAgentThreadSummary() { throw new Error('短会话不应写摘要') },
+    },
+  })
+
+  const resolved = await context.resolve({
+    userId: 'user-1', projectId: 'project-1', sessionId: session.id,
+    inputMessage: message('m-current', 'user', '继续历史任务', 2),
+  })
+  assert.equal(resolved.inputMessage.id, 'm-current')
+  assert.equal(resolved.messages.at(-1).content, '继续历史任务')
+})
+
 test('只投影服务端权威历史并追加当前用户消息，客户端附带的 assistant 历史不参与', async () => {
   const session = {
     id: 'session-1', title: '权威会话', executionMode: 'manual', contextNodeIds: ['node-1'],

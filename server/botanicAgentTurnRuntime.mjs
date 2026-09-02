@@ -10,6 +10,7 @@ import { presentationWebSources } from './agentWebResearch.mjs'
 import { withBotanicSpan } from './executionTelemetry.mjs'
 import { AGENT_SEMANTIC_EVENT_NAMES, writeAgentSemanticEvent } from './agentSemanticEvent.mjs'
 import { registerAgentDiagnosticGauge } from './agentRuntimeDiagnostics.mjs'
+import { createAgentTurnOutputPreview, agentTurnOutputPreviewEventPayload, normalizeAgentTurnOutputPreview } from './agentTurnOutputPreview.mjs'
 
 // completed Turn 仍可能拥有后续创建的 linked Run / Job；显式深取消必须能从
 // completed 进入 cancelling，才能撤销这些已授权但尚未完成的下游任务。
@@ -107,6 +108,9 @@ function eventPayload(event) {
  */
 function publicTurn(turn, links = {}) {
   if (!turn) return undefined
+  const outputPreview = ['running', 'cancelling'].includes(turn.status)
+    ? normalizeAgentTurnOutputPreview(turn.outputPreview, turn.outputPreview?.updatedAt)
+    : undefined
   const result = {
     id: turn.id,
     version: 2,
@@ -122,6 +126,7 @@ function publicTurn(turn, links = {}) {
       ? { lastSequence: turn.lastSequence }
       : (Number.isInteger(links.lastSequence) ? { lastSequence: links.lastSequence } : {})),
     ...(Array.isArray(links.linkedRunIds) ? { linkedRunIds: [...links.linkedRunIds] } : {}),
+    ...(outputPreview ? { outputPreview: clone(outputPreview) } : {}),
     ...(turn.result ? { result: clone(turn.result) } : {}),
     ...(turn.error ? { error: clone(turn.error) } : {}),
   }
@@ -225,6 +230,7 @@ export function createBotanicAgentTurnRuntime({
   leaseMs = 120_000,
   heartbeatMs = 30_000,
   turnLifetimeMs = DEFAULT_AGENT_TURN_LIFETIME_MS,
+  durabilityDrainMs = 15_000,
 } = {}) {
   if (!productStore) throw new TypeError('Agent Turn Runtime 缺少 ProductStore。')
   const activeTurns = new Map()
@@ -236,6 +242,7 @@ export function createBotanicAgentTurnRuntime({
   const boundedLeaseMs = Math.max(30_000, Math.min(Number(leaseMs) || 120_000, 900_000))
   const boundedHeartbeatMs = Math.max(10, Math.min(Number(heartbeatMs) || 30_000, Math.floor(boundedLeaseMs / 2)))
   const boundedTurnLifetimeMs = boundedAgentTurnLifetimeMs(turnLifetimeMs)
+  const boundedDurabilityDrainMs = Math.max(10, Math.min(Number(durabilityDrainMs) || 15_000, 30_000))
 
   const executionError = (code, message, statusCode = 409) => Object.assign(new Error(message), { code, statusCode })
   const event = (turnId, projectId, type, payload) => ({
@@ -346,12 +353,34 @@ export function createBotanicAgentTurnRuntime({
       // 失去观察通道；只有 durable cancel fence 或跨实例 cancel signal 才能中止 Provider。
       const controller = new AbortController()
       controller.signal.addEventListener('abort', observeCancellationAbort, { once: true })
-      const liveEvents = []
       const pendingDeliveries = []
+      const persistedRunningToolCallIds = new Set()
       let persistedEventChain = Promise.resolve()
       let heartbeatFailure
       let heartbeatTriggeredAbort = false
       let heartbeatInFlight = Promise.resolve()
+
+      const drainPersistence = async (settled = false) => {
+        const remainingMs = typeof deadlineAt === 'number' ? Math.max(0, deadlineAt - now()) : boundedDurabilityDrainMs
+        const timeoutMs = Math.min(boundedDurabilityDrainMs, remainingMs)
+        let timeout
+        try {
+          await Promise.race([
+            settled
+              ? Promise.allSettled([heartbeatInFlight, ...pendingDeliveries])
+              : Promise.all([heartbeatInFlight, ...pendingDeliveries]),
+            new Promise((_, reject) => {
+              timeout = setTimeout(() => reject(executionError(
+                'AGENT_TURN_DURABILITY_UNAVAILABLE',
+                'Agent 回合持久化收尾超时，请稍后恢复。',
+                503,
+              )), timeoutMs)
+            }),
+          ])
+        } finally {
+          clearTimeout(timeout)
+        }
+      }
 
       const notify = (entry) => {
         try { onEvent?.(entry) } catch { /* 展示层异常不得中断权威执行。 */ }
@@ -365,6 +394,7 @@ export function createBotanicAgentTurnRuntime({
           executionGeneration,
           status,
           ...(Object.hasOwn(input, 'checkpoint') ? { checkpoint: clone(checkpoint) } : {}),
+          ...(Object.hasOwn(input, 'outputPreview') ? { outputPreview: clone(input.outputPreview) } : {}),
           ...(result !== undefined ? { result: clone(result) } : {}),
           ...(error !== undefined ? { error: clone(error) } : {}),
           ...(turnEvent ? { event: turnEvent } : {}),
@@ -512,23 +542,65 @@ export function createBotanicAgentTurnRuntime({
       }, boundedHeartbeatMs)
       heartbeatTimer.unref?.()
 
-      const emit = (rawEvent) => {
-        const envelope = { ...clone(rawEvent), turnId: id, eventId: `turn_live_${randomUUID()}` }
-        const payload = eventPayload(rawEvent)
-        trackPersistence(async () => {
-          if (payload) {
-            const committed = await commit({
-              status: 'running',
-              turnEvent: event(id, projectId, 'turn.tool', payload),
-            })
-            if (committed.kind === 'cancelling') {
-              throw executionError('AGENT_TURN_CANCELLED', '用户取消了 Agent 回合。', 499)
-            }
-            if (Number.isInteger(committed.event?.sequence)) envelope.sequence = committed.event.sequence
+      const outputPreview = createAgentTurnOutputPreview({
+        initialPreview: turn.outputPreview,
+        persist: (snapshot) => trackPersistence(async () => {
+          const previewEvent = event(
+            id,
+            projectId,
+            'turn.output_preview.updated',
+            agentTurnOutputPreviewEventPayload(snapshot),
+          )
+          previewEvent.id = `turn_preview_${stableId(`${id}:${executionGeneration}:${snapshot.revision}`)}`
+          const committed = await commit({ status: 'running', outputPreview: snapshot, turnEvent: previewEvent })
+          if (committed.kind === 'cancelling') {
+            throw executionError('AGENT_TURN_CANCELLED', '用户取消了 Agent 回合。', 499)
           }
-          liveEvents.push(envelope)
+          const stored = committed.turn?.outputPreview ?? snapshot
+          const envelope = {
+            type: 'answer_snapshot', turnId: id, eventId: previewEvent.id,
+            attemptId: stored.attemptId, revision: stored.revision, step: stored.step,
+            text: stored.text, ...(stored.truncated ? { truncated: true } : {}),
+            ...(Number.isInteger(committed.event?.sequence) ? { sequence: committed.event.sequence } : {}),
+          }
           notify(envelope)
-        })
+          return stored
+        }),
+      })
+
+      const emit = (rawEvent) => {
+        const persistLiveEvent = () => {
+          const envelope = { ...clone(rawEvent), turnId: id, eventId: `turn_live_${randomUUID()}` }
+          const payload = eventPayload(rawEvent)
+          const repeatedRunning = payload?.status === 'running'
+            && payload.toolCallId
+            && persistedRunningToolCallIds.has(payload.toolCallId)
+          if (repeatedRunning) return persistedEventChain.then(() => notify(envelope))
+          if (payload?.status === 'running' && payload.toolCallId) {
+            persistedRunningToolCallIds.add(payload.toolCallId)
+          }
+          return trackPersistence(async () => {
+            if (payload) {
+              const committed = await commit({
+                status: 'running',
+                turnEvent: event(id, projectId, 'turn.tool', payload),
+              })
+              if (committed.kind === 'cancelling') {
+                throw executionError('AGENT_TURN_CANCELLED', '用户取消了 Agent 回合。', 499)
+              }
+              if (Number.isInteger(committed.event?.sequence)) envelope.sequence = committed.event.sequence
+            }
+            notify(envelope)
+          })
+        }
+        if (rawEvent?.type === 'tool') {
+          const previewDelivery = outputPreview.observe(rawEvent)
+          const liveDelivery = persistLiveEvent()
+          return Promise.all([previewDelivery, liveDelivery])
+        }
+        const liveDelivery = persistLiveEvent()
+        const previewDelivery = outputPreview.observe(rawEvent)
+        return Promise.all([liveDelivery, previewDelivery])
       }
 
       const saveCheckpoint = (checkpoint) => {
@@ -567,6 +639,7 @@ export function createBotanicAgentTurnRuntime({
         }, () => resolve({
           ...resolveOptions,
           runtimeIdentity,
+          requireDurableAttemptReset: true,
           // 明确覆盖调用方可能携带的 request.signal；传输层无权拥有 Turn 生命周期。
           signal: controller.signal,
           deadlineAt,
@@ -574,9 +647,9 @@ export function createBotanicAgentTurnRuntime({
           ...(turn.checkpoint ? { resumeCheckpoint: clone(turn.checkpoint) } : {}),
           saveCheckpoint,
         }))
+        outputPreview.discard()
         clearInterval(heartbeatTimer)
-        await heartbeatInFlight
-        await Promise.all(pendingDeliveries)
+        await drainPersistence()
         if (heartbeatFailure) throw heartbeatFailure
         const authoritative = await productStore.readAgentTurn(userId, id)
         if (cancelledTurns.has(activeKey) || ['cancelling', 'cancelled'].includes(authoritative?.status)) {
@@ -601,17 +674,18 @@ export function createBotanicAgentTurnRuntime({
           turn: publicTurn(turn),
           result: clone(result),
           // reasoning/answer 只随实时连接存在；持久化 Event 仅含安全工具摘要。
-          events: [...(persistedEvents ?? []), ...liveEvents.filter((entry) => entry.type !== 'tool')],
+          events: persistedEvents ?? [],
         }
       } catch (caught) {
+        outputPreview.discard()
         clearInterval(heartbeatTimer)
-        await heartbeatInFlight.catch(() => undefined)
         // resolver 可能在 emit 后立刻失败。先等已排队的事件 commit 收口，再写终态，
         // 避免 terminal commit 抢先后让迟到的 running/tool commit 反向制造竞态。
-        await Promise.allSettled(pendingDeliveries)
+        let drainFailure
+        try { await drainPersistence(true) } catch (caughtDrain) { drainFailure = caughtDrain }
         // heartbeat abort 会让下游先抛 ABORT_ERR，但真实失败来源仍是
         // 续租提交。以 heartbeatFailure 为准，避免把存储/失租故障误记为用户取消。
-        const failureSource = heartbeatFailure ?? caught
+        const failureSource = heartbeatFailure ?? drainFailure ?? caught
         const error = safeError(failureSource)
         const authoritative = await productStore.readAgentTurn(userId, id).catch(() => undefined)
         if (error.code === 'AGENT_TURN_LEASE_STALE') {
@@ -619,7 +693,7 @@ export function createBotanicAgentTurnRuntime({
             code: error.code,
             statusCode: 409,
             turn: publicTurn(authoritative),
-            events: liveEvents,
+            events: [],
           })
         }
         const heartbeatObservedCancellation = heartbeatFailure?.code === 'AGENT_TURN_CANCELLED'
@@ -636,7 +710,7 @@ export function createBotanicAgentTurnRuntime({
             code: 'AGENT_TURN_CANCELLED',
             statusCode: failureSource?.statusCode ?? 499,
             turn: publicTurn(authoritative ?? turn),
-            events: liveEvents,
+            events: [],
           })
         }
         let settled
@@ -656,7 +730,7 @@ export function createBotanicAgentTurnRuntime({
           code: cancellationWon ? 'AGENT_TURN_CANCELLED' : error.code,
           statusCode: failureSource?.statusCode ?? (cancellationWon ? 499 : 502),
           turn: publicTurn(saved),
-          events: liveEvents,
+          events: [],
         })
       }
       } finally {

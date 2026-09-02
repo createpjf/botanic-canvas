@@ -75,7 +75,7 @@ import {
   settleBotanicAgentCancellationSession,
   stopBotanicAgentPlanning,
 } from '../../domain/agentTurnObservation'
-import { applyAgentConversationStreamEvent, createAgentTimeline, persistAgentLiveTimeline, projectBotanicAgentRunOntoTimeline, type AgentTimelineEvent, type AgentTimelineState } from '../../domain/agentTimeline'
+import { agentTimelineEventFromStream, applyAgentConversationStreamEvent, createAgentTimeline, persistAgentLiveTimeline, projectBotanicAgentRunOntoTimeline, type AgentTimelineState } from '../../domain/agentTimeline'
 import { botanicAgentLatestEvaluableMessageId } from '../../domain/agentMessageUtilities'
 import { nextExclusiveSurface, type ExclusiveSurfaceAction } from '../../domain/exclusiveSurface'
 import { uploadLimitsLabel } from '../../domain/mediaFormats'
@@ -230,21 +230,6 @@ type AgentLiveConversation = {
 }
 
 const maximumConcurrentTurnTimelineHydrations = 2
-
-function agentTimelineEvent(event: BotanicAgentChatStreamEvent, receivedAt: number): AgentTimelineEvent {
-  if (event.type === 'handoff') return { type: 'handoff', receivedAt }
-  if (event.type === 'reasoning') return { type: event.type, step: event.step, delta: event.delta, receivedAt }
-  if (event.type === 'answer') return { type: event.type, step: event.step, delta: event.delta, receivedAt }
-  if (event.type === 'tool') return {
-    type: event.type,
-    step: event.step,
-    toolCall: event.toolCall,
-    ...(event.presentation ? { presentation: event.presentation } : {}),
-    receivedAt,
-  }
-  if (event.type === 'error') return { type: event.type, ...(event.message ? { message: event.message } : {}), receivedAt }
-  return { type: 'done', receivedAt }
-}
 
 function agentTargetDisplayLabel(target?: AgentDockTarget) {
   if (!target) return ''
@@ -1684,7 +1669,7 @@ export default function AgentWorkspace({
                 if (current?.sessionId !== session.id || current.message.id !== liveMessageId) return current
                 const next = applyAgentConversationStreamEvent(
                   { content: current.message.content, timeline: current.timeline },
-                  agentTimelineEvent(event, receivedAt),
+                  agentTimelineEventFromStream(event, receivedAt),
                 )
                 return {
                   ...current,
@@ -2266,7 +2251,7 @@ export default function AgentWorkspace({
             const receivedAt = Date.now()
             const next = applyAgentConversationStreamEvent(
               { content: latestLiveContent, timeline: latestTimeline },
-              agentTimelineEvent(event, receivedAt),
+              agentTimelineEventFromStream(event, receivedAt),
             )
             latestLiveContent = next.content
             latestTimeline = next.timeline
@@ -2633,7 +2618,7 @@ export default function AgentWorkspace({
               if (current?.sessionId !== session.id || current.message.id !== liveMessageId) return current
               const next = applyAgentConversationStreamEvent(
                 { content: current.message.content, timeline: current.timeline },
-                agentTimelineEvent(event, receivedAt),
+                agentTimelineEventFromStream(event, receivedAt),
               )
               return {
                 ...current,
@@ -2977,12 +2962,12 @@ export default function AgentWorkspace({
       streaming: true,
     })
 
-    const onTurnEvent = (event: Parameters<typeof agentTimelineEvent>[0]) => {
+    const onTurnEvent = (event: Parameters<typeof agentTimelineEventFromStream>[0]) => {
       if (controller.signal.aborted) return
       const receivedAt = Date.now()
       const next = applyAgentConversationStreamEvent(
         { content: latestLiveContent, timeline: latestTimeline },
-        agentTimelineEvent(event, receivedAt),
+        agentTimelineEventFromStream(event, receivedAt),
       )
       latestLiveContent = next.content
       latestTimeline = next.timeline

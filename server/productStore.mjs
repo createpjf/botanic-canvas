@@ -854,6 +854,14 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
       return stateSlice.sessions.slice(0, limit).map((session) => ({ ...session, messages: [] }))
     },
 
+    readAgentSession(userId, projectId, sessionId, options = {}) {
+      const project = state.projects.find((item) => item.id === projectId)
+      if (!project || !canAccess(project, userId)) return undefined
+      const record = state.agentSessions.find((item) => item.projectId === projectId && item.id === sessionId)
+      if (!record || (options.includeSubagents !== true && record.payload?.kind === 'subagent')) return undefined
+      return { ...clone(record.payload), messages: [] }
+    },
+
     listAgentSessionMessages(userId, projectId, sessionId, options = {}) {
       const project = state.projects.find((item) => item.id === projectId)
       if (!project || !canAccess(project, userId)) return undefined
@@ -1584,7 +1592,13 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
           existing.lastSequence = storedEvent.sequence
         }
       }
-      if (decision.changed) Object.assign(existing, decision.turn)
+      if (decision.changed) {
+        // commit decision 是整条 Turn replace 投影；先删缺失键，避免 terminal clear 被 Object.assign 遗留。
+        for (const key of Object.keys(existing)) {
+          if (!Object.hasOwn(decision.turn, key)) delete existing[key]
+        }
+        Object.assign(existing, decision.turn)
+      }
       if (decision.changed || storedEvent) {
         if (decision.kind === 'committed' && ['completed', 'failed', 'cancelled'].includes(existing.status)) {
           audit({ actorId: userId, action: `agent-turn.${existing.status}`, projectId: existing.projectId, targetId: existing.id })

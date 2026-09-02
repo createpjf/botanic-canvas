@@ -17,7 +17,9 @@ const runtimeConfig = {
 
 test('sample 归一化 stream 与 non-stream 到同一 completion 形状,header 与请求体稳定', async () => {
   const requests = []
+  const semanticEvents = []
   const provider = createBotanicAgentModelProvider(runtimeConfig, {
+    writeSemanticEvent: (_name, event) => { semanticEvents.push(event) },
     fetchImpl: async (url, init) => {
       requests.push({ url, init })
       const body = JSON.parse(init.body)
@@ -47,6 +49,9 @@ test('sample 归一化 stream 与 non-stream 到同一 completion 形状,header 
   })
   assert.equal(streamed.choices[0].message.content, '流式回答')
   assert.deepEqual(deltas, ['流式', '回答'])
+  assert.deepEqual(semanticEvents.map((event) => event.outcome), ['first_token', 'stream_completed'])
+  assert.equal(semanticEvents[1].chunkCount, 2)
+  assert.ok(semanticEvents[1].maxChunkGapMs >= 0)
 
   // 传输细节由 Provider 拥有:URL 收敛、双头鉴权、temperature 目录规则。
   assert.equal(requests[0].url, 'https://provider.test/v1/chat/completions')
@@ -114,6 +119,17 @@ test('错误归类稳定:根取消优先于 timeout,HTTP 状态映射保留,over
     overflow.sample({ model: 'deepseek-v4-pro', messages: [{ role: 'user', content: 'x' }] }),
     (caught) => caught.code === 'AGENT_CONTEXT_OVERFLOW',
   )
+
+  const streamFailures = []
+  const truncated = createBotanicAgentModelProvider(runtimeConfig, {
+    writeSemanticEvent: (_name, event) => { streamFailures.push(event) },
+    fetchImpl: async () => new Response('data: {"choices":[{"delta":{"content":"half"}}]}\n\n', { status: 200 }),
+  })
+  await assert.rejects(
+    truncated.sample({ model: 'deepseek-v4-pro', messages: [{ role: 'user', content: 'x' }], stream: true }),
+    (caught) => caught.code === 'PROVIDER_STREAM_CLOSED' && caught.statusCode === 502,
+  )
+  assert.deepEqual(streamFailures.map((event) => event.outcome), ['first_token', 'stream_closed'])
 })
 
 test('config 目录校验与静态映射保持既有语义', () => {
@@ -124,4 +140,27 @@ test('config 目录校验与静态映射保持既有语义', () => {
   assert.throws(() => agentModelProviderConfig({ ...runtimeConfig, flockApiKey: '' }), (caught) => caught.code === 'PROVIDER_NOT_CONFIGURED')
   assert.equal(agentModelProviderTemperature('kimi-k3'), 1)
   assert.equal(agentModelProviderResponseError(429).statusCode, 429)
+})
+
+test('流式timeout按idle续命:总时长超过预算但持续有chunk仍完成', async () => {
+  const encoder = new TextEncoder()
+  const provider = createBotanicAgentModelProvider(runtimeConfig, {
+    fetchImpl: async () => new Response(new ReadableStream({
+      async start(controller) {
+        const push = async (text) => { controller.enqueue(encoder.encode(text)); await new Promise((resolve) => setTimeout(resolve, 25)) }
+        await push('data: ' + JSON.stringify({ choices: [{ delta: { content: '活' } }] }) + '\n\n')
+        await push(': keep-alive\n\n')
+        await push('data: ' + JSON.stringify({ choices: [{ delta: { content: '跃' } }] }) + '\n\n')
+        await push('data: ' + JSON.stringify({ choices: [{ delta: {}, finish_reason: 'stop' }] }) + '\n\n')
+        controller.enqueue(encoder.encode('data: [DONE]\n\n'))
+        controller.close()
+      },
+    }), { status: 200 }),
+  })
+  const startedAt = Date.now()
+  const result = await provider.sample({
+    model: 'deepseek-v4-pro', messages: [{ role: 'user', content: 'x' }], stream: true, timeoutMs: 80,
+  })
+  assert.equal(result.choices[0].message.content, '活跃')
+  assert.ok(Date.now() - startedAt >= 80, '总时长必须超过idle预算才能证明续命生效')
 })

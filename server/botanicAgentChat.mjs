@@ -87,6 +87,9 @@ export function validateBotanicAgentChatInput(raw) {
   if (!CHAT_MODES.has(mode)) invalidRequest('Agent 对话模式不支持。')
   const projectId = requiredText(input.projectId, '项目', 160)
   const plannerModel = optionalText(input.plannerModel, 'Agent 模型', 160)
+  if (input.showRawReasoning !== undefined && typeof input.showRawReasoning !== 'boolean') {
+    invalidRequest('Agent 推理原文设置无效。')
+  }
   const sessionId = input.sessionId === undefined ? undefined : requiredText(input.sessionId, 'Agent 会话', 160)
   const inputMessage = input.inputMessage === undefined ? undefined : boundedInputMessage(input.inputMessage)
   if (Boolean(sessionId) !== Boolean(inputMessage)) invalidRequest('Agent 会话与当前消息必须同时提供。')
@@ -102,6 +105,7 @@ export function validateBotanicAgentChatInput(raw) {
     locale: normalizeBotanicAgentLocale(input.locale),
     mode,
     ...(plannerModel ? { plannerModel } : {}),
+    ...(input.showRawReasoning === true ? { showRawReasoning: true } : {}),
     ...(mountedSkillIds?.length ? { mountedSkillIds } : {}),
     ...(input.messages === undefined ? {} : { messages: boundedMessages(input.messages) }),
     contextNodeIds: boundedNodeIds(input.contextNodeIds),
@@ -179,6 +183,8 @@ async function executeChatAttempt({ input, config, model, system, messages, regi
     model,
     snapshotHash: canonicalHash(snapshot),
   }
+  const emitAttemptEvent = (event) => emitEvent({ ...event, attemptId })
+  if (streaming) await emitAttemptEvent({ type: 'attempt', action: 'start' })
   try {
     const result = await runAgentToolLoop({
       registry,
@@ -192,7 +198,7 @@ async function executeChatAttempt({ input, config, model, system, messages, regi
       toolChoice: 'auto',
       maximumSteps: hasWebSearch || hasWebFetch ? 8 : 5,
       allowRawReasoning: allowRawReasoning,
-      onEvent: emitEvent,
+      onEvent: emitAttemptEvent,
       resumeCheckpoint: options.resumeCheckpoint,
       saveCheckpoint: options.saveCheckpoint,
       recoverToolCall: options.recoverToolCall,
@@ -213,10 +219,10 @@ async function executeChatAttempt({ input, config, model, system, messages, regi
         onEvent: streaming
           ? (event) => {
               if (event.type === 'reasoning') {
-                if (allowRawReasoning) emitEvent({ type: 'reasoning', step, delta: event.delta })
+                if (allowRawReasoning) emitAttemptEvent({ type: 'reasoning', step, delta: event.delta, chunkIndex: event.chunkIndex })
                 return
               }
-              if (event.type === 'answer') emitEvent({ type: 'answer', step, delta: event.delta })
+              if (event.type === 'answer') emitAttemptEvent({ type: 'answer', step, delta: event.delta, chunkIndex: event.chunkIndex })
             }
           : undefined,
       }),
@@ -276,14 +282,17 @@ function chatSearchGuidance(registry) {
 
 export async function chatWithBotanicAgent(input, runtimeConfig, options = {}) {
   const config = chatConfig(runtimeConfig, input?.plannerModel)
-  const allowRawReasoning = Boolean(runtimeConfig?.agentRawReasoning)
+  const allowRawReasoning = Boolean(runtimeConfig?.agentRawReasoning && input?.showRawReasoning)
   // 有实时通道时才向提供方请求流式；没有就完全走原来的一次性请求。
   const streaming = typeof options.onEvent === 'function'
-  let emittedEvents = 0
-  const emitEvent = (event) => {
+  let fallbackBoundaryReached = Boolean(options.resumeCheckpoint)
+  const emitEvent = async (event) => {
     if (!streaming) return
-    emittedEvents += 1
-    try { options.onEvent(event) } catch { /* 展示层异常不得中断本轮对话。 */ }
+    if (event.type === 'tool') fallbackBoundaryReached = true
+    try { await options.onEvent(event) } catch (caught) {
+      if (event.type === 'attempt' && options.requireDurableAttemptReset === true) throw caught
+      // 非durable展示层异常不得中断本轮对话。
+    }
   }
   let baseSystem
   try {
@@ -321,12 +330,11 @@ export async function chatWithBotanicAgent(input, runtimeConfig, options = {}) {
   if (resumeAttemptId && !['chat_vision', 'chat_text'].includes(resumeAttemptId)) {
     throw new BotanicAgentChatError(409, 'AGENT_TURN_CHECKPOINT_SNAPSHOT_MISMATCH', 'Agent 对话恢复检查点与当前执行阶段不匹配。')
   }
-  let checkpointBoundaryReached = Boolean(options.resumeCheckpoint)
   const checkpointOptions = typeof options.saveCheckpoint === 'function'
     ? {
         ...options,
         saveCheckpoint: async (checkpoint) => {
-          checkpointBoundaryReached = true
+          fallbackBoundaryReached = true
           return options.saveCheckpoint(checkpoint)
         },
       }
@@ -346,12 +354,20 @@ export async function chatWithBotanicAgent(input, runtimeConfig, options = {}) {
   // 失败且尚未发出任何流事件时回退 caption + 所选文本模型。
   const nativeVisionModel = nativeAgentVisionModel(config.model)
   const captionVisionModel = captionAgentVisionModel(runtimeConfig)
+  const optionalVisionResult = (caught) => {
+    if (options.signal?.aborted) throw new BotanicAgentChatError(499, 'REQUEST_CANCELLED', 'Agent 对话请求已取消。')
+    if (caught?.code === 'AGENT_VISION_BYTES_EXCEEDED') {
+      throw new BotanicAgentChatError(caught.statusCode ?? 413, caught.code, caught.message)
+    }
+    return []
+  }
   const visionParts = nativeVisionModel || captionVisionModel
     ? await resolveBotanicAgentVisionParts({
       document: options.document,
       contextNodeIds: input.contextNodeIds,
       resolveMedia: options.resolveVisionMedia,
-    }).catch(() => [])
+      signal: options.signal,
+    }).catch(optionalVisionResult)
     : []
   if (visionParts.length && nativeVisionModel && resumeAttemptId !== 'chat_text') {
     try {
@@ -370,8 +386,7 @@ export async function chatWithBotanicAgent(input, runtimeConfig, options = {}) {
     } catch (caught) {
       const recoverable = caught instanceof BotanicAgentChatError
         && [422, 429, 502].includes(caught.statusCode)
-        && emittedEvents === 0
-        && !checkpointBoundaryReached
+        && !fallbackBoundaryReached
       if (!recoverable) throw caught
     }
   }
@@ -388,7 +403,7 @@ export async function chatWithBotanicAgent(input, runtimeConfig, options = {}) {
     fetchImpl: options.visionFetchImpl ?? fetch,
     signal: options.signal,
     ...(options.visionCache ? { cache: options.visionCache } : {}),
-  }).catch(() => [])
+  }).catch(optionalVisionResult)
   return executeChatAttempt({
     ...attemptShared,
     attemptId: 'chat_text',
