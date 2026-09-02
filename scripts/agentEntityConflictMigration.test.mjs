@@ -7,6 +7,7 @@ const migration = readFileSync(migrationUrl, 'utf8')
 const derivedFieldMigration = readFileSync(new URL('../supabase/migrations/20260827180000_agent_thread_summary_cas.sql', import.meta.url), 'utf8')
 const readReceiptMigration = readFileSync(new URL('../supabase/migrations/20260807120000_agent_session_read_receipts.sql', import.meta.url), 'utf8')
 const postgresStore = readFileSync(new URL('../server/store/postgresProductStore.mjs', import.meta.url), 'utf8')
+  + readFileSync(new URL('../server/store/postgresSchema.mjs', import.meta.url), 'utf8')
 const supabaseStore = readFileSync(new URL('../server/store/supabaseProductStore.mjs', import.meta.url), 'utf8')
 
 test('Supabase RPC 原子合并 Agent 实体并校验项目/会话归属', () => {

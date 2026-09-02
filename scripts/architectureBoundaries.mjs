@@ -19,7 +19,7 @@ const agentSamplingTransportForbidden = Object.freeze([
 // 从此列表移除文件是唯一"毕业"方式;新增条目需要维护者明确批准。
 export const MODULE_SIZE_CEILING = 800
 export const legacyOversizeBudgets = Object.freeze({
-  'server/store/postgresProductStore.mjs': 4514,
+  'server/store/postgresProductStore.mjs': 3779,
   'src/features/agent/AgentWorkspace.tsx': 3920,
   'src/features/canvas/CanvasWorkspace.tsx': 2930,
   'src/domain/agent.ts': 2870,
