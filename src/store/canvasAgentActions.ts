@@ -87,11 +87,19 @@ export function createCanvasAgentActions({
   persistAgentSession?: PersistAgentSession
   persistLocalDocumentMirror?: PersistLocalDocumentMirror
 }): AgentStoreActions {
-  const commitAgentSessionDocument = (document: CanvasDocument, options: { persistSession?: boolean } = {}) => {
+  const commitAgentSessionDocument = (document: CanvasDocument, options: { persistSession?: boolean; mirrorOnly?: boolean } = {}) => {
     // Session 创建后的首条消息/上下文可能与持久化同一帧发生；
     // 先更新本地权威快照，后续命令才能稳定命中同一 Session。
     set({ document })
-    void commitDocument(document)
+    if (options.mirrorOnly) {
+      // Message 已由独立实体 API 持久化；这里只缓存兼容视图。整份文档写回会仅因
+      // Session.updatedAt 变化形成 PATCH 风暴，并与真实画布编辑争抢 revision。
+      void persistLocalDocumentMirror(document).catch(() => {
+        recordSentryBreadcrumb('agent-message', 'Agent Message 本机缓存失败，刷新后从服务端恢复。')
+      })
+    } else {
+      void commitDocument(document)
+    }
     if (!options.persistSession) return
     const session = document.agentSessions.find((item) => item.id === document.activeAgentSessionId)
     if (session) void persistAgentSession(document.id, session).catch((caught) => {
@@ -222,13 +230,14 @@ export function createCanvasAgentActions({
       const document = get().document
       const session = document.agentSessions.find((item) => item.id === sessionId)
       if (!session || session.messages.some((item) => item.id === message.id)) return
+      const updatedSession = appendBotanicAgentMessage(session, message)
       commitAgentSessionDocument({
         ...document,
         agentSessions: document.agentSessions.map((candidate) => candidate.id === sessionId
-          ? appendBotanicAgentMessage(candidate, message)
+          ? updatedSession
           : candidate),
         activeAgentSessionId: sessionId,
-      })
+      }, { mirrorOnly: true, persistSession: updatedSession.title !== session.title })
     },
 
     upsertAgentMessage: (sessionId, message) => {
@@ -241,7 +250,7 @@ export function createCanvasAgentActions({
           ? upsertBotanicAgentMessage(candidate, message)
           : candidate),
         activeAgentSessionId: sessionId,
-      })
+      }, { mirrorOnly: true })
     },
 
     updateAgentMessage: (sessionId, messageId, patch) => {
@@ -268,7 +277,7 @@ export function createCanvasAgentActions({
           ? updateBotanicAgentMessage(session, messageId, patch)
           : session),
         activeAgentSessionId: sessionId,
-      })
+      }, { mirrorOnly: true })
     },
 
     updateAgentAction: (sessionId, messageId, actionId, patch) => {
@@ -280,7 +289,7 @@ export function createCanvasAgentActions({
           ? updateBotanicAgentAction(session, messageId, actionId, patch)
           : session),
         activeAgentSessionId: sessionId,
-      })
+      }, { mirrorOnly: true })
     },
 
     setAgentSessionContext: (sessionId, contextNodeIds) => {

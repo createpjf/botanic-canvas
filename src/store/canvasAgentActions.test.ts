@@ -28,6 +28,7 @@ function emptyDocument(): CanvasDocument {
 function createDelayedPersistenceHarness({ revision = 1, graphRevision = 1 } = {}) {
   let state = { document: emptyDocument(), persistenceStatus: 'saving' } as CanvasStore
   const pendingDocuments: CanvasDocument[] = []
+  const localMirrors: CanvasDocument[] = []
   const persistedSessions: Array<{ projectId: string; title: string }> = []
   let invalidatedPersistence = 0
   let remoteRefreshes = 0
@@ -46,13 +47,14 @@ function createDelayedPersistenceHarness({ revision = 1, graphRevision = 1 } = {
     persistAgentSession: async (projectId, session) => {
       persistedSessions.push({ projectId, title: session.title })
     },
+    persistLocalDocumentMirror: async (document) => { localMirrors.push(document) },
   })
   state = { ...state, ...actions, refreshDocumentFromRemote: async () => { remoteRefreshes += 1; return true } }
-  return { actions, pendingDocuments, persistedSessions, getState: () => state, invalidatedPersistence: () => invalidatedPersistence, remoteRefreshes: () => remoteRefreshes }
+  return { actions, pendingDocuments, localMirrors, persistedSessions, getState: () => state, invalidatedPersistence: () => invalidatedPersistence, remoteRefreshes: () => remoteRefreshes }
 }
 
 test('首次打开 Agent 时连续确保会话、添加上下文和消息仍落入同一会话', () => {
-  const { actions, pendingDocuments } = createDelayedPersistenceHarness()
+  const { actions, pendingDocuments, getState } = createDelayedPersistenceHarness()
 
   const firstSessionId = actions.ensureAgentSession()
   const repeatedSessionId = actions.ensureAgentSession()
@@ -71,7 +73,7 @@ test('首次打开 Agent 时连续确保会话、添加上下文和消息仍落�
   assert.equal(latestDocument.activeAgentSessionId, firstSessionId)
   assert.equal(latestDocument.agentSessions.length, 1)
   assert.deepEqual(latestDocument.agentSessions[0].contextNodeIds, ['asset-hero'])
-  assert.deepEqual(latestDocument.agentSessions[0].messages.map((message) => message.id), ['message-first-frame'])
+  assert.deepEqual(getState().document.agentSessions[0].messages.map((message) => message.id), ['message-first-frame'])
 })
 
 test('Agent 阅读位置先更新本地会话，不触发整份画布文档写入', () => {
@@ -133,6 +135,21 @@ test('full Message upsert 替换同 ID 旧副本，API 更新时间不再压住�
   assert.equal(stored.status, 'failed')
   assert.equal(stored.updatedAt, 501)
   assert.equal(stored.turnId, 'turn-stable')
+})
+
+test('Agent Message 独立实体更新不回写整份画布文档', () => {
+  const { actions, pendingDocuments, localMirrors, getState } = createDelayedPersistenceHarness()
+  const sessionId = actions.ensureAgentSession()
+  pendingDocuments.length = 0
+  localMirrors.length = 0
+
+  actions.appendAgentMessage(sessionId, {
+    id: 'message-independent', role: 'assistant', kind: 'notice', content: '任务执行中', createdAt: 20,
+  })
+
+  assert.equal(pendingDocuments.length, 0)
+  assert.equal(localMirrors.length, 1)
+  assert.equal(getState().document.agentSessions[0].messages[0].id, 'message-independent')
 })
 
 test('Message deliveryStatus 只更新本地展示，不推高领域时间或写回云端文档', () => {
