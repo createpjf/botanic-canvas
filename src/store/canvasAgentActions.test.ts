@@ -25,11 +25,12 @@ function emptyDocument(): CanvasDocument {
   }
 }
 
-function createDelayedPersistenceHarness() {
+function createDelayedPersistenceHarness({ revision = 1, graphRevision = 1 } = {}) {
   let state = { document: emptyDocument(), persistenceStatus: 'saving' } as CanvasStore
   const pendingDocuments: CanvasDocument[] = []
   const persistedSessions: Array<{ projectId: string; title: string }> = []
   let invalidatedPersistence = 0
+  let remoteRefreshes = 0
   const actions = createCanvasAgentActions({
     set: (patch) => { state = { ...state, ...patch } },
     get: () => state,
@@ -39,13 +40,15 @@ function createDelayedPersistenceHarness() {
       cancelRun: async () => { throw new Error('测试未调用远程任务取消') },
     },
     persistAcknowledgedRemotePatch: async () => {},
+    readAppliedRemoteRevision: () => revision,
+    readAppliedGraphRevision: () => graphRevision,
     invalidateDocumentPersistence: () => { invalidatedPersistence += 1 },
     persistAgentSession: async (projectId, session) => {
       persistedSessions.push({ projectId, title: session.title })
     },
   })
-  state = { ...state, ...actions }
-  return { actions, pendingDocuments, persistedSessions, getState: () => state, invalidatedPersistence: () => invalidatedPersistence }
+  state = { ...state, ...actions, refreshDocumentFromRemote: async () => { remoteRefreshes += 1; return true } }
+  return { actions, pendingDocuments, persistedSessions, getState: () => state, invalidatedPersistence: () => invalidatedPersistence, remoteRefreshes: () => remoteRefreshes }
 }
 
 test('首次打开 Agent 时连续确保会话、添加上下文和消息仍落入同一会话', () => {
@@ -132,6 +135,25 @@ test('full Message upsert 替换同 ID 旧副本，API 更新时间不再压住�
   assert.equal(stored.turnId, 'turn-stable')
 })
 
+test('Message deliveryStatus 只更新本地展示，不推高领域时间或写回云端文档', () => {
+  const { actions, pendingDocuments, getState } = createDelayedPersistenceHarness()
+  const sessionId = actions.ensureAgentSession()
+  actions.appendAgentMessage(sessionId, {
+    id: 'message-delivery', role: 'user', kind: 'text', content: '离线消息',
+    createdAt: 10, updatedAt: 10, deliveryStatus: 'queued',
+  })
+  const writesBefore = pendingDocuments.length
+  const sessionBefore = getState().document.agentSessions[0]
+
+  actions.updateAgentMessage(sessionId, 'message-delivery', { deliveryStatus: 'syncing' })
+
+  const sessionAfter = getState().document.agentSessions[0]
+  assert.equal(pendingDocuments.length, writesBefore)
+  assert.equal(sessionAfter.updatedAt, sessionBefore.updatedAt)
+  assert.equal(sessionAfter.messages[0].updatedAt, 10)
+  assert.equal(sessionAfter.messages[0].deliveryStatus, 'syncing')
+})
+
 test('Agent 工作流回执立即补入 prompt、生成节点与连线，且不重复写回服务端', async () => {
   const { actions, pendingDocuments, getState, invalidatedPersistence } = createDelayedPersistenceHarness()
 
@@ -167,7 +189,9 @@ test('Agent 工作流回执立即补入 prompt、生成节点与连线，且不�
       { id: 'edge-generate-result', source: 'generate-agent-1', target: 'result-agent-1' },
     ],
     updatedAt: 50,
+    baseRevision: 1,
     revision: 2,
+    baseGraphRevision: 1,
     graphRevision: 2,
   })
 
@@ -177,4 +201,28 @@ test('Agent 工作流回执立即补入 prompt、生成节点与连线，且不�
   assert.equal(getState().persistenceStatus, 'saving')
   assert.equal(pendingDocuments.length, 0)
   assert.equal(invalidatedPersistence(), 1)
+})
+
+test('Agent 工作流回执 revision 不连续时刷新权威文档，不登记跳号版本', async () => {
+  const { actions, getState, invalidatedPersistence, remoteRefreshes } = createDelayedPersistenceHarness({
+    revision: 1,
+    graphRevision: 1,
+  })
+  const applied = await actions.applyAgentWorkflowPatch({
+    nodes: [{
+      id: 'prompt-gap', type: 'text', position: { x: 0, y: 0 },
+      data: { kind: 'text', label: '不应直接合并', content: '缺少中间版本' },
+    }],
+    edges: [],
+    updatedAt: 60,
+    baseRevision: 1,
+    revision: 3,
+    baseGraphRevision: 1,
+    graphRevision: 3,
+  })
+
+  assert.equal(applied, true)
+  assert.equal(remoteRefreshes(), 1)
+  assert.equal(invalidatedPersistence(), 0)
+  assert.deepEqual(getState().document.nodes, [])
 })

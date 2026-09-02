@@ -17,7 +17,8 @@ export function createAgentMessageRouteHandler(input) {
     const sessionId = decodeURIComponent(match[2])
     const messageId = decodeURIComponent(match[3])
     await requireProjectPermission(productStore, user.id, projectId, 'edit')
-    const body = await readJson(request, 96 * 1024, 'Agent 消息请求过大。')
+    // content 允许 64k Unicode 字符；按 UTF-8 计最坏约 256KiB，需为结构字段留余量。
+    const body = await readJson(request, 512 * 1024, 'Agent 消息请求过大。')
     if (body?.id !== messageId) return error(response, 400, 'INVALID_AGENT_ENTITY', 'Agent 消息标识不一致。')
     const messagePage = typeof productStore.listAgentSessionMessages === 'function'
       ? await productStore.listAgentSessionMessages(user.id, projectId, sessionId, { limit: 200 })

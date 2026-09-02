@@ -248,6 +248,14 @@ function timestamp(value, fallback) {
   return Number.isFinite(Number(value)) && Number(value) >= 0 ? Number(value) : fallback
 }
 
+function boundedObjectClone(value, name, maximumBytes) {
+  const candidate = object(value, name)
+  let serialized
+  try { serialized = JSON.stringify(candidate) } catch { invalid(`${name}格式无效。`) }
+  if (Buffer.byteLength(serialized, 'utf8') > maximumBytes) invalid(`${name}过长。`)
+  return clone(candidate)
+}
+
 function nonNegativeInteger(value, name) {
   const parsed = Number(value)
   if (!Number.isSafeInteger(parsed) || parsed < 0) invalid(`${name}无效。`)
@@ -593,14 +601,15 @@ export function validateAgentMessageEntity(value, { now = Date.now() } = {}) {
   if (message.status !== undefined && !messageStatuses.has(message.status)) invalid('Agent 消息状态无效。')
   if (message.feedback !== undefined && !feedbackValues.has(message.feedback)) invalid('Agent 消息反馈无效。')
   if (typeof message.content !== 'string' || message.content.length > 64_000) invalid('Agent 消息内容无效或过长。')
-  const createdAt = timestamp(message.createdAt, now)
+  const createdAt = validateAgentEntityWriteTimestamp(timestamp(message.createdAt, now), { now })
+  const updatedAt = validateAgentEntityWriteTimestamp(timestamp(message.updatedAt, createdAt), { now })
   const result = {
     id: text(message.id, 'Agent 消息标识', 160),
     role: message.role,
     kind: message.kind,
     content: message.content,
     createdAt,
-    updatedAt: Math.max(createdAt, timestamp(message.updatedAt, createdAt)),
+    updatedAt: Math.max(createdAt, updatedAt),
   }
   if (message.prompt !== undefined) result.prompt = text(message.prompt, 'Agent Prompt', 12_000)
   if (message.mentions !== undefined) {
@@ -608,7 +617,7 @@ export function validateAgentMessageEntity(value, { now = Date.now() } = {}) {
     if (mentions.length) result.mentions = mentions
   }
   if (message.plan !== undefined) result.plan = persistedAgentPlan(message.plan)
-  if (message.question !== undefined) result.question = clone(object(message.question, 'Agent 追问'))
+  if (message.question !== undefined) result.question = boundedObjectClone(message.question, 'Agent 追问', 32 * 1024)
   if (message.kind === 'composition' || message.composition !== undefined) {
     if (message.composition === undefined) invalid('方案消息必须包含成套方案。')
     result.composition = persistedAgentComposition(message.composition)

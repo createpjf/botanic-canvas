@@ -188,6 +188,15 @@ test('Agent 实体验证拒绝越界类型与超长消息', () => {
   assert.throws(() => validateAgentMessageEntity({ id: 'm', role: 'user', kind: 'text', content: 'x'.repeat(64_001), createdAt: 1 }))
 })
 
+test('Agent Message 拒绝未来客户端时钟与无界追问对象', () => {
+  const base = { id: 'message-bounded', role: 'assistant', kind: 'question', content: '请确认', createdAt: 1_000 }
+  assert.throws(() => validateAgentMessageEntity({ ...base, updatedAt: 301_001 }, { now: 1_000 }))
+  assert.throws(() => validateAgentMessageEntity({
+    ...base,
+    question: { id: 'question-large', question: 'x'.repeat(33 * 1024), originalInstruction: '', fields: [] },
+  }, { now: 1_000 }))
+})
+
 test('确认豁免只收词表内的理由，外部行动豁免必须被拒', () => {
   const base = {
     id: 'session-waiver', title: '豁免会话', executionMode: 'manual',

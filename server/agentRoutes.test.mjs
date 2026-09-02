@@ -241,7 +241,11 @@ test('导演模式：创建 Run 后服务端直接提交生成，浏览器拿到
             resultNode: { id: 'agent-result-1', type: 'result' },
             edges: [{ id: 'agent-output-edge-job-1', source: 'agent-generate-1', target: 'agent-result-1' }],
           }],
-          saved: { document: { updatedAt: 9 }, revision: 3, graphRevision: 2 },
+          saved: { document: { updatedAt: 9 }, revision: 9, graphRevision: 9 },
+          baseRevision: 2,
+          revision: 3,
+          baseGraphRevision: 4,
+          graphRevision: 5,
         }
       },
     },
@@ -267,6 +271,9 @@ test('导演模式：创建 Run 后服务端直接提交生成，浏览器拿到
   assert.deepEqual(responses[0]?.body.canvasPatch.nodes.map((node) => node.id), ['agent-prompt-1', 'agent-generate-1', 'agent-result-1'])
   assert.deepEqual(responses[0]?.body.canvasPatch.edges.map((edge) => edge.id), ['agent-output-edge-job-1'])
   assert.equal(responses[0]?.body.canvasPatch.revision, 3)
+  assert.equal(responses[0]?.body.canvasPatch.baseRevision, 2)
+  assert.equal(responses[0]?.body.canvasPatch.baseGraphRevision, 4)
+  assert.equal(responses[0]?.body.canvasPatch.graphRevision, 5)
   assert.equal(submitted.length, 1)
   assert.equal(submitted[0].userId, 'user-1')
   assert.equal(submitted[0].projectId, runInput.projectId)
@@ -1134,7 +1141,13 @@ test('工作流创建回执携带已持久化的节点与连线，客户端可�
     },
     agentRunGeneration: {
       prepareProjectExecution: async () => ({ project: { revision: 1, graphRevision: 1 }, prepared: result }),
-      persistWorkflow: async () => ({ document: result.document, revision: 2, graphRevision: 2 }),
+      persistWorkflow: async () => ({
+        saved: { document: result.document, revision: 9, graphRevision: 9 },
+        baseRevision: 2,
+        revision: 3,
+        baseGraphRevision: 4,
+        graphRevision: 5,
+      }),
     },
     json: (_response, status, body) => { responses.push({ status, body }); return true },
     error: () => true,
@@ -1154,6 +1167,10 @@ test('工作流创建回执携带已持久化的节点与连线，客户端可�
   assert.equal(responses[0]?.status, 200)
   assert.deepEqual(responses[0]?.body.output.canvasPatch.nodes.map((node) => node.id), ['prompt-1', 'generate-1', 'result-1'])
   assert.deepEqual(responses[0]?.body.output.canvasPatch.edges.map((edge) => edge.id), ['prompt-generate', 'generate-result'])
+  assert.equal(responses[0]?.body.output.canvasPatch.baseRevision, 2)
+  assert.equal(responses[0]?.body.output.canvasPatch.revision, 3)
+  assert.equal(responses[0]?.body.output.canvasPatch.baseGraphRevision, 4)
+  assert.equal(responses[0]?.body.output.canvasPatch.graphRevision, 5)
 })
 
 function fakeServerResponse() {

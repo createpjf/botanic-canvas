@@ -5157,7 +5157,10 @@ details.agent-timeline__thinking { display: block; width: 100%; }
 @media (prefers-reduced-motion: reduce) {
   .agent-run-card__track::after { animation: none; opacity: .32; transform: translateX(82%); }
   .agent-workspace { animation: none; }
-  .agent-composer__spinner { animation: none; }
+  .agent-composer__spinner,
+  .agent-workspace__mini-spinner,
+  .agent-branch-status-icon__spinner,
+  .agent-workspace__realtime-status > i { animation: none; }
   .agent-composer__add,
   .agent-composer__send,
   .agent-composer__mode { transition: none; }

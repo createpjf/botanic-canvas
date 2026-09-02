@@ -721,7 +721,9 @@ export type BotanicAgentActionResult = {
     nodes: CanvasNode[]
     edges: CanvasDocument['edges']
     updatedAt: number
+    baseRevision: number
     revision: number
+    baseGraphRevision: number
     graphRevision: number
   }
   artifacts?: BotanicAgentArtifact[]
@@ -2158,10 +2160,13 @@ export function updateBotanicAgentMessage(
   now = Date.now(),
 ): BotanicAgentSession {
   if (!session.messages.some((message) => message.id === messageId)) return session
+  const deliveryOnly = Object.keys(patch).every((field) => field === 'deliveryStatus')
   return {
     ...session,
-    messages: session.messages.map((message) => message.id === messageId ? { ...message, ...patch, updatedAt: now } : message),
-    updatedAt: now,
+    messages: session.messages.map((message) => message.id === messageId
+      ? { ...message, ...patch, ...(deliveryOnly ? {} : { updatedAt: now }) }
+      : message),
+    ...(deliveryOnly ? {} : { updatedAt: now }),
   }
 }
 

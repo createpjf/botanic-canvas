@@ -200,6 +200,10 @@ export function lastKnownRemoteRevision(id: string) {
   return remoteRevisions.get(id)
 }
 
+export function lastKnownCanvasGraphRevision(id: string) {
+  return remoteGraphRevisions.get(id)
+}
+
 export function lastKnownCanvasSyncProtocolEpoch(id: string) {
   return remoteSyncProtocolEpochs.get(id) ?? readPersistedSyncProtocolEpoch(id)
 }

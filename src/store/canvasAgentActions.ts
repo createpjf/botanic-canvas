@@ -70,6 +70,8 @@ export function createCanvasAgentActions({
   commitDocument,
   persistentAgentRunApi,
   persistAcknowledgedRemotePatch,
+  readAppliedRemoteRevision = () => undefined,
+  readAppliedGraphRevision = () => undefined,
   invalidateDocumentPersistence = () => undefined,
   persistAgentSession = async () => undefined,
   persistLocalDocumentMirror = async () => undefined,
@@ -79,6 +81,8 @@ export function createCanvasAgentActions({
   commitDocument: CommitDocument
   persistentAgentRunApi: PersistentAgentRunApi
   persistAcknowledgedRemotePatch: (document: CanvasDocument, revision: number, graphRevision: number) => Promise<void>
+  readAppliedRemoteRevision?: (projectId: string) => number | undefined
+  readAppliedGraphRevision?: (projectId: string) => number | undefined
   invalidateDocumentPersistence?: () => void
   persistAgentSession?: PersistAgentSession
   persistLocalDocumentMirror?: PersistLocalDocumentMirror
@@ -131,6 +135,16 @@ export function createCanvasAgentActions({
 
     applyAgentWorkflowPatch: async (patch) => {
       const document = get().document
+      const appliedRevision = readAppliedRemoteRevision(document.id)
+      const appliedGraphRevision = readAppliedGraphRevision(document.id)
+      if (Number(appliedRevision) >= patch.revision && Number(appliedGraphRevision) >= patch.graphRevision) return true
+      if (patch.revision < patch.baseRevision || patch.revision > patch.baseRevision + 1
+        || patch.graphRevision < patch.baseGraphRevision || patch.graphRevision > patch.baseGraphRevision + 1
+        || appliedRevision !== patch.baseRevision || appliedGraphRevision !== patch.baseGraphRevision) {
+        const refreshed = await get().refreshDocumentFromRemote().catch(() => false)
+        if (!refreshed) set({ assistantMessage: '画布已有新的协作版本；本地内容已保留，请同步后重试。' })
+        return refreshed
+      }
       const nextDocument = mergeBotanicAgentCanvasPatch(document, patch)
       invalidateDocumentPersistence()
       set({ document: nextDocument })
@@ -232,7 +246,22 @@ export function createCanvasAgentActions({
 
     updateAgentMessage: (sessionId, messageId, patch) => {
       const document = get().document
-      if (!document.agentSessions.some((session) => session.id === sessionId)) return
+      const session = document.agentSessions.find((candidate) => candidate.id === sessionId)
+      if (!session) return
+      if (Object.keys(patch).every((field) => field === 'deliveryStatus')) {
+        const message = session.messages.find((candidate) => candidate.id === messageId)
+        if (!message || message.deliveryStatus === patch.deliveryStatus) return
+        set({
+          document: {
+            ...document,
+            agentSessions: document.agentSessions.map((candidate) => candidate.id === sessionId
+              ? updateBotanicAgentMessage(candidate, messageId, patch)
+              : candidate),
+            activeAgentSessionId: sessionId,
+          },
+        })
+        return
+      }
       commitAgentSessionDocument({
         ...document,
         agentSessions: document.agentSessions.map((session) => session.id === sessionId

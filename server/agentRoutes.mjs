@@ -1619,16 +1619,16 @@ export function createAgentRouteHandler({
           ...createCanvasAgentEditExecutors({ productStore, publishProjectUpdated, models: config?.modelOptions ?? [], userId: user.id, projectId, mutationId: receiptId }),
           createWorkflow: async ({ planId }) => {
             const { project, prepared } = await agentRunGeneration.prepareProjectExecution(user.id, projectId, planId, { submission: false })
-            const saved = await agentRunGeneration.persistWorkflow(user.id, project, prepared)
+            const persistence = await agentRunGeneration.persistWorkflow(user.id, project, prepared)
             return {
               message: `已创建 ${prepared.workflows.length} 条画布工作流。`,
               canvasNodeIds: prepared.workflows.flatMap((workflow) => [workflow.promptNodeId, workflow.generateNodeId, workflow.resultNodeId]),
               canvasPatch: {
                 nodes: prepared.workflows.flatMap((workflow) => [workflow.promptNode, workflow.generateNode, workflow.resultNode]),
                 edges: prepared.workflows.flatMap((workflow) => workflow.edges),
-                updatedAt: saved.document.updatedAt,
-                revision: saved.revision,
-                graphRevision: saved.graphRevision,
+                updatedAt: persistence.saved.document.updatedAt,
+                baseRevision: persistence.baseRevision, revision: persistence.revision,
+                baseGraphRevision: persistence.baseGraphRevision, graphRevision: persistence.graphRevision,
               },
             }
           },
@@ -1909,8 +1909,8 @@ export function createAgentRouteHandler({
           nodes: execution.workflows.flatMap((workflow) => [workflow.promptNode, workflow.generateNode, workflow.resultNode]),
           edges: execution.workflows.flatMap((workflow) => workflow.edges),
           updatedAt: execution.saved.document.updatedAt,
-          revision: execution.saved.revision,
-          graphRevision: execution.saved.graphRevision,
+          baseRevision: execution.baseRevision ?? Math.max(1, Number(execution.saved.revision) - 1), revision: execution.revision ?? execution.saved.revision,
+          baseGraphRevision: execution.baseGraphRevision ?? Math.max(1, Number(execution.saved.graphRevision) - 1), graphRevision: execution.graphRevision ?? execution.saved.graphRevision,
         }
       }
       // 幂等重放时分支已带 jobIds 不再 autoSubmit；从项目文档按 Job 记录重建增量，重放响应仍能立即上画布。
@@ -1930,8 +1930,8 @@ export function createAgentRouteHandler({
             nodes,
             edges,
             updatedAt: project.document.updatedAt,
-            revision: project.revision,
-            graphRevision: project.graphRevision,
+            baseRevision: project.revision, revision: project.revision,
+            baseGraphRevision: project.graphRevision, graphRevision: project.graphRevision,
           }
         } catch {
           return undefined

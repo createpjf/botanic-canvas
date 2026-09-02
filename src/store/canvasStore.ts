@@ -23,6 +23,8 @@ import type {
 } from '../domain/canvas'
 import {
   deleteGlobalAssetAndScrubDocuments,
+  appliedRemoteRevision,
+  lastKnownCanvasGraphRevision,
   persistAcceptedRemoteCanvasDocument,
   persistAcknowledgedRemoteCanvasPatch,
   writeCanvasDocument,
@@ -306,6 +308,8 @@ export const useCanvasStore = create<CanvasStore>((set, get) => {
       cancelRun: cancelPersistentBotanicAgentRun,
     },
     persistAcknowledgedRemotePatch: persistAcknowledgedRemoteCanvasPatch,
+    readAppliedRemoteRevision: appliedRemoteRevision,
+    readAppliedGraphRevision: lastKnownCanvasGraphRevision,
     invalidateDocumentPersistence: persistenceOperations.invalidate,
     persistAgentSession,
     persistLocalDocumentMirror: persistAcceptedRemoteCanvasDocument,

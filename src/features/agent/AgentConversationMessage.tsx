@@ -253,8 +253,13 @@ function AgentMessageUtilities({
     return () => document.removeEventListener('pointerdown', onPointerDown)
   }, [onOpenChange, open])
 
-  const copy = () => {
-    void navigator.clipboard.writeText(message.composition ? formatBotanicAgentCompositionMessage(message.composition, locale) : message.content)
+  const copy = async () => {
+    if (!navigator.clipboard?.writeText) return
+    try {
+      await navigator.clipboard.writeText(message.composition ? formatBotanicAgentCompositionMessage(message.composition, locale) : message.content)
+    } catch {
+      return
+    }
     setCopied(true)
     window.clearTimeout(copiedTimerRef.current)
     copiedTimerRef.current = window.setTimeout(() => setCopied(false), copiedStatusMs)
@@ -278,7 +283,7 @@ function AgentMessageUtilities({
         <button type="button" className={message.feedback === 'positive' ? 'is-selected' : ''} aria-pressed={message.feedback === 'positive'} aria-label={t('这个回答有帮助', 'This response was helpful')} title={t('有帮助', 'Helpful')} onClick={() => onFeedback(message, message.feedback === 'positive' ? undefined : 'positive')}><ThumbUpIcon /></button>
         <button type="button" className={message.feedback === 'negative' ? 'is-selected' : ''} aria-pressed={message.feedback === 'negative'} aria-label={t('这个回答需要改进', 'This response needs improvement')} title={t('需改进', 'Needs improvement')} onClick={() => onFeedback(message, message.feedback === 'negative' ? undefined : 'negative')}><ThumbDownIcon /></button>
       </> : null}
-      {actions.copy ? <button type="button" aria-label={copied ? t('已复制', 'Copied') : t('复制消息', 'Copy message')} title={t('复制消息', 'Copy message')} onClick={copy}><CopyIcon /></button> : null}
+      {actions.copy ? <button type="button" aria-label={copied ? t('已复制', 'Copied') : t('复制消息', 'Copy message')} title={t('复制消息', 'Copy message')} onClick={() => void copy()}><CopyIcon /></button> : null}
       {copied ? <small className="agent-message__copied" role="status">{t('已复制', 'Copied')}</small> : null}
     </div>
   </div>
@@ -1090,6 +1095,7 @@ type AgentConversationMessageProps = {
   onUsePrompt: (message: BotanicAgentMessage) => void
   onEdit: (content: string) => void
   onRetryDelivery: (messageId: string) => void
+  onDiscardDelivery: (messageId: string) => void
   onFeedback: (message: BotanicAgentMessage, feedback: BotanicAgentMessage['feedback']) => void
   onSaveAsMemory?: (message: BotanicAgentMessage, kind: BotanicAgentMemoryKind, content: string) => string | null
   onReviewDecision?: (message: BotanicAgentMessage, decision: 'accepted' | 'rejected') => void
@@ -1138,6 +1144,7 @@ export function AgentConversationMessage({
   onUsePrompt,
   onEdit,
   onRetryDelivery,
+  onDiscardDelivery,
   onFeedback,
   onSaveAsMemory,
   onReviewDecision,
@@ -1444,7 +1451,7 @@ export function AgentConversationMessage({
         return <div className="agent-message__plan">{recipe}</div>
       })() : null}
     </div>
-    {message.role === 'user' && message.deliveryStatus === 'failed' ? <small className="agent-message__delivery-status is-failed" role="alert">{t('同步失败', 'Sync failed')} <button type="button" onClick={() => onRetryDelivery(message.id)}>{t('重试', 'Retry')}</button></small> : null}
+    {message.role === 'user' && message.deliveryStatus === 'failed' ? <small className="agent-message__delivery-status is-failed" role="alert">{t('同步失败', 'Sync failed')} <button type="button" onClick={() => onRetryDelivery(message.id)}>{t('重试', 'Retry')}</button> <button type="button" onClick={() => onDiscardDelivery(message.id)}>{t('不再同步', 'Discard')}</button></small> : null}
     {showUtilities ? <AgentMessageUtilities
       message={message}
       sessionId={sessionId}

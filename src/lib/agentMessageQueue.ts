@@ -56,10 +56,16 @@ function storageFailure() {
 
 export function createLocalStorageAgentMessageQueueStorage(namespace = 'workspace'): AgentMessageQueueStorage {
   const scopedKey = `${storageKey}:${namespace}`
+  const quarantineKey = (value: string) => {
+    let hash = 0
+    for (let index = 0; index < value.length; index += 1) hash = ((hash * 31) + value.charCodeAt(index)) | 0
+    return `${scopedKey}:quarantine:${hash >>> 0}`
+  }
   return {
     read: () => globalThis.localStorage?.getItem(scopedKey) ?? null,
     write: (value) => globalThis.localStorage?.setItem(scopedKey, value),
-    quarantine: (value) => globalThis.localStorage?.setItem(`${scopedKey}:quarantine:${Date.now()}`, value),
+    // 同一损坏快照反复加载只写同一 key，不再按启动次数无限增长。
+    quarantine: (value) => globalThis.localStorage?.setItem(quarantineKey(value), value),
   }
 }
 
@@ -264,10 +270,19 @@ export function createAgentMessageQueue(options: AgentMessageQueueOptions) {
     return structuredClone(item)
   }
 
+  const discard = (messageId: string) => {
+    const item = items.find((candidate) => candidate.message.id === messageId)
+    if (!item) return undefined
+    items = items.filter((candidate) => candidate.key !== item.key)
+    persist()
+    return structuredClone(item)
+  }
+
   return {
     enqueue,
     flush,
     retry,
+    discard,
     list: snapshot,
     subscribe(listener: (items: AgentMessageQueueItem[]) => void) {
       listeners.add(listener)
