@@ -11,7 +11,7 @@
 // 任一 > 0 时为 1,可直接用作发布门禁。
 import { createReadStream } from 'node:fs'
 import { createInterface } from 'node:readline'
-import { aggregateOperationalMetrics } from '../server/agentOperationalMetrics.mjs'
+import { aggregateOperationalMetrics } from '../server/observability/agentOperationalMetrics.mjs'
 
 const files = process.argv.slice(2)
 const sources = files.length

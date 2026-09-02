@@ -3,7 +3,7 @@ import { Queue, Worker } from 'bullmq'
 import {
   attachAgentTraceContext,
   withExtractedAgentTraceContext,
-} from './agentTraceContext.mjs'
+} from './observability/agentTraceContext.mjs'
 
 const queueName = 'botanic-derived'
 const defaultJobOptions = {

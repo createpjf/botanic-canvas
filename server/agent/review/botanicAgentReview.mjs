@@ -1,4 +1,4 @@
-import { resolveBotanicAgentImageDataUrl } from '../../botanicAgentVision.mjs'
+import { resolveBotanicAgentImageDataUrl } from '../semantic/botanicAgentVision.mjs'
 import { createBotanicAgentModelProvider } from '../model/botanicAgentModelProvider.mjs'
 import { normalizeBotanicAgentLocale } from '../../agentInstructions.mjs'
 

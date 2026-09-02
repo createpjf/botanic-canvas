@@ -548,8 +548,8 @@ test('多图合成时标识参考排在人像之后发给 images/edits', async (
 })
 
 test('选区矩形在 Worker 落成与基准图同尺寸的 PNG 蒙版', async () => {
-  const { buildRegionMaskPng } = await import('../regionMaskPng.mjs')
-  const { imagePixelSize } = await import('../mediaFormats.mjs')
+  const { buildRegionMaskPng } = await import('../media/regionMaskPng.mjs')
+  const { imagePixelSize } = await import('../media/mediaFormats.mjs')
   const parentPng = buildRegionMaskPng({ width: 20, height: 10 }, { x: 0, y: 0, width: 1, height: 1 })
   const input = validateGenerationInput({
     projectId: 'project-a', kind: 'refinement', prompt: '只把右半边换成夜景', batchCount: 1,
@@ -574,7 +574,7 @@ test('选区矩形在 Worker 落成与基准图同尺寸的 PNG 蒙版', async (
 
 test('参考图像素超上限时被拒，理由是像素总数而不是长边', async () => {
   const { resolveGenerationInputMedia, GenerationError } = await import('./generationProvider.mjs')
-  const { imagePixelSize, MEDIA_LIMITS } = await import('../mediaFormats.mjs')
+  const { imagePixelSize, MEDIA_LIMITS } = await import('../media/mediaFormats.mjs')
 
   // 5000×4000 = 20 MP，超过 4096×4096 接收预算。12.2 MP 的 iPhone 原图现在
   // 低于 Nano Banana 4K 方图，必须能被重新接收，不能再当超限夹具。
@@ -694,7 +694,7 @@ test('dataUrl 参考图像素超上限时被拒', async () => {
   // dataUrl 路径在 validateGenerationInput 时已填充 buffer，直接进 resolve 的早期分支。
   // 若不加像素守卫，超过接收预算的参考会原样通过。
   const { resolveGenerationInputMedia, GenerationError } = await import('./generationProvider.mjs')
-  const { imagePixelSize, MEDIA_LIMITS } = await import('../mediaFormats.mjs')
+  const { imagePixelSize, MEDIA_LIMITS } = await import('../media/mediaFormats.mjs')
 
   const oversized = pngOfSize(5000, 4000)
   assert.deepEqual(imagePixelSize(oversized), { width: 5000, height: 4000 })
@@ -721,7 +721,7 @@ test('dataUrl 参考图像素超上限时被拒', async () => {
 test('dataUrl 父版本图像素超上限时被拒', async () => {
   // 精修任务会从客户端拿 parent，也走 dataUrl 路径。
   const { resolveGenerationInputMedia, GenerationError } = await import('./generationProvider.mjs')
-  const { imagePixelSize, MEDIA_LIMITS } = await import('../mediaFormats.mjs')
+  const { imagePixelSize, MEDIA_LIMITS } = await import('../media/mediaFormats.mjs')
 
   const oversized = pngOfSize(5000, 4000)
   assert.deepEqual(imagePixelSize(oversized), { width: 5000, height: 4000 })
@@ -795,8 +795,8 @@ test('无 parent 且标识参考排在首位时，蒙版按重排后的底图定
   // orderCompositionReferences 重排后的 —— 标识图会被挪到队尾。
   // 两者不一致时，发出去的是「蒙版尺寸 ≠ image[]#1 尺寸」这对无效组合。
   const { validateGenerationInput, resolveGenerationInputMedia } = await import('./generationProvider.mjs')
-  const { imagePixelSize } = await import('../mediaFormats.mjs')
-  const { regionMaskAlphaAt } = await import('../regionMaskPng.mjs')
+  const { imagePixelSize } = await import('../media/mediaFormats.mjs')
+  const { regionMaskAlphaAt } = await import('../media/regionMaskPng.mjs')
 
   const references = [
     { name: '品牌 Logo.png', mediaId: 'media_logo' },      // 命中标识正则，会被排到队尾
@@ -834,7 +834,7 @@ test('标识参考不在首位时行为不变', async () => {
   // 守护用例：修复前后恒绿，锁住 orderCompositionReferences 的稳定分桶 ——
   // 底图本来就在队首时，重排不该改变任何东西。
   const { validateGenerationInput, resolveGenerationInputMedia } = await import('./generationProvider.mjs')
-  const { imagePixelSize } = await import('../mediaFormats.mjs')
+  const { imagePixelSize } = await import('../media/mediaFormats.mjs')
 
   const references = [
     { name: '棚拍人像', mediaId: 'media_portrait' },
@@ -867,7 +867,7 @@ test('蒙版尺寸必须与提交给供应商的第一张图相匹配', async ()
   // 这是对 orderCompositionReferences 变化的早期预警 —— 任何改动都会同时违反
   // 蒙版与供应商两侧的断言。
   const { validateGenerationInput, resolveGenerationInputMedia, generateImages } = await import('./generationProvider.mjs')
-  const { imagePixelSize } = await import('../mediaFormats.mjs')
+  const { imagePixelSize } = await import('../media/mediaFormats.mjs')
 
   const references = [
     { name: '品牌 Logo.png', mediaId: 'media_logo' },      // 标识图，会被排到队尾

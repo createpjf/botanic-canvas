@@ -7,7 +7,7 @@ import {
 } from './agentModelContextPolicy.mjs'
 import { createAgentModelContextRuntime } from './agentModelContextRuntime.mjs'
 import { sanitizeAgentModelContextCheckpoint } from './agentModelContextSurface.mjs'
-import { renderThreadSummary } from '../../agentThreadSummary.mjs'
+import { renderThreadSummary } from '../thread/agentThreadSummary.mjs'
 
 export class AgentModelContextBindingError extends Error {
   constructor(code, message) {

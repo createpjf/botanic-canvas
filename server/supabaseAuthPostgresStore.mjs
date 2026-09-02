@@ -1,6 +1,6 @@
 import { createClient } from '@supabase/supabase-js'
-import { decodeAuthAssurance } from './authAssurance.mjs'
-import { assertWorkspacePermission } from './authorization.mjs'
+import { decodeAuthAssurance } from './auth/authAssurance.mjs'
+import { assertWorkspacePermission } from './auth/authorization.mjs'
 import { sendResendInviteEmails } from './resendEmailService.mjs'
 
 function productError(message, code = 'PRODUCT_STORE_ERROR') {

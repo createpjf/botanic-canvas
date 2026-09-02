@@ -3,8 +3,8 @@ import { generationIdempotencyKey } from '../../generation/generationIdempotency
 import { validateBotanicAgentTurnInput } from './botanicAgentTurn.mjs'
 import { agentTurnLastSequence, publicAgentTurn } from './botanicAgentTurnRuntime.mjs'
 import { AGENT_PROTOCOL_VERSION } from '../../agentProtocol.mjs'
-import { publicAgentRun } from '../../botanicAgentRun.mjs'
-import { requireProjectPermission } from '../../projectAuthorization.mjs'
+import { publicAgentRun } from '../semantic/botanicAgentRun.mjs'
+import { requireProjectPermission } from '../../auth/projectAuthorization.mjs'
 
 function routeFailure(caught) {
   return /** @type {Error & { code?: string, statusCode?: number }} */ (

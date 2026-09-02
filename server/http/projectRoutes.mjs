@@ -1,6 +1,6 @@
 import { applyCanvasDocumentPatch } from '../canvas/canvasDocumentPatch.mjs'
-import { requireProjectPermission } from '../projectAuthorization.mjs'
-import { projectCapabilities } from '../authorization.mjs'
+import { requireProjectPermission } from '../auth/projectAuthorization.mjs'
+import { projectCapabilities } from '../auth/authorization.mjs'
 import { collaborationChangeFromDocuments, decodeCollaborationActivityCursor, encodeCollaborationActivityCursor } from '../collaborationActivityPersistence.mjs'
 import { filterAuditEvents } from '../agent/action/agentActionGovernance.mjs'
 import { canvasMutationConflictCode, canvasSyncEpochStaleCode } from '../store/productStoreContract.mjs'

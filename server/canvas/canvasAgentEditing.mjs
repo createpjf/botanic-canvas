@@ -1,6 +1,6 @@
 // @ts-check
 
-import { AgentToolRuntimeError } from '../agentToolRuntime.mjs'
+import { AgentToolRuntimeError } from '../agent/tools/agentToolRuntime.mjs'
 import { catalogAspectRatiosForModel } from '../generation/generationOutputSize.mjs'
 import {
   canvasProjectMutationId,

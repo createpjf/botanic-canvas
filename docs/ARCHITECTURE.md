@@ -92,7 +92,7 @@ API 重启后用快照与增量重建房间；累计 64 条后压缩，避免日
 
 ## Agent 实体持久化
 
-`server/botanicAgentPersistence.mjs` 定义 Session、Message、Memory 的安全实体形状，以及新实体和旧文档字段的兼容合并规则。ProductStore 的本地文件、PostgreSQL 和 Supabase Adapter 共同实现：
+`server/agent/semantic/botanicAgentPersistence.mjs` 定义 Session、Message、Memory 的安全实体形状，以及新实体和旧文档字段的兼容合并规则。ProductStore 的本地文件、PostgreSQL 和 Supabase Adapter 共同实现：
 
 - `agent_sessions` 保存会话设置及服务端从权威 Message 派生的 `threadSummary`；客户端设置接口不能写摘要，也不能用整份 Session 覆盖删除它。摘要写回只走 `compareAndSetAgentThreadSummary`，在行锁内校验旧摘要版本并只 patch `payload.threadSummary`，不改 Session 排序时间或覆盖并发设置；
 - `agent_messages` 按消息 ID 和 Session ID 独立追加或更新；`turnRequestSnapshot`、`turnId`、Stop 时间和稳定 Turn 结果的 `entityReferences` 是 sticky 字段：省略不清空、首次可补齐，同一 Turn 的不同引用明确冲突。`CanvasDocument` 迁移兼容写入口会在同步独立实体前剥离 Message 的 `entityReferences`，只有权威 Message 写路径可首次绑定这些引用；

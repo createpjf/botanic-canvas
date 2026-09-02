@@ -1,5 +1,5 @@
 // @ts-check
-import { publicAgentRun } from '../../botanicAgentRun.mjs'
+import { publicAgentRun } from '../semantic/botanicAgentRun.mjs'
 import { generationJobIdForIdempotency } from '../../generation/generationIdempotency.mjs'
 import { createIdempotencyRequestBinding, matchingIdempotencyRequestBinding } from '../../idempotencyRequestBinding.mjs'
 import { persistedGenerationJob, publicGenerationJob } from '../../generation/generationProvider.mjs'

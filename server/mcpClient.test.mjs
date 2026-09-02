@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { withExtractedAgentTraceContext } from './agentTraceContext.mjs'
+import { withExtractedAgentTraceContext } from './observability/agentTraceContext.mjs'
 import {
   createConfiguredMcpRuntime,
   createConfiguredMcpTools,

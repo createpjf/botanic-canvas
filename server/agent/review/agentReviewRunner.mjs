@@ -7,8 +7,8 @@ import {
   planReviewCoverage,
   settleAgentReviewTask,
 } from './agentReviewTask.mjs'
-import { generationArtifactId } from '../../productionWorkflow.mjs'
-import { compiledBranchFromRun } from '../../creativePlanResolver.mjs'
+import { generationArtifactId } from '../../workflow/productionWorkflow.mjs'
+import { compiledBranchFromRun } from '../semantic/creativePlanResolver.mjs'
 import { runEvaluatorSkillCriterion } from './agentReviewSkillEvaluator.mjs'
 
 /**

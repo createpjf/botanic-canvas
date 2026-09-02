@@ -1,5 +1,5 @@
 // @ts-check
-import { stageError } from '../../executionTrace.mjs'
+import { stageError } from '../../observability/executionTrace.mjs'
 import { turnReclaimDecision } from '../../turnReclaim.mjs'
 
 /**

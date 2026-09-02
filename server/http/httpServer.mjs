@@ -3,12 +3,12 @@ import { Readable } from 'node:stream'
 import { randomUUID } from 'node:crypto'
 import { createGenerationProcessor } from '../generation/generationProcessor.mjs'
 import { GenerationError } from '../generation/generationProvider.mjs'
-import { PromptRefinementError } from '../promptRefinementProvider.mjs'
-import { BotanicAgentPlannerError } from '../botanicAgentPlanner.mjs'
-import { BotanicAgentChatError } from '../botanicAgentChat.mjs'
+import { PromptRefinementError } from '../providers/promptRefinementProvider.mjs'
+import { BotanicAgentPlannerError } from '../agent/semantic/botanicAgentPlanner.mjs'
+import { BotanicAgentChatError } from '../agent/semantic/botanicAgentChat.mjs'
 import { BotanicAgentSkillError } from '../agent/action/botanicAgentSkill.mjs'
-import { BotanicAgentRunError } from '../botanicAgentRun.mjs'
-import { AgentToolRuntimeError } from '../agentToolRuntime.mjs'
+import { BotanicAgentRunError } from '../agent/semantic/botanicAgentRun.mjs'
+import { AgentToolRuntimeError } from '../agent/tools/agentToolRuntime.mjs'
 import { AgentActionExecutionError } from '../agent/action/agentActionExecution.mjs'
 import { AgentActionReconciliationError } from '../agent/action/agentActionReconciliation.mjs'
 import { McpClientError } from '../mcpClient.mjs'
@@ -20,9 +20,9 @@ import { createLocalCancelRegistry } from '../localCancelRegistry.mjs'
 import { createCanvasRealtimeEventPublisher, createCanvasRealtimeEventSubscriber } from '../canvas/canvasRealtimeEventBus.mjs'
 import { createProjectRealtimeHub } from '../realtimeHub.mjs'
 import { publishProjectUpdatedSafely } from '../projectUpdatePublisher.mjs'
-import { clientAddress, securityResponseHeaders, sensitiveActionDecision } from '../securityControls.mjs'
-import { accessTokenFromRequest } from '../requestAuth.mjs'
-import { ProjectAuthorizationError } from '../projectAuthorization.mjs'
+import { clientAddress, securityResponseHeaders, sensitiveActionDecision } from '../auth/securityControls.mjs'
+import { accessTokenFromRequest } from '../auth/requestAuth.mjs'
+import { ProjectAuthorizationError } from '../auth/projectAuthorization.mjs'
 import { matchBotanicHttpRoutes } from './httpRouteTable.mjs'
 import { createSessionRouteHandler } from './sessionRoutes.mjs'
 import { createProjectRouteHandler } from './projectRoutes.mjs'
@@ -49,12 +49,12 @@ import { createGenerationRecoverySweep } from '../generation/generationRecoveryS
 import {
   injectAgentTraceContext,
   withExtractedAgentTraceContext,
-} from '../agentTraceContext.mjs'
+} from '../observability/agentTraceContext.mjs'
 import {
   activeBotanicTraceFields,
   setBotanicHttpSpanStatus,
   withBotanicSpan,
-} from '../executionTelemetry.mjs'
+} from '../observability/executionTelemetry.mjs'
 import { agentContextRolloutHealth } from '../agent/context/agentContextRollout.mjs'
 import { captureException as captureSentryException } from '../sentry.mjs'
 

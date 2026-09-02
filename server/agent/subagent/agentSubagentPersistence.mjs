@@ -1,7 +1,7 @@
 // @ts-check
 import { canonicalHash } from '../../canonicalHash.mjs'
 import { createAgentTurnRecord, agentTurnIdForIdempotency } from '../turn/botanicAgentTurnRuntime.mjs'
-import { validateAgentMessageEntity, validateAgentSessionEntity } from '../../botanicAgentPersistence.mjs'
+import { validateAgentMessageEntity, validateAgentSessionEntity } from '../semantic/botanicAgentPersistence.mjs'
 import { SUBAGENT_LIMITS, SUBAGENT_OUTPUT_KINDS, SUBAGENT_ROLES } from '../../agentSubtask.mjs'
 
 const terminalTurnStatuses = new Set(['completed', 'failed', 'cancelled'])

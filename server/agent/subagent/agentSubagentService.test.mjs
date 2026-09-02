@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createAgentSubagentService } from './agentSubagentService.mjs'
-import { createAgentToolRegistry } from '../../agentToolRuntime.mjs'
+import { createAgentToolRegistry } from '../tools/agentToolRuntime.mjs'
 
 function registry() {
   return createAgentToolRegistry([{

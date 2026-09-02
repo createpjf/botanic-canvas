@@ -1,6 +1,6 @@
-import { BrandKitError, findBrandKit, globalBrandKitLibraryId, normalizeBrandKitLibrary, resolveBrandKit } from '../brandKit.mjs'
-import { projectCapabilities } from '../authorization.mjs'
-import { requireProjectPermission } from '../projectAuthorization.mjs'
+import { BrandKitError, findBrandKit, globalBrandKitLibraryId, normalizeBrandKitLibrary, resolveBrandKit } from '../workflow/brandKit.mjs'
+import { projectCapabilities } from '../auth/authorization.mjs'
+import { requireProjectPermission } from '../auth/projectAuthorization.mjs'
 
 export function createLibraryRouteHandler({ productStore, json, error, readJson, requireUser }) {
   return async function handleLibraryRoute(request, response, url, routeMatches) {

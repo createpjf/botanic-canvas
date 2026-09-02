@@ -5,7 +5,7 @@ import {
   currentAgentTraceContext,
   extractAgentTraceContext,
   withAgentTraceContext,
-} from '../../agentTraceContext.mjs'
+} from '../../observability/agentTraceContext.mjs'
 import {
   agentSubagentQueueJobId,
   createAgentSubagentQueue,

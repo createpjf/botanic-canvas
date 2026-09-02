@@ -5,7 +5,7 @@ import {
   agentSubagentCapabilitySnapshot,
   createAgentSubagentToolRegistry,
 } from './agentSubagentTools.mjs'
-import { createAgentToolRegistry } from '../../agentToolRuntime.mjs'
+import { createAgentToolRegistry } from '../tools/agentToolRuntime.mjs'
 
 function definition(name, overrides = {}) {
   return {

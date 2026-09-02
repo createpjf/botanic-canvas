@@ -10,7 +10,7 @@ import { createBotanicAgentModelProvider } from '../model/botanicAgentModelProvi
 import {
   freezeAgentStepSnapshot,
   runAgentToolLoop as executeAgentToolLoop,
-} from '../../agentToolRuntime.mjs'
+} from '../tools/agentToolRuntime.mjs'
 import {
   agentSubagentCapabilitySnapshot,
   createAgentSubagentToolRegistry,

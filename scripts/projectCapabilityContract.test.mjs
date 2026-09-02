@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
-import { projectCapabilities } from '../server/authorization.mjs'
+import { projectCapabilities } from '../server/auth/authorization.mjs'
 
 const domain = readFileSync(new URL('../src/domain/projectCapabilities.ts', import.meta.url), 'utf8')
 

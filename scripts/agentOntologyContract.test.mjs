@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
-import { createBotanicAgentOperationalToolDefinitions } from '../server/botanicAgentOperationalTools.mjs'
+import { createBotanicAgentOperationalToolDefinitions } from '../server/agent/tools/botanicAgentOperationalTools.mjs'
 
 const canvas = readFileSync(new URL('../src/domain/canvas.ts', import.meta.url), 'utf8')
 const ontology = readFileSync(new URL('../server/skills/botanic-agent/ONTOLOGY.md', import.meta.url), 'utf8')

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
-import { CANONICAL_IMAGE_FORMATS, FORMAT_LABELS, MEDIA_LIMITS, UPLOAD_IMAGE_FORMATS } from '../server/mediaFormats.mjs'
+import { CANONICAL_IMAGE_FORMATS, FORMAT_LABELS, MEDIA_LIMITS, UPLOAD_IMAGE_FORMATS } from '../server/media/mediaFormats.mjs'
 
 /**
  * 客户端格式词表必须与服务端一致。

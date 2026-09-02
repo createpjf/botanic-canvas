@@ -1,7 +1,7 @@
 import { persistedGenerationJob } from '../../generation/generationProvider.mjs'
-import { failUnsubmittedPersistentAgentRun, publicAgentRun } from '../../botanicAgentRun.mjs'
-import { prepareAgentRunExecution, reconcileAgentGenerationJobToProject } from '../../botanicAgentExecution.mjs'
-import { AgentToolRuntimeError } from '../../agentToolRuntime.mjs'
+import { failUnsubmittedPersistentAgentRun, publicAgentRun } from '../semantic/botanicAgentRun.mjs'
+import { prepareAgentRunExecution, reconcileAgentGenerationJobToProject } from '../semantic/botanicAgentExecution.mjs'
+import { AgentToolRuntimeError } from '../tools/agentToolRuntime.mjs'
 import { generationJobIdForIdempotency } from '../../generation/generationIdempotency.mjs'
 import { buildGenerationUsage, releaseGenerationBudget, reserveGenerationBudget } from '../../generation/generationGovernance.mjs'
 import {
@@ -9,8 +9,8 @@ import {
   assertCreativePlanReferenceBindings,
   compileRunCreativePlan,
   createCreativePlanReferenceBindings,
-} from '../../creativePlanResolver.mjs'
-import { findBrandKit, globalBrandKitLibraryId } from '../../brandKit.mjs'
+} from '../semantic/creativePlanResolver.mjs'
+import { findBrandKit, globalBrandKitLibraryId } from '../../workflow/brandKit.mjs'
 import { AgentDelegationFenceError, assertTurnAllowsDelegation } from '../../agentCancellationService.mjs'
 import { cancelGenerationJob } from '../../generation/generationCancellation.mjs'
 import { compareAndSetGenerationJob } from '../../generation/generationJobCas.mjs'

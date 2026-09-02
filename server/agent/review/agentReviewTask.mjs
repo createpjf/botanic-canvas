@@ -1,6 +1,6 @@
 // @ts-check
 import { createHash, randomUUID } from 'node:crypto'
-import { isBrandConcession } from '../../brandKit.mjs'
+import { isBrandConcession } from '../../workflow/brandKit.mjs'
 
 /**
  * 评审任务实体（ADR 0006）。

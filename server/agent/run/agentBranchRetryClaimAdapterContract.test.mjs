@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
-import { createPersistentAgentRun } from '../../botanicAgentRun.mjs'
+import { createPersistentAgentRun } from '../semantic/botanicAgentRun.mjs'
 import { createIdempotencyRequestBinding } from '../../idempotencyRequestBinding.mjs'
 import { createProductStore } from '../../store/productStore.mjs'
 
