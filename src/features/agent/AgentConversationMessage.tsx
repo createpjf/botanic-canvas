@@ -69,28 +69,8 @@ import {
 import { useProductI18n } from '../../i18n/react'
 import type { ProductLocale } from '../../i18n/core'
 import type { BotanicAgentRunReview } from '../../domain/agentReviewContract'
-import {
-  agentMcpServerBrandLogoSrc,
-  agentMcpServerIdFromLabel,
-  agentTimelineHasRenderableContent,
-  agentTimelineOrbState,
-  agentTimelineStepToolName,
-  agentToolAccordionElapsedLabel,
-  agentToolIconKey,
-  conversationTimelineStepTitle,
-  presentAgentTimelineConversation,
-  presentAgentToolAccordion,
-  presentAgentToolAccordionFromCalls,
-  timelineStepShowsWebSources,
-  timelineWebSourceHref,
-  type AgentTimelineState,
-  type AgentToolAccordionGroup,
-  type AgentToolAccordionRow,
-  type AgentToolAccordionView,
-  type TimelineBlock,
-  type TimelineStepKind,
-  type TimelineWebSource,
-} from '../../domain/agentTimeline'
+import { agentTimelineOrbState, agentTimelineStepToolName, timelineStepShowsWebSources, timelineWebSourceHref, type AgentTimelineState, type TimelineBlock, type TimelineStepKind, type TimelineWebSource } from '../../domain/agentTimeline'
+import { agentMcpServerBrandLogoSrc, agentMcpServerIdFromLabel, agentTimelineHasRenderableContent, agentToolAccordionElapsedLabel, agentToolIconKey, conversationTimelineStepTitle, presentAgentTimelineConversation, presentAgentToolAccordion, presentAgentToolAccordionFromCalls, type AgentToolAccordionGroup, type AgentToolAccordionRow, type AgentToolAccordionView } from '../../domain/agentToolAccordion'
 
 /** 单条任务消息内联展示的结果上限；更多结果去结果面板看，避免对话被结果流冲垮。 */
 const inlineRunResultLimit = 4

@@ -8,14 +8,7 @@ import {
   createAgentTimeline,
   displayWebSourceHostname,
   persistAgentLiveTimeline,
-  conversationTimelineStepTitle,
   isAgentPipelineTimelineStep,
-  agentToolAccordionElapsedLabel,
-  agentToolIconKey,
-  agentMcpServerIdFromLabel,
-  presentAgentTimelineConversation,
-  presentAgentToolAccordion,
-  presentAgentToolAccordionFromCalls,
   projectBotanicAgentRunOntoTimeline,
   reduceAgentTimeline,
   safeTimelineWebSources,
@@ -23,6 +16,15 @@ import {
   timelineStepShowsWebSources,
   timelineWebSourceHref,
 } from './agentTimeline.ts'
+import {
+  agentMcpServerIdFromLabel,
+  agentToolAccordionElapsedLabel,
+  agentToolIconKey,
+  conversationTimelineStepTitle,
+  presentAgentTimelineConversation,
+  presentAgentToolAccordion,
+  presentAgentToolAccordionFromCalls,
+} from './agentToolAccordion.ts'
 
 const toolCall = (
   id: string,
