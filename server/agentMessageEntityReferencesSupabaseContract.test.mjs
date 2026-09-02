@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
-const adapter = readFileSync(new URL('./supabaseProductStore.mjs', import.meta.url), 'utf8')
+const adapter = readFileSync(new URL('./store/supabaseProductStore.mjs', import.meta.url), 'utf8')
 
 function between(startText, endText) {
   const start = adapter.indexOf(startText)

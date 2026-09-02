@@ -8,7 +8,7 @@ import {
   agentActionReceiptClaimDecision,
   agentActionReceiptResolutionDecision,
   settledAgentActionReceipt,
-} from './productStoreContract.mjs'
+} from './store/productStoreContract.mjs'
 
 const user = { id: 'user-action-route' }
 const projectId = 'project-action-route'

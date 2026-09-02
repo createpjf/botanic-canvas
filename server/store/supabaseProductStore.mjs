@@ -1,15 +1,15 @@
 import { randomUUID } from 'node:crypto'
 import { agentThreadSummaryCompareAndSetDecision, canvasGraphConflictCode, canvasMutationConflictCode, canvasSyncEpochStaleError, normalizeAgentEntityIdPage, normalizeCanvasGraphMutation, normalizePendingAgentReviewRecoveryPage, normalizeStaleTurnQuery, normalizeTurnEventPage, normalizeUpdatedAtIdRecoveryPage, persistedAgentSkillVersion } from './productStoreContract.mjs'
 import { createClient } from '@supabase/supabase-js'
-import { isRetryableSupabaseError, retrySupabaseOperation } from './supabaseRetry.mjs'
-import { decodeAuthAssurance } from './authAssurance.mjs'
-import { assertProjectPermission, assertWorkspacePermission, projectPermissionDecision } from './authorization.mjs'
-import { sendResendInviteEmails } from './resendEmailService.mjs'
-import { artifactIndexLimits, artifactsFromActionReceipt, artifactsFromAgentMessage, artifactsFromDocument, artifactsFromGenerationJob, generationArtifactRefreshReport, generationArtifactsFromJobReport } from './botanicArtifactIndex.mjs'
-import { agentStateFromDocument, applyAgentSessionReadReceipts, compareAndSetAgentSessionSettings, mergeAgentStateIntoDocument, normalizeAgentSessionSettingsCommand, shouldApplyAgentEntityWrite, stripAgentMessagesFromDocument, validateAgentEntityWriteTimestamp, validateAgentMemoryEntity, validateAgentMessageEntity, validateAgentSessionEntity, validateAgentSessionReadReceipt } from './botanicAgentPersistence.mjs'
-import { agentMessageListOptions, encodeAgentMessageCursor, normalizeAgentSessionListLimit } from './agentMessagePersistence.mjs'
+import { isRetryableSupabaseError, retrySupabaseOperation } from '../supabaseRetry.mjs'
+import { decodeAuthAssurance } from '../authAssurance.mjs'
+import { assertProjectPermission, assertWorkspacePermission, projectPermissionDecision } from '../authorization.mjs'
+import { sendResendInviteEmails } from '../resendEmailService.mjs'
+import { artifactIndexLimits, artifactsFromActionReceipt, artifactsFromAgentMessage, artifactsFromDocument, artifactsFromGenerationJob, generationArtifactRefreshReport, generationArtifactsFromJobReport } from '../botanicArtifactIndex.mjs'
+import { agentStateFromDocument, applyAgentSessionReadReceipts, compareAndSetAgentSessionSettings, mergeAgentStateIntoDocument, normalizeAgentSessionSettingsCommand, shouldApplyAgentEntityWrite, stripAgentMessagesFromDocument, validateAgentEntityWriteTimestamp, validateAgentMemoryEntity, validateAgentMessageEntity, validateAgentSessionEntity, validateAgentSessionReadReceipt } from '../botanicAgentPersistence.mjs'
+import { agentMessageListOptions, encodeAgentMessageCursor, normalizeAgentSessionListLimit } from '../agentMessagePersistence.mjs'
 import { observeProductStoreRead, timedProductStoreRead } from './productStoreMetrics.mjs'
-import { collaborationActivitiesForMember, collaborationActivityListOptions, validateCollaborationActivity } from './collaborationActivityPersistence.mjs'
+import { collaborationActivitiesForMember, collaborationActivityListOptions, validateCollaborationActivity } from '../collaborationActivityPersistence.mjs'
 import {
   agentSubagentEnqueueDecision,
   materializeAgentSubagentEnqueueCommand,
@@ -17,13 +17,13 @@ import {
   normalizeRunnableAgentSubagentPage,
   publicAgentSubagent,
   publicAgentSubagentActivation,
-} from './agentSubagentPersistence.mjs'
+} from '../agentSubagentPersistence.mjs'
 import {
   materializeAgentContextCommand,
   normalizeAgentContextCompactionPage,
   publicAgentContextCompaction,
-} from './agentContextPersistence.mjs'
-import { BotanicAgentSkillError } from './botanicAgentSkill.mjs'
+} from '../agentContextPersistence.mjs'
+import { BotanicAgentSkillError } from '../botanicAgentSkill.mjs'
 
 const now = () => Date.now()
 const clone = (value) => structuredClone(value)

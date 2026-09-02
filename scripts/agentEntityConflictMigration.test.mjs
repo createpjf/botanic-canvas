@@ -6,8 +6,8 @@ const migrationUrl = new URL('../supabase/migrations/20260806120000_agent_run_au
 const migration = readFileSync(migrationUrl, 'utf8')
 const derivedFieldMigration = readFileSync(new URL('../supabase/migrations/20260827180000_agent_thread_summary_cas.sql', import.meta.url), 'utf8')
 const readReceiptMigration = readFileSync(new URL('../supabase/migrations/20260807120000_agent_session_read_receipts.sql', import.meta.url), 'utf8')
-const postgresStore = readFileSync(new URL('../server/postgresProductStore.mjs', import.meta.url), 'utf8')
-const supabaseStore = readFileSync(new URL('../server/supabaseProductStore.mjs', import.meta.url), 'utf8')
+const postgresStore = readFileSync(new URL('../server/store/postgresProductStore.mjs', import.meta.url), 'utf8')
+const supabaseStore = readFileSync(new URL('../server/store/supabaseProductStore.mjs', import.meta.url), 'utf8')
 
 test('Supabase RPC 原子合并 Agent 实体并校验项目/会话归属', () => {
   assert.match(migration, /create or replace function public\.botanic_sync_agent_entities/iu)

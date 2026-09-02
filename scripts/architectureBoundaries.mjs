@@ -19,12 +19,12 @@ const agentSamplingTransportForbidden = Object.freeze([
 // 从此列表移除文件是唯一"毕业"方式;新增条目需要维护者明确批准。
 export const MODULE_SIZE_CEILING = 800
 export const legacyOversizeBudgets = Object.freeze({
-  'server/postgresProductStore.mjs': 4514,
+  'server/store/postgresProductStore.mjs': 4514,
   'src/features/agent/AgentWorkspace.tsx': 3920,
   'src/features/canvas/CanvasWorkspace.tsx': 2930,
   'src/domain/agent.ts': 2870,
-  'server/supabaseProductStore.mjs': 2495,
-  'server/productStore.mjs': 2465,
+  'server/store/supabaseProductStore.mjs': 2495,
+  'server/store/productStore.mjs': 2465,
   'server/agentRoutes.mjs': 2263,
   'src/features/canvas/CanvasWorkspacePanels.tsx': 1921,
   'src/features/canvas/CanvasEditorViews.tsx': 1744,
@@ -36,7 +36,7 @@ export const legacyOversizeBudgets = Object.freeze({
   'server/botanicAgentTurn.mjs': 1273,
   'src/domain/agentTimeline.ts': 1257,
   'src/lib/db.ts': 1191,
-  'server/productStoreContract.mjs': 1185,
+  'server/store/productStoreContract.mjs': 1185,
   'server/generation/generationProcessor.mjs': 1041,
   'server/agentSubagentPersistence.mjs': 1001,
   'src/features/agent/AgentUtilityPanels.tsx': 955,

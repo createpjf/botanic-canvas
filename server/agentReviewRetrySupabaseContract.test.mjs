@@ -119,7 +119,7 @@ test('RPC 复刻 retry helper 的稳定身份、binding、legacy 与整批零写
 })
 
 test('Supabase Adapter 用 v2 RPC fail-fast，映射权限/契约错误并校验 retryRuns 响应', () => {
-  const source = readFileSync(new URL('./supabaseProductStore.mjs', import.meta.url), 'utf8')
+  const source = readFileSync(new URL('./store/supabaseProductStore.mjs', import.meta.url), 'utf8')
   const helperStart = source.indexOf('async function agentReviewHumanDecisionRpc')
   const helperEnd = source.indexOf('\n  async function recoveryKeysetRpc', helperStart)
   const helper = source.slice(helperStart, helperEnd)

@@ -3,8 +3,8 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
-import { canonicalHash } from './canonicalHash.mjs'
-import { createAgentSkill, deprecateAgentSkill, updateAgentSkill } from './botanicAgentSkill.mjs'
+import { canonicalHash } from '../canonicalHash.mjs'
+import { createAgentSkill, deprecateAgentSkill, updateAgentSkill } from '../botanicAgentSkill.mjs'
 import { createProductStore } from './productStore.mjs'
 import {
   agentActionManualRetryConsumptionDecision,

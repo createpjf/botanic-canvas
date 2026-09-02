@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 import { WebSocket } from 'ws'
 import * as Y from 'yjs'
-import { createProductStore } from './productStore.mjs'
+import { createProductStore } from './store/productStore.mjs'
 import { createProjectRealtimeHub } from './realtimeHub.mjs'
 import { issueRealtimeTicket } from './realtimeTicket.mjs'
 

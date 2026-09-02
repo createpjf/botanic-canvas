@@ -3,8 +3,8 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
 const migration = readFileSync(new URL('../supabase/migrations/20260827130000_agent_action_execution_claim.sql', import.meta.url), 'utf8')
-const supabaseStore = readFileSync(new URL('../server/supabaseProductStore.mjs', import.meta.url), 'utf8')
-const postgresStore = readFileSync(new URL('../server/postgresProductStore.mjs', import.meta.url), 'utf8')
+const supabaseStore = readFileSync(new URL('../server/store/supabaseProductStore.mjs', import.meta.url), 'utf8')
+const postgresStore = readFileSync(new URL('../server/store/postgresProductStore.mjs', import.meta.url), 'utf8')
 
 test('Supabase 用事务 RPC 在副作用前 claim，并以 lease token 条件收口', () => {
   assert.match(migration, /create or replace function public\.botanic_claim_agent_action_receipt/iu)

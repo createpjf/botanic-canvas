@@ -2,14 +2,14 @@
 
 import { createHash } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
-import { agentTurnRequestHash, agentTurnRequestHashVersion, storedAgentTurnRequestBinding } from './agentTurnRequestIdentity.mjs'
-import { agentTurnOutputPreviewCommitDecision, agentTurnOutputPreviewEventPayload } from './agentTurnOutputPreview.mjs'
+import { agentTurnRequestHash, agentTurnRequestHashVersion, storedAgentTurnRequestBinding } from '../agentTurnRequestIdentity.mjs'
+import { agentTurnOutputPreviewCommitDecision, agentTurnOutputPreviewEventPayload } from '../agentTurnOutputPreview.mjs'
 import {
   BotanicAgentSkillError,
   agentSkillExecutionContentHash,
   agentSkillVersion,
   validateAgentSkillVersionSnapshot,
-} from './botanicAgentSkill.mjs'
+} from '../botanicAgentSkill.mjs'
 
 /**
  * ProductStore 是项目、Agent、生成任务和审计持久化的服务端 seam。

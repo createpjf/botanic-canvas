@@ -3,12 +3,12 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
-import { productStoreCoreMethods } from './productStoreContract.mjs'
+import { productStoreCoreMethods } from './store/productStoreContract.mjs'
 
 const adapters = [
-  ['Local', readFileSync(new URL('./productStore.mjs', import.meta.url), 'utf8')],
-  ['PostgreSQL', readFileSync(new URL('./postgresProductStore.mjs', import.meta.url), 'utf8')],
-  ['Supabase', readFileSync(new URL('./supabaseProductStore.mjs', import.meta.url), 'utf8')],
+  ['Local', readFileSync(new URL('./store/productStore.mjs', import.meta.url), 'utf8')],
+  ['PostgreSQL', readFileSync(new URL('./store/postgresProductStore.mjs', import.meta.url), 'utf8')],
+  ['Supabase', readFileSync(new URL('./store/supabaseProductStore.mjs', import.meta.url), 'utf8')],
 ]
 const skillMigration = readFileSync(new URL(
   '../supabase/migrations/20260828220000_agent_skill_atomic_persistence.sql',

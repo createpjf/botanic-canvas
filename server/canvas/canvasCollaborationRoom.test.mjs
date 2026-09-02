@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import * as Y from 'yjs'
 import { createCanvasCollaborationRoom } from './canvasCollaborationRoom.mjs'
-import { canvasMutationConflictCode, normalizeCanvasGraphMutation } from '../productStoreContract.mjs'
+import { canvasMutationConflictCode, normalizeCanvasGraphMutation } from '../store/productStoreContract.mjs'
 
 function encodedNodeUpdate(id, x) {
   const document = new Y.Doc()

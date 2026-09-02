@@ -3,7 +3,7 @@ import { requireProjectPermission } from './projectAuthorization.mjs'
 import { projectCapabilities } from './authorization.mjs'
 import { collaborationChangeFromDocuments, decodeCollaborationActivityCursor, encodeCollaborationActivityCursor } from './collaborationActivityPersistence.mjs'
 import { filterAuditEvents } from './agentActionGovernance.mjs'
-import { canvasMutationConflictCode, canvasSyncEpochStaleCode } from './productStoreContract.mjs'
+import { canvasMutationConflictCode, canvasSyncEpochStaleCode } from './store/productStoreContract.mjs'
 
 const projectWritePermissionCodes = new Set(['PROJECT_ACCESS_FORBIDDEN', 'PROJECT_WRITE_FORBIDDEN'])
 

@@ -3,8 +3,8 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
 const migration = readFileSync(new URL('../supabase/migrations/20260827150000_agent_action_reconciliation.sql', import.meta.url), 'utf8')
-const adapter = readFileSync(new URL('../server/supabaseProductStore.mjs', import.meta.url), 'utf8')
-const contract = readFileSync(new URL('../server/productStoreContract.mjs', import.meta.url), 'utf8')
+const adapter = readFileSync(new URL('../server/store/supabaseProductStore.mjs', import.meta.url), 'utf8')
+const contract = readFileSync(new URL('../server/store/productStoreContract.mjs', import.meta.url), 'utf8')
 
 test('ProductStore 将行动调和与一次性授权消费列为三 Adapter 核心契约', () => {
   assert.match(contract, /'resolveAgentActionReceipt'/u)

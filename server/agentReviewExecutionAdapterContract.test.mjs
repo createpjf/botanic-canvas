@@ -7,8 +7,8 @@ import { createAgentReviewDecisionService } from './agentReviewDecisionService.m
 import { agentReviewPreparedCheckpoint } from './agentReviewExecution.mjs'
 import { agentReviewRetryRunId } from './agentReviewRetryMaterialization.mjs'
 import { agentReviewResultId } from './agentReviewTask.mjs'
-import { createProductStore } from './productStore.mjs'
-import { productStoreCoreMethods } from './productStoreContract.mjs'
+import { createProductStore } from './store/productStore.mjs'
+import { productStoreCoreMethods } from './store/productStoreContract.mjs'
 
 const reviewExecutionMethods = [
   'claimAgentReviewExecution',
@@ -882,7 +882,7 @@ test('Local Review Adapter：legacy retry decision 缺 materialization 时不补
 })
 
 test('PostgreSQL Review retry：在有界方法内锁 Task/Run，并按稳定 ID 原子插入后更新 Task', () => {
-  const postgres = readFileSync(new URL('./postgresProductStore.mjs', import.meta.url), 'utf8')
+  const postgres = readFileSync(new URL('./store/postgresProductStore.mjs', import.meta.url), 'utf8')
   const method = postgresMethodSource(
     postgres,
     'commitAgentReviewHumanDecisions',
@@ -906,8 +906,8 @@ test('PostgreSQL Review retry：在有界方法内锁 Task/Run，并按稳定 ID
 })
 
 test('PostgreSQL/Supabase Adapter 与迁移暴露同一 Review fence，SQL 使用 DB clock 与行锁', () => {
-  const postgres = readFileSync(new URL('./postgresProductStore.mjs', import.meta.url), 'utf8')
-  const supabase = readFileSync(new URL('./supabaseProductStore.mjs', import.meta.url), 'utf8')
+  const postgres = readFileSync(new URL('./store/postgresProductStore.mjs', import.meta.url), 'utf8')
+  const supabase = readFileSync(new URL('./store/supabaseProductStore.mjs', import.meta.url), 'utf8')
   const migration = readFileSync(new URL(
     '../supabase/migrations/20260828140000_agent_review_execution.sql',
     import.meta.url,
@@ -953,9 +953,9 @@ test('PostgreSQL/Supabase Adapter 与迁移暴露同一 Review fence，SQL 使�
 })
 
 test('Review 取消/对账三 Adapter 契约：DB clock、行锁、退出证明与 retry_once 上限同源', () => {
-  const local = readFileSync(new URL('./productStore.mjs', import.meta.url), 'utf8')
-  const postgres = readFileSync(new URL('./postgresProductStore.mjs', import.meta.url), 'utf8')
-  const supabase = readFileSync(new URL('./supabaseProductStore.mjs', import.meta.url), 'utf8')
+  const local = readFileSync(new URL('./store/productStore.mjs', import.meta.url), 'utf8')
+  const postgres = readFileSync(new URL('./store/postgresProductStore.mjs', import.meta.url), 'utf8')
+  const supabase = readFileSync(new URL('./store/supabaseProductStore.mjs', import.meta.url), 'utf8')
   const migration = readFileSync(new URL(
     '../supabase/migrations/20260828190000_agent_review_cancellation_reconciliation.sql',
     import.meta.url,

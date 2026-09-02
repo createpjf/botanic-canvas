@@ -9,7 +9,7 @@ import {
   commitCanvasProjectMutation,
   supportsDurableCanvasGraphMutation,
 } from '../canvas/canvasGraphCommitService.mjs'
-import { canvasSyncEpochStaleCode } from '../productStoreContract.mjs'
+import { canvasSyncEpochStaleCode } from '../store/productStoreContract.mjs'
 
 /**
  * 生成任务的提交、查询、取消与项目级结果对账模块。

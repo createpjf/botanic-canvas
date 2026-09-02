@@ -20,7 +20,7 @@ import {
   committedAgentTurnExecution,
   finalizedAgentTurnCancellation,
   requestedAgentTurnCancellation,
-} from './productStoreContract.mjs'
+} from './store/productStoreContract.mjs'
 import { createAgentTargetBinding } from './agentTargetBinding.mjs'
 
 const targetImage = 'data:image/png;base64,AQ=='

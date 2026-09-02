@@ -2,20 +2,20 @@ import { createHash, randomUUID } from 'node:crypto'
 import { agentActionManualRetryConsumptionDecision, agentActionReceiptClaimDecision, agentActionReceiptResolutionDecision, agentSkillPersistenceDecision, agentThreadSummaryCompareAndSetDecision, agentTurnExecutionClaimDecision, authoritativeAgentActionManualRetryAuthorization, canvasGraphConflictCode, canvasMutationConflictCode, canvasSyncEpochStaleError, committedAgentTurnExecution, finalizedAgentTurnCancellation, normalizeAgentEntityIdPage, normalizeCanvasGraphMutation, normalizePendingAgentReviewRecoveryPage, normalizeStaleTurnQuery, normalizeTurnEventPage, normalizeUpdatedAtIdRecoveryPage, persistedAgentSkillVersion, reclaimableAgentTurnStatuses, requestedAgentTurnCancellation, settledAgentActionReceipt } from './productStoreContract.mjs'
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
-import { assertProjectPermission, assertWorkspacePermission, projectPermissionDecision } from './authorization.mjs'
-import { artifactIndexLimits, artifactsFromActionReceipt, artifactsFromAgentMessage, artifactsFromDocument, artifactsFromGenerationJob, generationArtifactRefreshReport, generationArtifactsFromJobReport } from './botanicArtifactIndex.mjs'
-import { applyGenerationJobToAgentRun, mergeAgentRunForWrite } from './botanicAgentRun.mjs'
-import { agentStateFromDocument, applyAgentSessionReadReceipts, compareAndSetAgentSessionSettings, mergeAgentStateIntoDocument, shouldApplyAgentEntityWrite, shouldApplyAgentRunWrite, stripAgentMessagesFromDocument, validateAgentEntityWriteTimestamp, validateAgentMemoryEntity, validateAgentMessageEntity, validateAgentSessionEntity, validateAgentSessionReadReceipt } from './botanicAgentPersistence.mjs'
-import { agentMessageListOptions, encodeAgentMessageCursor, normalizeAgentSessionListLimit } from './agentMessagePersistence.mjs'
-import { mergeAgentMessageForWrite } from './agentMessageMerge.mjs'
+import { assertProjectPermission, assertWorkspacePermission, projectPermissionDecision } from '../authorization.mjs'
+import { artifactIndexLimits, artifactsFromActionReceipt, artifactsFromAgentMessage, artifactsFromDocument, artifactsFromGenerationJob, generationArtifactRefreshReport, generationArtifactsFromJobReport } from '../botanicArtifactIndex.mjs'
+import { applyGenerationJobToAgentRun, mergeAgentRunForWrite } from '../botanicAgentRun.mjs'
+import { agentStateFromDocument, applyAgentSessionReadReceipts, compareAndSetAgentSessionSettings, mergeAgentStateIntoDocument, shouldApplyAgentEntityWrite, shouldApplyAgentRunWrite, stripAgentMessagesFromDocument, validateAgentEntityWriteTimestamp, validateAgentMemoryEntity, validateAgentMessageEntity, validateAgentSessionEntity, validateAgentSessionReadReceipt } from '../botanicAgentPersistence.mjs'
+import { agentMessageListOptions, encodeAgentMessageCursor, normalizeAgentSessionListLimit } from '../agentMessagePersistence.mjs'
+import { mergeAgentMessageForWrite } from '../agentMessageMerge.mjs'
 import { observeProductStoreRead } from './productStoreMetrics.mjs'
-import { collaborationActivitiesForMember, nextCollaborationReceipt, validateCollaborationActivity } from './collaborationActivityPersistence.mjs'
-import { acknowledgedGenerationJobCancellation, committedGenerationJobExecution, comparedAndSetGenerationJob, generationJobExecutionClaimDecision, generationJobPutDecision, requestedGenerationJobCancellation } from './generation/generationJobExecution.mjs'
-import { idempotencyRequestBindingWriteDecision } from './idempotencyRequestBinding.mjs'
-import { agentBranchRetryClaimDecision, agentBranchRetryJobDecision } from './agentBranchRetryClaim.mjs'
-import { agentReviewCancellationFinalizeDecision, agentReviewCancellationRequestDecision, agentReviewExecutionClaimDecision, agentReviewTaskPutDecision, committedAgentReviewExecution } from './agentReviewExecution.mjs'
-import { agentReviewRetryMaterializationDecision } from './agentReviewRetryMaterialization.mjs'
-import { agentReviewOutcomeReconciliationDecision } from './agentReviewReconciliation.mjs'
+import { collaborationActivitiesForMember, nextCollaborationReceipt, validateCollaborationActivity } from '../collaborationActivityPersistence.mjs'
+import { acknowledgedGenerationJobCancellation, committedGenerationJobExecution, comparedAndSetGenerationJob, generationJobExecutionClaimDecision, generationJobPutDecision, requestedGenerationJobCancellation } from '../generation/generationJobExecution.mjs'
+import { idempotencyRequestBindingWriteDecision } from '../idempotencyRequestBinding.mjs'
+import { agentBranchRetryClaimDecision, agentBranchRetryJobDecision } from '../agentBranchRetryClaim.mjs'
+import { agentReviewCancellationFinalizeDecision, agentReviewCancellationRequestDecision, agentReviewExecutionClaimDecision, agentReviewTaskPutDecision, committedAgentReviewExecution } from '../agentReviewExecution.mjs'
+import { agentReviewRetryMaterializationDecision } from '../agentReviewRetryMaterialization.mjs'
+import { agentReviewOutcomeReconciliationDecision } from '../agentReviewReconciliation.mjs'
 import {
   agentSubagentActivationClaimDecision,
   agentSubagentActivationSettleDecision,
@@ -28,13 +28,13 @@ import {
   normalizeRunnableAgentSubagentPage,
   publicAgentSubagent,
   publicAgentSubagentActivation,
-} from './agentSubagentPersistence.mjs'
+} from '../agentSubagentPersistence.mjs'
 import {
   agentContextStateCompareAndSetDecision,
   materializeAgentContextCommand,
   normalizeAgentContextCompactionPage,
   publicAgentContextCompaction,
-} from './agentContextPersistence.mjs'
+} from '../agentContextPersistence.mjs'
 
 const schemaVersion = 1
 

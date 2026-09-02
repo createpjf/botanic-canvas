@@ -4,7 +4,7 @@ import test from 'node:test'
 
 const migrationUrl = new URL('../supabase/migrations/20260804140000_agent_artifact_index.sql', import.meta.url)
 const migration = readFileSync(migrationUrl, 'utf8')
-const postgresStoreUrl = new URL('../server/postgresProductStore.mjs', import.meta.url)
+const postgresStoreUrl = new URL('../server/store/postgresProductStore.mjs', import.meta.url)
 const postgresStore = readFileSync(postgresStoreUrl, 'utf8')
 
 test('Artifact Index 迁移在全部三类来源回填后执行事务内对账', () => {

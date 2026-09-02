@@ -6,7 +6,7 @@ import { generationIdempotencyKey, generationJobIdForIdempotency } from './gener
 export {
   agentActionManualRetryConsumptionDecision,
   agentActionReceiptResolutionDecision,
-} from './productStoreContract.mjs'
+} from './store/productStoreContract.mjs'
 
 const DEFAULT_MANUAL_RETRY_TTL_MS = 15 * 60_000
 const decisions = new Set(['confirmed_applied', 'confirmed_not_applied'])

@@ -4,7 +4,7 @@ import test from 'node:test'
 
 const migration = readFileSync(new URL('../supabase/migrations/20260827120000_agent_turn_runtime_statuses.sql', import.meta.url), 'utf8')
 const recoveryPaginationMigration = readFileSync(new URL('../supabase/migrations/20260827160000_agent_recovery_pagination.sql', import.meta.url), 'utf8')
-const supabaseStore = readFileSync(new URL('../server/supabaseProductStore.mjs', import.meta.url), 'utf8')
+const supabaseStore = readFileSync(new URL('../server/store/supabaseProductStore.mjs', import.meta.url), 'utf8')
 
 test('Supabase Agent Turn 状态词表与 ProductStore Runtime 保持一致', () => {
   assert.match(migration, /drop constraint if exists agent_turns_status_check/iu)

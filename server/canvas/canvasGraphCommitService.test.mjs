@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { commitCanvasProjectMutation } from './canvasGraphCommitService.mjs'
-import { canvasGraphConflictCode } from '../productStoreContract.mjs'
+import { canvasGraphConflictCode } from '../store/productStoreContract.mjs'
 
 test('图谱 CAS 重试会重读 tombstone 元数据，不复活并发删除的生成节点', async () => {
   const sourceNode = { id: 'source', type: 'text', position: { x: 10, y: 20 }, data: { label: '描述', content: '描述' } }

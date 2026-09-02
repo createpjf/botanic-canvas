@@ -3,11 +3,11 @@ import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
-import { createAgentThreadContext } from './agentThreadContext.mjs'
-import { canonicalHash } from './canonicalHash.mjs'
-import { agentTurnRequestHash } from './agentTurnRequestIdentity.mjs'
-import { createAgentSkill, deprecateAgentSkill, updateAgentSkill } from './botanicAgentSkill.mjs'
-import { createAgentTurnRecord } from './botanicAgentTurnRuntime.mjs'
+import { createAgentThreadContext } from '../agentThreadContext.mjs'
+import { canonicalHash } from '../canonicalHash.mjs'
+import { agentTurnRequestHash } from '../agentTurnRequestIdentity.mjs'
+import { createAgentSkill, deprecateAgentSkill, updateAgentSkill } from '../botanicAgentSkill.mjs'
+import { createAgentTurnRecord } from '../botanicAgentTurnRuntime.mjs'
 import { createProductStore } from './productStore.mjs'
 
 function document(id, name = '测试项目') {

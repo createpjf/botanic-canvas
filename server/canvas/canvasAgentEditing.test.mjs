@@ -9,7 +9,7 @@ import {
   createCanvasAgentEditExecutors,
 } from './canvasAgentEditing.mjs'
 import { generationJobProjectionComplete, reconcileGenerationResults } from '../generation/generationResultReconciliation.mjs'
-import { createProductStore } from '../productStore.mjs'
+import { createProductStore } from '../store/productStore.mjs'
 
 function projectDocument() {
   return {

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
-const source = readFileSync(new URL('./postgresProductStore.mjs', import.meta.url), 'utf8')
+const source = readFileSync(new URL('./store/postgresProductStore.mjs', import.meta.url), 'utf8')
 
 test('PostgreSQL 行动调和在同一事务锁内用数据库时钟写回执与安全 Audit', () => {
   assert.match(source, /resolveAgentActionReceipt[\s\S]*pg_advisory_xact_lock\(hashtextextended[\s\S]*for update/iu)

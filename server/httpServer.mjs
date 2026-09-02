@@ -14,7 +14,7 @@ import { AgentActionReconciliationError } from './agentActionReconciliation.mjs'
 import { McpClientError } from './mcpClient.mjs'
 // 能力探测：`authAssurance` 与 `lifecycle` 两处都用它，此前漏了导入 ——
 // 结果是启用 MFA 的部署一请求就 500、且优雅关闭必抛 ReferenceError。
-import { productStoreSupports } from './productStoreContract.mjs'
+import { productStoreSupports } from './store/productStoreContract.mjs'
 import { createAgentRunEventSubscriber } from './agentRunEventBus.mjs'
 import { createLocalCancelRegistry } from './localCancelRegistry.mjs'
 import { createCanvasRealtimeEventPublisher, createCanvasRealtimeEventSubscriber } from './canvas/canvasRealtimeEventBus.mjs'

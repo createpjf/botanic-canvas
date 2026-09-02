@@ -4,9 +4,9 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
-const local = readFileSync(new URL('./productStore.mjs', import.meta.url), 'utf8')
-const postgres = readFileSync(new URL('./postgresProductStore.mjs', import.meta.url), 'utf8')
-const supabase = readFileSync(new URL('./supabaseProductStore.mjs', import.meta.url), 'utf8')
+const local = readFileSync(new URL('./store/productStore.mjs', import.meta.url), 'utf8')
+const postgres = readFileSync(new URL('./store/postgresProductStore.mjs', import.meta.url), 'utf8')
+const supabase = readFileSync(new URL('./store/supabaseProductStore.mjs', import.meta.url), 'utf8')
 const persistence = readFileSync(new URL('./agentSubagentPersistence.mjs', import.meta.url), 'utf8')
 const migration = readFileSync(new URL(
   '../supabase/migrations/20260828200000_agent_subagent_runtime.sql',

@@ -6,7 +6,7 @@ import {
   committedAgentTurnExecution,
   finalizedAgentTurnCancellation,
   requestedAgentTurnCancellation,
-} from './productStoreContract.mjs'
+} from './store/productStoreContract.mjs'
 import { createLocalCancelRegistry } from './localCancelRegistry.mjs'
 
 function fakeStore() {

@@ -3,11 +3,11 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
-import { productStoreCoreMethods } from './productStoreContract.mjs'
+import { productStoreCoreMethods } from './store/productStoreContract.mjs'
 
-const local = readFileSync(new URL('./productStore.mjs', import.meta.url), 'utf8')
-const postgres = readFileSync(new URL('./postgresProductStore.mjs', import.meta.url), 'utf8')
-const supabase = readFileSync(new URL('./supabaseProductStore.mjs', import.meta.url), 'utf8')
+const local = readFileSync(new URL('./store/productStore.mjs', import.meta.url), 'utf8')
+const postgres = readFileSync(new URL('./store/postgresProductStore.mjs', import.meta.url), 'utf8')
+const supabase = readFileSync(new URL('./store/supabaseProductStore.mjs', import.meta.url), 'utf8')
 const threadContext = readFileSync(new URL('./agentThreadContext.mjs', import.meta.url), 'utf8')
 const agentRoutes = readFileSync(new URL('./agentRoutes.mjs', import.meta.url), 'utf8')
 const migration = readFileSync(new URL('../supabase/migrations/20260827180000_agent_thread_summary_cas.sql', import.meta.url), 'utf8')

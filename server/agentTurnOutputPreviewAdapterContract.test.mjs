@@ -6,10 +6,10 @@ const read = (path) => readFile(new URL(path, import.meta.url), 'utf8')
 
 test('TurnOutputPreview在三Adapter共用fence, Supabase迁移原子写元数据并由终态trigger清除', async () => {
   const [contract, local, postgres, supabase, migration] = await Promise.all([
-    read('./productStoreContract.mjs'),
-    read('./productStore.mjs'),
-    read('./postgresProductStore.mjs'),
-    read('./supabaseProductStore.mjs'),
+    read('./store/productStoreContract.mjs'),
+    read('./store/productStore.mjs'),
+    read('./store/postgresProductStore.mjs'),
+    read('./store/supabaseProductStore.mjs'),
     read('../supabase/migrations/20260901120000_agent_turn_output_preview.sql'),
   ])
   assert.match(contract, /agentTurnOutputPreviewCommitDecision.*turn\.outputPreview = previewDecision\.preview/su)
