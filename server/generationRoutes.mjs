@@ -8,7 +8,7 @@ import {
   canvasProjectMutationId,
   commitCanvasProjectMutation,
   supportsDurableCanvasGraphMutation,
-} from './canvasGraphCommitService.mjs'
+} from './canvas/canvasGraphCommitService.mjs'
 import { canvasSyncEpochStaleCode } from './productStoreContract.mjs'
 
 /**

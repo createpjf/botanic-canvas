@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import * as Y from 'yjs'
-import { createCanvasCollaborationRoom } from '../server/canvasCollaborationRoom.mjs'
+import { createCanvasCollaborationRoom } from '../server/canvas/canvasCollaborationRoom.mjs'
 import { runCanvasSyncEpoch2Cutover } from './canvasSyncEpoch2Cutover.mjs'
 
 function snapshotFor(graph) {

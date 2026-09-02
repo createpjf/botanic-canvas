@@ -11,7 +11,7 @@ import test from 'node:test'
  * 与 scripts/mediaFormatContract.test.mjs 同一手法：把源码当文本读，抠出字面量。
  */
 const domainSource = readFileSync(new URL('../src/domain/collaborativeGraph.ts', import.meta.url), 'utf8')
-const serverSource = readFileSync(new URL('../server/canvasCollaborationRoom.mjs', import.meta.url), 'utf8')
+const serverSource = readFileSync(new URL('../server/canvas/canvasCollaborationRoom.mjs', import.meta.url), 'utf8')
 
 function setLiteral(source, name, file) {
   const start = source.indexOf(`${name} = new Set([`)

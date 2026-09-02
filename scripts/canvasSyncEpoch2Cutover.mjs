@@ -4,7 +4,7 @@ import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { isDeepStrictEqual } from 'node:util'
 import postgres from 'postgres'
-import { createCanvasCollaborationRoom } from '../server/canvasCollaborationRoom.mjs'
+import { createCanvasCollaborationRoom } from '../server/canvas/canvasCollaborationRoom.mjs'
 
 const targetEpoch = 2
 

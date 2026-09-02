@@ -19,7 +19,7 @@ import {
   canvasProjectMutationId,
   commitCanvasProjectMutation,
   supportsDurableCanvasGraphMutation,
-} from './canvasGraphCommitService.mjs'
+} from './canvas/canvasGraphCommitService.mjs'
 
 /**
  * Agent Run 确认后的唯一生成提交模块。路由只调用这个小接口；配额、幂等、

@@ -1,5 +1,5 @@
 import * as Y from 'yjs'
-import { canvasGraphConflictCode } from './productStoreContract.mjs'
+import { canvasGraphConflictCode } from '../productStoreContract.mjs'
 
 const clone = (value) => structuredClone(value)
 const mediaReferenceKeys = new Set(['image', 'maskImage', 'externalImage', 'mediaUrl', 'thumbnailUrl', 'previewUrl'])

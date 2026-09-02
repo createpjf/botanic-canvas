@@ -8,8 +8,8 @@ import {
   applyBotanicAgentCanvasTextUpdate,
   createCanvasAgentEditExecutors,
 } from './canvasAgentEditing.mjs'
-import { generationJobProjectionComplete, reconcileGenerationResults } from './generationResultReconciliation.mjs'
-import { createProductStore } from './productStore.mjs'
+import { generationJobProjectionComplete, reconcileGenerationResults } from '../generationResultReconciliation.mjs'
+import { createProductStore } from '../productStore.mjs'
 
 function projectDocument() {
   return {

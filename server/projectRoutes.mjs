@@ -1,4 +1,4 @@
-import { applyCanvasDocumentPatch } from './canvasDocumentPatch.mjs'
+import { applyCanvasDocumentPatch } from './canvas/canvasDocumentPatch.mjs'
 import { requireProjectPermission } from './projectAuthorization.mjs'
 import { projectCapabilities } from './authorization.mjs'
 import { collaborationChangeFromDocuments, decodeCollaborationActivityCursor, encodeCollaborationActivityCursor } from './collaborationActivityPersistence.mjs'

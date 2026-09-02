@@ -9,7 +9,7 @@ import {
   canvasProjectMutationId,
   commitCanvasProjectMutation,
   supportsDurableCanvasGraphMutation,
-} from './canvasGraphCommitService.mjs'
+} from './canvas/canvasGraphCommitService.mjs'
 
 /**
  * 分支重试的唯一实现。

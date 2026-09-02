@@ -15,7 +15,7 @@ import {
   canvasProjectMutationId,
   commitCanvasProjectMutation,
   supportsDurableCanvasGraphMutation,
-} from './canvasGraphCommitService.mjs'
+} from './canvas/canvasGraphCommitService.mjs'
 
 const expectedProviderOutcomeCodes = new Set([
   'PROVIDER_REJECTED',

@@ -12,7 +12,7 @@ import {
   botanicAgentSystemSkills,
   createBotanicAgentActionToolRegistry,
 } from './botanicAgentTools.mjs'
-import { createCanvasAgentEditExecutors } from './canvasAgentEditing.mjs'
+import { createCanvasAgentEditExecutors } from './canvas/canvasAgentEditing.mjs'
 import { decodeAgentMessageCursor } from './agentMessagePersistence.mjs'
 import { decodeArtifactCursor, encodeArtifactCursor } from './botanicArtifactIndex.mjs'
 import { retryFailedWorkflowItems } from './productionWorkflow.mjs'

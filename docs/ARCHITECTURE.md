@@ -68,7 +68,7 @@ H3 的 MP4 与历史图片共用授权 URL，但历史缺少 `mediaKind` 时始�
 `src/lib/projectCollaboration.ts` 是协作图谱的单一入口，组合 `src/lib/projectRealtime.ts` 的连接重试
 与 `src/domain/collaborativeGraph.ts` 的 Yjs 增量。CRDT 只拥有节点、连线的即时协作；视角与选择态归本机 UI，
 媒体与任务结果归原有持久化模块。`server/realtimeHub.mjs` 只允许 owner/editor 发布增量，先经
-`server/canvasCollaborationRoom.mjs` 持久化成功，再按项目转发。项目元数据使用 `revision`，独立画布图谱使用
+`server/canvas/canvasCollaborationRoom.mjs` 持久化成功，再按项目转发。项目元数据使用 `revision`，独立画布图谱使用
 `graphRevision`；HTTP 写入只有在图谱确实变化时才校验后者，避免重命名等元数据操作误伤实时协作。
 写入成功后才发布 `project.updated`。本地存在未同步草稿时，
 `src/lib/db.ts` 会拒绝远端整份覆盖，网络恢复或页面重新聚焦仍作为 WebSocket 之外的降级路径。
@@ -83,7 +83,7 @@ API 重启后用快照与增量重建房间；累计 64 条后压缩，避免日
 最后一个客户端离开后，房间默认空闲 60 秒即释放。
 初始化失败的房间 Promise 不缓存，使短暂数据库故障恢复后可以重新连接。
 
-画布房间经 `server/canvasRealtimeEventBus.mjs` 使用 Redis Pub/Sub 跨 API 实例传播已持久化的 Yjs 增量与 Presence
+画布房间经 `server/canvas/canvasRealtimeEventBus.mjs` 使用 Redis Pub/Sub 跨 API 实例传播已持久化的 Yjs 增量与 Presence
 快照。来源实例先持久化再广播，远端实例只更新内存房间并转发给本机连接，不重复落库；实例 ID、事件 ID 与更新摘要
 共同阻止广播回环和重复应用，Yjs 负责乱序依赖补偿。Presence 只传播成员与连接数，按 TTL 清除失联实例；图片/视频
 字节、本机选择态和视角不进入事件总线。API 重启或切换实例后仍从 ProductStore 的物化图谱、快照和增量日志恢复。
