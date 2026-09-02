@@ -28,7 +28,7 @@ export const legacyOversizeBudgets = Object.freeze({
   'server/http/agentRoutes.mjs': 1849,
   'src/features/canvas/CanvasWorkspacePanels.tsx': 1921,
   'src/features/canvas/CanvasEditorViews.tsx': 1744,
-  'server/agent/tools/agentToolRuntime.mjs': 1524,
+  'server/agent/tools/agentToolRuntime.mjs': 1183,
   'src/features/agent/AgentConversationMessage.tsx': 1487,
   'server/agent/tools/botanicAgentTools.mjs': 1020,
   'src/lib/agentApi.ts': 1388,
