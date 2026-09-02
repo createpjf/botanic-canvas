@@ -8,9 +8,9 @@ import {
   createAgentContextCheckpointEnricher,
   enrichAgentContextCheckpoint,
 } from './agentContextSummarizer.mjs'
-import { resolveAgentModelContextPolicy } from '../../agentModelContextPolicy.mjs'
-import { createAgentModelContextRuntime } from '../../agentModelContextRuntime.mjs'
-import { sanitizeAgentModelContextCheckpoint } from '../../agentModelContextSurface.mjs'
+import { resolveAgentModelContextPolicy } from '../model/agentModelContextPolicy.mjs'
+import { createAgentModelContextRuntime } from '../model/agentModelContextRuntime.mjs'
+import { sanitizeAgentModelContextCheckpoint } from '../model/agentModelContextSurface.mjs'
 import { evaluateAgentContextShadow } from './agentContextShadowEvaluator.mjs'
 
 const deterministic = [

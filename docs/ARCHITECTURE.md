@@ -27,8 +27,8 @@ UI（App / features / components）
 | Node API | `server/index.mjs` | 鉴权后的 HTTP 与 WebSocket 接口；每类资源由独立 Route 模块拥有方法目录和 405 语义 | 队列、处理器、运行时组合根 |
 | 授权 | `server/authorization.mjs`、`server/projectAuthorization.mjs` | 工作区/项目权限决策与 403/404 语义 | ProductStore 的用户与项目成员关系，不依赖 UI |
 | 生成处理器 | `server/generation/generationProcessor.mjs` | `processGenerationJob(jobId)` | 注入的 ProductStore、Media 与 Provider |
-| Agent Run 生成服务 | `server/agentRunGenerationService.mjs` | 为已确认 Run 准备工作流、复用幂等任务、入队并回写项目 | ProductStore、生成队列、安全配额与实时事件 |
-| Agent Run 提交恢复 | `server/agentRunSubmissionSweep.mjs` | 稳定分页找出已落库但尚无首个 Job 的 queued Run，并委托既有提交或深取消服务收口 | ProductStore 只读恢复查询、Agent Run 生成服务、Agent 深取消服务；由 Worker 的 `run.submit` 周期任务驱动 |
+| Agent Run 生成服务 | `server/agent/run/agentRunGenerationService.mjs` | 为已确认 Run 准备工作流、复用幂等任务、入队并回写项目 | ProductStore、生成队列、安全配额与实时事件 |
+| Agent Run 提交恢复 | `server/agent/run/agentRunSubmissionSweep.mjs` | 稳定分页找出已落库但尚无首个 Job 的 queued Run，并委托既有提交或深取消服务收口 | ProductStore 只读恢复查询、Agent Run 生成服务、Agent 深取消服务；由 Worker 的 `run.submit` 周期任务驱动 |
 | Adapter | `server/*Store.mjs`、`server/objectStore.mjs` 等 | 产品存储、媒体、队列、第三方图像能力 | 各自外部系统；由 `server/runtime.mjs` 选择并组装 |
 
 模型能力由 `server/generation/generationModels.mjs` 统一声明，Worker 只能经
@@ -207,7 +207,7 @@ sticky 事实，迟到旧快照只能补绑 Turn 或取更早的取消时间，�
 `finalizeAgentTurnCancellation` 才把新事件、`lastSequence` 与 `cancelled` 终态原子提交。
 
 Run 落库到首个 Generation Job 落库之间另有独立崩溃窗口。Worker 的 `run.submit` 周期任务通过
-`server/agentRunSubmissionSweep.mjs` 按 Run ID 稳定分页，只选择仍缺少 Job 的 queued 分支；正常路径复用
+`server/agent/run/agentRunSubmissionSweep.mjs` 按 Run ID 稳定分页，只选择仍缺少 Job 的 queued 分支；正常路径复用
 `agentRunGeneration.submitGeneration` 的幂等、配额与 delegation fence，来源 Turn 已取消时则复用
 `agentCancellation.cancelAgentRun`，不在清扫器内另写一套 Job 创建或取消逻辑。
 浏览器 auto 模式也先持久化 pending Plan Message，再用 `Message ID + Plan 指纹` 派生的稳定 submission key 创建 Run；
@@ -263,7 +263,7 @@ Redis 发布成功都不是退出证明。当前 Worker 真正退出时用匹配
 既有身份和幂等键，也不返回 Prompt、媒体地址或 Provider 原始请求。浏览器通过 Agent API 读取简洁状态；技术阶段、
 失败类型、耗时、重试与回填状态留在可展开 Runtime/执行链路中。
 
-`server/agentRunObservability.mjs` 为 API 与 Worker 日志写入同一 traceId；失败分支继续使用原有幂等重试入口，
+`server/agent/run/agentRunObservability.mjs` 为 API 与 Worker 日志写入同一 traceId；失败分支继续使用原有幂等重试入口，
 已存在的 Job 在配额扣减前即被复用，因此重放不会重复创建任务或重复扣费。离线质量评测由
 `server/agentEvalSuite.mjs` + `scripts/evalGate.mjs` 承担，只消费固定夹具，普通验证不得调用真实 Provider。
 
@@ -283,7 +283,7 @@ OTLP exporter 故障必须 fail-open，不能改变 Turn、Tool、Queue 或 Prov
 项目权限由服务端区分读取、编辑、生成、内容删除、工作流修改、成员管理、外部工具、项目删除、审计与运行详情。
 Owner 可管理成员、读取治理信息并审批外部工具；Editor 可编辑、生成和维护工作流；Viewer 只读。UI 隐藏按钮不是鉴权边界。
 
-`server/agentActionGovernance.mjs` 把 Agent 工具映射为项目权限。付费生成与外部工具行动必须携带绑定项目和工具调用的
+`server/agent/action/agentActionGovernance.mjs` 把 Agent 工具映射为项目权限。付费生成与外部工具行动必须携带绑定项目和工具调用的
 短期审批；过期、跨项目或跨行动审批均由服务端拒绝。审计导出只允许白名单字段，不返回 Prompt、密钥、原始请求或私有媒体地址。
 
 `server/agentActionExecution.mjs` 在执行副作用前以 Action Receipt 原子取得所有权。回执将同一提交键绑定到

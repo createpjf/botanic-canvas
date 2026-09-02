@@ -1,5 +1,5 @@
 import { resolveBotanicAgentImageDataUrl } from '../../botanicAgentVision.mjs'
-import { createBotanicAgentModelProvider } from '../../botanicAgentModelProvider.mjs'
+import { createBotanicAgentModelProvider } from '../model/botanicAgentModelProvider.mjs'
 import { normalizeBotanicAgentLocale } from '../../agentInstructions.mjs'
 
 /**

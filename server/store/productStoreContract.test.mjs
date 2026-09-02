@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { canonicalHash } from '../canonicalHash.mjs'
-import { createAgentSkill, deprecateAgentSkill, updateAgentSkill } from '../botanicAgentSkill.mjs'
+import { createAgentSkill, deprecateAgentSkill, updateAgentSkill } from '../agent/action/botanicAgentSkill.mjs'
 import { createProductStore } from './productStore.mjs'
 import {
   agentActionManualRetryConsumptionDecision,

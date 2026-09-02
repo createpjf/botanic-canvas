@@ -6,7 +6,7 @@ import {
   validateSubtaskOutputShape,
 } from '../../agentSubtask.mjs'
 import { canonicalHash } from '../../canonicalHash.mjs'
-import { createBotanicAgentModelProvider } from '../../botanicAgentModelProvider.mjs'
+import { createBotanicAgentModelProvider } from '../model/botanicAgentModelProvider.mjs'
 import {
   freezeAgentStepSnapshot,
   runAgentToolLoop as executeAgentToolLoop,

@@ -3,9 +3,9 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
-import { createPersistentAgentRun } from './botanicAgentRun.mjs'
-import { createIdempotencyRequestBinding } from './idempotencyRequestBinding.mjs'
-import { createProductStore } from './store/productStore.mjs'
+import { createPersistentAgentRun } from '../../botanicAgentRun.mjs'
+import { createIdempotencyRequestBinding } from '../../idempotencyRequestBinding.mjs'
+import { createProductStore } from '../../store/productStore.mjs'
 
 function harness() {
   const directory = mkdtempSync(join(tmpdir(), 'botanic-branch-retry-claim-'))
@@ -105,10 +105,10 @@ test('Local Adapter 的 Branch claim 与 Job identity 同事务：跨入口同 I
 })
 
 test('PostgreSQL/Supabase Adapter 与新增 migration 暴露同一原子 Branch retry claim', () => {
-  const postgres = readFileSync(new URL('./store/postgresProductStore.mjs', import.meta.url), 'utf8')
-  const supabase = readFileSync(new URL('./store/supabaseProductStore.mjs', import.meta.url), 'utf8')
+  const postgres = readFileSync(new URL('../../store/postgresProductStore.mjs', import.meta.url), 'utf8')
+  const supabase = readFileSync(new URL('../../store/supabaseProductStore.mjs', import.meta.url), 'utf8')
   const migration = readFileSync(new URL(
-    '../supabase/migrations/20260828130000_agent_branch_retry_claim.sql',
+    '../../../supabase/migrations/20260828130000_agent_branch_retry_claim.sql',
     import.meta.url,
   ), 'utf8')
 

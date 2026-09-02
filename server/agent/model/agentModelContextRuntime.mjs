@@ -8,8 +8,8 @@ import {
   pruneAgentModelContextSurface,
   sanitizeAgentModelContextCheckpoint,
 } from './agentModelContextSurface.mjs'
-import { createAgentTokenUsageAnchor, measureAgentModelContextSurface } from './agentTokenMeter.mjs'
-import { buildThreadSummaryCheckpoint, renderThreadSummary } from './agentThreadSummary.mjs'
+import { createAgentTokenUsageAnchor, measureAgentModelContextSurface } from '../../agentTokenMeter.mjs'
+import { buildThreadSummaryCheckpoint, renderThreadSummary } from '../../agentThreadSummary.mjs'
 
 function checkpointFromMessages(messages, locale) {
   const candidates = messages.flatMap((message, index) => {

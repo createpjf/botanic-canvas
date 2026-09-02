@@ -1,25 +1,25 @@
-import { persistedGenerationJob } from './generation/generationProvider.mjs'
-import { failUnsubmittedPersistentAgentRun, publicAgentRun } from './botanicAgentRun.mjs'
-import { prepareAgentRunExecution, reconcileAgentGenerationJobToProject } from './botanicAgentExecution.mjs'
-import { AgentToolRuntimeError } from './agentToolRuntime.mjs'
-import { generationJobIdForIdempotency } from './generation/generationIdempotency.mjs'
-import { buildGenerationUsage, releaseGenerationBudget, reserveGenerationBudget } from './generation/generationGovernance.mjs'
+import { persistedGenerationJob } from '../../generation/generationProvider.mjs'
+import { failUnsubmittedPersistentAgentRun, publicAgentRun } from '../../botanicAgentRun.mjs'
+import { prepareAgentRunExecution, reconcileAgentGenerationJobToProject } from '../../botanicAgentExecution.mjs'
+import { AgentToolRuntimeError } from '../../agentToolRuntime.mjs'
+import { generationJobIdForIdempotency } from '../../generation/generationIdempotency.mjs'
+import { buildGenerationUsage, releaseGenerationBudget, reserveGenerationBudget } from '../../generation/generationGovernance.mjs'
 import {
   agentRunCompiledPlanProvenance,
   assertCreativePlanReferenceBindings,
   compileRunCreativePlan,
   createCreativePlanReferenceBindings,
-} from './creativePlanResolver.mjs'
-import { findBrandKit, globalBrandKitLibraryId } from './brandKit.mjs'
-import { AgentDelegationFenceError, assertTurnAllowsDelegation } from './agentCancellationService.mjs'
-import { cancelGenerationJob } from './generation/generationCancellation.mjs'
-import { compareAndSetGenerationJob } from './generation/generationJobCas.mjs'
-import { assertAgentTargetBinding } from './agentTargetBinding.mjs'
+} from '../../creativePlanResolver.mjs'
+import { findBrandKit, globalBrandKitLibraryId } from '../../brandKit.mjs'
+import { AgentDelegationFenceError, assertTurnAllowsDelegation } from '../../agentCancellationService.mjs'
+import { cancelGenerationJob } from '../../generation/generationCancellation.mjs'
+import { compareAndSetGenerationJob } from '../../generation/generationJobCas.mjs'
+import { assertAgentTargetBinding } from '../../agentTargetBinding.mjs'
 import {
   canvasProjectMutationId,
   commitCanvasProjectMutation,
   supportsDurableCanvasGraphMutation,
-} from './canvas/canvasGraphCommitService.mjs'
+} from '../../canvas/canvasGraphCommitService.mjs'
 
 /**
  * Agent Run 确认后的唯一生成提交模块。路由只调用这个小接口；配额、幂等、

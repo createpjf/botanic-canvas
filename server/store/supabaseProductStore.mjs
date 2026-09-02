@@ -23,7 +23,7 @@ import {
   normalizeAgentContextCompactionPage,
   publicAgentContextCompaction,
 } from '../agent/context/agentContextPersistence.mjs'
-import { BotanicAgentSkillError } from '../botanicAgentSkill.mjs'
+import { BotanicAgentSkillError } from '../agent/action/botanicAgentSkill.mjs'
 
 const now = () => Date.now()
 const clone = (value) => structuredClone(value)

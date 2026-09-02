@@ -5,7 +5,7 @@ import test from 'node:test'
 const worker = readFileSync(new URL('../server/worker.mjs', import.meta.url), 'utf8')
 
 test('Worker 用既有生成与深取消服务构造 Run 提交恢复器', () => {
-  assert.match(worker, /import \{ createAgentRunSubmissionSweep \} from '\.\/agentRunSubmissionSweep\.mjs'/u)
+  assert.match(worker, /import \{ createAgentRunSubmissionSweep \} from '\.\/agent\/run\/agentRunSubmissionSweep\.mjs'/u)
   const composition = worker.slice(
     worker.indexOf('const sweepQueuedAgentRuns = createAgentRunSubmissionSweep'),
     worker.indexOf('cancelStaleAgentTurn ='),

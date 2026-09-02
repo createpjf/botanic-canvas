@@ -1,12 +1,12 @@
 // @ts-check
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { agentActionIntentHash } from './agentActionExecution.mjs'
-import { canonicalHash } from './canonicalHash.mjs'
-import { generationIdempotencyKey, generationJobIdForIdempotency } from './generation/generationIdempotency.mjs'
+import { canonicalHash } from '../../canonicalHash.mjs'
+import { generationIdempotencyKey, generationJobIdForIdempotency } from '../../generation/generationIdempotency.mjs'
 export {
   agentActionManualRetryConsumptionDecision,
   agentActionReceiptResolutionDecision,
-} from './store/productStoreContract.mjs'
+} from '../../store/productStoreContract.mjs'
 
 const DEFAULT_MANUAL_RETRY_TTL_MS = 15 * 60_000
 const decisions = new Set(['confirmed_applied', 'confirmed_not_applied'])

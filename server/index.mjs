@@ -1,7 +1,7 @@
 import { createGenerationQueue } from './generation/generationQueue.mjs'
 import { createAgentSubagentQueue } from './agent/subagent/agentSubagentQueue.mjs'
 import { createConfiguredMcpRuntime } from './mcpClient.mjs'
-import { createAgentRunEventPublisher } from './agentRunEventBus.mjs'
+import { createAgentRunEventPublisher } from './agent/run/agentRunEventBus.mjs'
 import { createProductRuntime, loadLocalEnv, runtimeConfig } from './runtime.mjs'
 import { installDatabaseResilience } from './databaseResilience.mjs'
 import { createSecurityControls } from './securityControls.mjs'

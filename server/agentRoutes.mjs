@@ -3,7 +3,7 @@ import { BotanicAgentChatError, validateBotanicAgentChatInput } from './botanicA
 import { reviewBotanicAgentRunResults } from './agent/review/botanicAgentReview.mjs'
 import { normalizeBotanicAgentLocale } from './agentInstructions.mjs'
 import { validateBotanicAgentTurnInput } from './agent/turn/botanicAgentTurn.mjs'
-import { createAgentSkill, isUsableAgentSkill, publicAgentSkill, validateAgentSkillCreation } from './botanicAgentSkill.mjs'
+import { createAgentSkill, isUsableAgentSkill, publicAgentSkill, validateAgentSkillCreation } from './agent/action/botanicAgentSkill.mjs'
 import { agentRunSubmissionBinding, createPersistentAgentRun, prepareAgentBranchRetry, publicAgentRun, storedAgentRunSubmissionBinding, validateAgentRunCreation } from './botanicAgentRun.mjs'
 import { AgentToolRuntimeError, executeConfirmedAgentAction } from './agentToolRuntime.mjs'
 import {
@@ -22,7 +22,7 @@ import { retargetGenerationJobForRetry } from './generation/generationResultReco
 import { requireProjectPermission } from './projectAuthorization.mjs'
 import { projectPermissionDecision } from './authorization.mjs'
 import { buildAgentExecutionTrace } from './agentExecutionTrace.mjs'
-import { actionArgumentsHash, agentToolPermission, assertFreshActionApproval, createActionApprovalToken } from './agentActionGovernance.mjs'
+import { actionArgumentsHash, agentToolPermission, assertFreshActionApproval, createActionApprovalToken } from './agent/action/agentActionGovernance.mjs'
 import { createBotanicAgentTurnRuntime } from './agent/turn/botanicAgentTurnRuntime.mjs'
 import { configuredAgentGenerationModels, createAgentTurnSubmission } from './agent/turn/agentTurnSubmission.mjs'
 import { createAgentTurnHttpAdapter } from './agent/turn/agentTurnRoutes.mjs'
@@ -31,7 +31,7 @@ import { createLocalCancelRegistry } from './localCancelRegistry.mjs'
 import { publicAgentReviewTask } from './agent/review/agentReviewTask.mjs'
 import { AgentReviewDecisionServiceError, createAgentReviewDecisionService } from './agent/review/agentReviewDecisionService.mjs'
 import { createAgentReviewService } from './agent/review/agentReviewService.mjs'
-import { createAgentBranchRetryService } from './agentBranchRetryService.mjs'
+import { createAgentBranchRetryService } from './agent/run/agentBranchRetryService.mjs'
 import { createProductionWorkflowPublishService } from './productionWorkflowPublishService.mjs'
 import { selectBotanicAgentMemory } from './botanicAgentMemory.mjs'
 import { buildThreadSummaryCheckpoint, shouldCompactThread } from './agentThreadSummary.mjs'
@@ -49,12 +49,12 @@ import {
 } from './agentManualContextCompactionService.mjs'
 import { compareBotanicAgentRunBranches } from './botanicAgentCompare.mjs'
 import { createForkedAgentRunInput, forkedAgentRunIdForIdempotency } from './botanicAgentFork.mjs'
-import { createAgentActionExecution } from './agentActionExecution.mjs'
+import { createAgentActionExecution } from './agent/action/agentActionExecution.mjs'
 import {
   agentActionReconciliationIdentity,
   agentActionReconciliationStoreError,
   createAgentActionReconciliation,
-} from './agentActionReconciliation.mjs'
+} from './agent/action/agentActionReconciliation.mjs'
 import { AgentDelegationFenceError, assertTurnAllowsDelegation, createAgentCancellationService } from './agentCancellationService.mjs'
 import { matchingIdempotencyRequestBinding } from './idempotencyRequestBinding.mjs'
 import { createAgentMessageRouteHandler } from './agentMessageRoutes.mjs'

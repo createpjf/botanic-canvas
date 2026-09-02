@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createAgentRunGenerationService } from './agentRunGenerationService.mjs'
-import { createAgentTargetBinding } from './agentTargetBinding.mjs'
+import { createAgentTargetBinding } from '../../agentTargetBinding.mjs'
 
 const settings = { model: 'gpt-image-2', aspectRatio: '3:4', resolution: '2K' }
 const models = [{ id: 'gpt-image-2', provider: 'openai', mediaKind: 'image', aspectRatios: ['3:4'], resolutions: ['2K'] }]

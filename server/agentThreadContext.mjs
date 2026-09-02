@@ -17,7 +17,7 @@ import {
   truncateAgentContextText,
 } from './agent/context/agentContextBudget.mjs'
 import { createAgentContextCoordinator } from './agent/context/agentContextCoordinator.mjs'
-import { resolveAgentModelContextPolicy } from './agentModelContextPolicy.mjs'
+import { resolveAgentModelContextPolicy } from './agent/model/agentModelContextPolicy.mjs'
 import { evaluateAgentContextShadow } from './agent/context/agentContextShadowEvaluator.mjs'
 import { agentMentionOnlyInstruction, agentMentionReferenceLine } from './agentMentionModelText.mjs'
 

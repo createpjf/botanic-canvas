@@ -1,6 +1,6 @@
 // @ts-check
 import { randomUUID } from 'node:crypto'
-import { canonicalHash } from './canonicalHash.mjs'
+import { canonicalHash } from '../../canonicalHash.mjs'
 
 const DEFAULT_TIMEOUT_MS = 15_000
 const DEFAULT_LEASE_MS = 60_000

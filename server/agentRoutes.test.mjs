@@ -2790,7 +2790,7 @@ test('写工具按项目角色进注册表：Viewer 一个都拿不到', async (
 })
 
 test('服务端权限表与工具暴露判定同源，不会出现看不到却调得动', async () => {
-  const { agentToolPermission } = await import('./agentActionGovernance.mjs')
+  const { agentToolPermission } = await import('./agent/action/agentActionGovernance.mjs')
   const { OPERATIONAL_ACTION_TOOLS, operationalActionToolsForRole } = await import('./botanicAgentOperationalTools.mjs')
   const { projectPermissionDecision } = await import('./authorization.mjs')
   for (const role of ['viewer', 'editor', 'owner']) {

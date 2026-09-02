@@ -1,5 +1,5 @@
 // @ts-check
-import { createBotanicAgentModelProvider } from '../../botanicAgentModelProvider.mjs'
+import { createBotanicAgentModelProvider } from '../model/botanicAgentModelProvider.mjs'
 
 /**
  * 评审第 2 层：视觉模型语义判定（ADR 0006 / Epic 5）。

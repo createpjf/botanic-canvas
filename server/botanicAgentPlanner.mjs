@@ -1,5 +1,5 @@
 import { AgentToolRuntimeError, freezeAgentStepSnapshot, runAgentToolLoop } from './agentToolRuntime.mjs'
-import { createBotanicAgentModelProvider } from './botanicAgentModelProvider.mjs'
+import { createBotanicAgentModelProvider } from './agent/model/botanicAgentModelProvider.mjs'
 import {
   BOTANIC_AGENT_MOUNTED_SKILL_LIMIT,
   botanicAgentMountedSkillBriefing,
@@ -28,7 +28,7 @@ import {
   normalizeCustomGenerationSize,
 } from './generation/generationOutputSize.mjs'
 import { canonicalHash } from './canonicalHash.mjs'
-import { resolveAgentModelContextBinding } from './agentModelContextBinding.mjs'
+import { resolveAgentModelContextBinding } from './agent/model/agentModelContextBinding.mjs'
 
 const INTENTS = new Set([
   'continue_generation', 'replace_scene', 'replace_person', 'replace_product',

@@ -1,6 +1,6 @@
 // @ts-check
 
-import { canonicalHash } from './canonicalHash.mjs'
+import { canonicalHash } from '../../canonicalHash.mjs'
 
 const POLICY_KEYS = new Set([
   'id',

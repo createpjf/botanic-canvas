@@ -1,6 +1,6 @@
 import { createHmac, timingSafeEqual } from 'node:crypto'
-import { AgentToolRuntimeError } from './agentToolRuntime.mjs'
-import { canonicalHash } from './canonicalHash.mjs'
+import { AgentToolRuntimeError } from '../../agentToolRuntime.mjs'
+import { canonicalHash } from '../../canonicalHash.mjs'
 
 const permissions = Object.freeze({
   generation_submit: 'create-generation',

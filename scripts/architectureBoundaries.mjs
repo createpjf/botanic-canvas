@@ -46,7 +46,7 @@ export const legacyOversizeBudgets = Object.freeze({
   'server/botanicAgentPersistence.mjs': 889,
   'server/botanicAgentPlanner.mjs': 883,
   'src/features/canvas/useCanvasAgentExecutionBridge.ts': 862,
-  'server/botanicAgentSkill.mjs': 821,
+  'server/agent/action/botanicAgentSkill.mjs': 821,
   // 生成的 Bob 角色动画资产(坐标表+渲染循环),按资产豁免而非业务模块。
   'src/components/bob/character-runtime.js': 3865,
 })

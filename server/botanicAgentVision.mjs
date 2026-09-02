@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { createBotanicAgentModelProvider } from './botanicAgentModelProvider.mjs'
+import { createBotanicAgentModelProvider } from './agent/model/botanicAgentModelProvider.mjs'
 
 /**
  * 受控看图：用网关上的视觉模型（默认 Gemini Flash）识别用户引用的画布图片，

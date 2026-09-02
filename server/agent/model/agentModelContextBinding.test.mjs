@@ -7,7 +7,7 @@ import {
   resolveAgentModelContextBinding,
 } from './agentModelContextBinding.mjs'
 import { resolveAgentModelContextPolicy } from './agentModelContextPolicy.mjs'
-import { canonicalHash } from './canonicalHash.mjs'
+import { canonicalHash } from '../../canonicalHash.mjs'
 
 const policy = resolveAgentModelContextPolicy('model-a')
 const runtime = {

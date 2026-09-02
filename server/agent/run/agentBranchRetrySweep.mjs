@@ -1,7 +1,7 @@
 // @ts-check
 import { branchesEligibleForRetry } from './agentBranchRetryPolicy.mjs'
-import { generationIdempotencyKey } from './generation/generationIdempotency.mjs'
-import { boundedSweepPageSize, nextUpdatedAtIdSweepCursor } from './updatedAtIdSweepCursor.mjs'
+import { generationIdempotencyKey } from '../../generation/generationIdempotency.mjs'
+import { boundedSweepPageSize, nextUpdatedAtIdSweepCursor } from '../../updatedAtIdSweepCursor.mjs'
 
 /**
  * 失败分支自动重试的周期清扫（Epic 5）。

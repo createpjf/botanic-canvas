@@ -1,5 +1,5 @@
 import { readFile } from 'node:fs/promises'
-import { createBotanicAgentModelProvider } from './botanicAgentModelProvider.mjs'
+import { createBotanicAgentModelProvider } from './agent/model/botanicAgentModelProvider.mjs'
 
 const PROMPT_REFINER_SKILL = new URL('./skills/prompt-refiner/SKILL.md', import.meta.url)
 const BOTANIC_FASHION_SKILL = new URL('./skills/botanic-fashion-prompt/SKILL.md', import.meta.url)

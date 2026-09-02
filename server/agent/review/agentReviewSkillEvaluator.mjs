@@ -1,8 +1,8 @@
 // @ts-check
 import { createAgentSubtask } from '../../agentSubtask.mjs'
-import { createBotanicAgentModelProvider } from '../../botanicAgentModelProvider.mjs'
+import { createBotanicAgentModelProvider } from '../model/botanicAgentModelProvider.mjs'
 import { runAgentSubtask } from '../../agentSubtaskScheduler.mjs'
-import { isEvaluatorSkill } from '../../botanicAgentSkill.mjs'
+import { isEvaluatorSkill } from '../action/botanicAgentSkill.mjs'
 
 /**
  * 评审第 3 类判据：**项目自定义的 evaluator Skill**（Epic 6 × Epic 11）。

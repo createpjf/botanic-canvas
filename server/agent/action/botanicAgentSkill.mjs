@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { canonicalHash } from './canonicalHash.mjs'
+import { canonicalHash } from '../../canonicalHash.mjs'
 
 /**
  * 能力词表，**顺序即风险高低**。风险语义归 Skill 模块所有，`botanicAgentTools`

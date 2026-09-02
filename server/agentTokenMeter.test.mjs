@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { resolveAgentModelContextPolicy } from './agentModelContextPolicy.mjs'
-import { createAgentModelContextSurface } from './agentModelContextSurface.mjs'
+import { resolveAgentModelContextPolicy } from './agent/model/agentModelContextPolicy.mjs'
+import { createAgentModelContextSurface } from './agent/model/agentModelContextSurface.mjs'
 import {
   AgentTokenMeterError,
   createAgentTokenUsageAnchor,

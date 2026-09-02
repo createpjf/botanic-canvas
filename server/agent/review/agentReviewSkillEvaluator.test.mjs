@@ -8,7 +8,7 @@ import {
   evaluatorSkillCriteria,
   runEvaluatorSkillCriterion,
 } from './agentReviewSkillEvaluator.mjs'
-import { normalizeAgentSkillManifest } from '../../botanicAgentSkill.mjs'
+import { normalizeAgentSkillManifest } from '../action/botanicAgentSkill.mjs'
 
 const evaluatorManifest = {
   kind: 'evaluator',

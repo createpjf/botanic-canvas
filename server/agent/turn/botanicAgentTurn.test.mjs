@@ -3,7 +3,7 @@ import test from 'node:test'
 import { BotanicAgentChatError } from '../../botanicAgentChat.mjs'
 import { resolveBotanicAgentTurn, validateBotanicAgentTurnInput } from './botanicAgentTurn.mjs'
 import { botanicAgentContextBriefing, buildBotanicAgentOntology } from '../../botanicAgentOntology.mjs'
-import { resolveAgentModelContextPolicy } from '../../agentModelContextPolicy.mjs'
+import { resolveAgentModelContextPolicy } from '../model/agentModelContextPolicy.mjs'
 import { canonicalHash } from '../../canonicalHash.mjs'
 
 const runtime = {

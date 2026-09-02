@@ -9,7 +9,7 @@ import {
   agentSkillExecutionContentHash,
   agentSkillVersion,
   validateAgentSkillVersionSnapshot,
-} from '../botanicAgentSkill.mjs'
+} from '../agent/action/botanicAgentSkill.mjs'
 
 /**
  * ProductStore 是项目、Agent、生成任务和审计持久化的服务端 seam。

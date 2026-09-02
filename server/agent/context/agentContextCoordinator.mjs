@@ -5,7 +5,7 @@ import {
   agentContextMessageCursorHash,
   resolveAgentContextCompaction,
 } from './agentContextCompaction.mjs'
-import { resolveAgentModelContextPolicy } from '../../agentModelContextPolicy.mjs'
+import { resolveAgentModelContextPolicy } from '../model/agentModelContextPolicy.mjs'
 
 const MAX_LEDGER_PAGES = 20
 

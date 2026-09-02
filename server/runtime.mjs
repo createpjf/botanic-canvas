@@ -14,7 +14,7 @@ import { resolveInviteRedirectTo } from './inviteRedirect.mjs'
 import { createResendEmailService } from './resendEmailService.mjs'
 import { assertProductStoreContract } from './store/productStoreContract.mjs'
 import { createRolloutFlags, resolveAgentFeatureFlags } from './featureFlags.mjs'
-import { parseAgentModelContextPolicies } from './agentModelContextPolicy.mjs'
+import { parseAgentModelContextPolicies } from './agent/model/agentModelContextPolicy.mjs'
 import { resolveBotanicTelemetryConfig } from './botanicTelemetry.mjs'
 
 function boundedInteger(value, fallback, minimum, maximum) {

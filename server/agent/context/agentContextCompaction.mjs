@@ -6,7 +6,7 @@ import {
   compactAgentModelContextSurface,
   createAgentModelContextSurface,
   sanitizeAgentModelContextCheckpoint,
-} from '../../agentModelContextSurface.mjs'
+} from '../model/agentModelContextSurface.mjs'
 import { measureAgentModelContextSurface } from '../../agentTokenMeter.mjs'
 import { buildThreadSummaryCheckpoint, renderThreadSummary } from '../../agentThreadSummary.mjs'
 import { agentMentionOnlyInstruction, agentMentionReferenceLine } from '../../agentMentionModelText.mjs'

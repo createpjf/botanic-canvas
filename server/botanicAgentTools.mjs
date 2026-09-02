@@ -15,7 +15,7 @@ import {
   normalizeBotanicAgentSkillCapabilities,
   resolveAgentSkillDependencyClosure,
   skillRiskOrder,
-} from './botanicAgentSkill.mjs'
+} from './agent/action/botanicAgentSkill.mjs'
 import { estimateAgentContextTokens } from './agent/context/agentContextBudget.mjs'
 import { AGENT_SEMANTIC_EVENT_NAMES, writeAgentSemanticEvent } from './agentSemanticEvent.mjs'
 

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { canonicalHash } from '../../canonicalHash.mjs'
-import { resolveAgentModelContextPolicy } from '../../agentModelContextPolicy.mjs'
+import { resolveAgentModelContextPolicy } from '../model/agentModelContextPolicy.mjs'
 import {
   agentContextMessageCursorHash,
   agentContextMessageEntries,

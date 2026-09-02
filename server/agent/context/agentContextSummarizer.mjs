@@ -1,8 +1,8 @@
 // @ts-check
 
 import { canonicalHash } from '../../canonicalHash.mjs'
-import { createBotanicAgentModelProvider } from '../../botanicAgentModelProvider.mjs'
-import { sanitizeAgentModelContextCheckpoint } from '../../agentModelContextSurface.mjs'
+import { createBotanicAgentModelProvider } from '../model/botanicAgentModelProvider.mjs'
+import { sanitizeAgentModelContextCheckpoint } from '../model/agentModelContextSurface.mjs'
 import { redactSummaryText } from '../../agentThreadSummary.mjs'
 
 const SUMMARY_TIMEOUT_MS = 8_000

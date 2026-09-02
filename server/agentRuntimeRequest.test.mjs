@@ -6,7 +6,7 @@ import {
   createAgentCompatibilityRuntimeRequest,
   resolveBotanicAgentRuntimeRequest,
 } from './agentRuntimeRequest.mjs'
-import { resolveAgentModelContextPolicy } from './agentModelContextPolicy.mjs'
+import { resolveAgentModelContextPolicy } from './agent/model/agentModelContextPolicy.mjs'
 import { canonicalHash } from './canonicalHash.mjs'
 
 const runtime = {

@@ -1,13 +1,13 @@
 // @ts-check
 
-import { canonicalHash } from './canonicalHash.mjs'
+import { canonicalHash } from '../../canonicalHash.mjs'
 import {
   resolveAgentModelContextPolicy,
   validateAgentModelContextPolicySnapshot,
 } from './agentModelContextPolicy.mjs'
 import { createAgentModelContextRuntime } from './agentModelContextRuntime.mjs'
 import { sanitizeAgentModelContextCheckpoint } from './agentModelContextSurface.mjs'
-import { renderThreadSummary } from './agentThreadSummary.mjs'
+import { renderThreadSummary } from '../../agentThreadSummary.mjs'
 
 export class AgentModelContextBindingError extends Error {
   constructor(code, message) {

@@ -3,7 +3,7 @@ import { Readable } from 'node:stream'
 import test from 'node:test'
 import * as Y from 'yjs'
 import { createBotanicHttpServer } from './httpServer.mjs'
-import { agentActionReconciliationIdentity } from './agentActionReconciliation.mjs'
+import { agentActionReconciliationIdentity } from './agent/action/agentActionReconciliation.mjs'
 
 function testDependencies() {
   return {

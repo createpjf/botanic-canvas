@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { canonicalHash } from './canonicalHash.mjs'
-import { actionArgumentsHash } from './agentActionGovernance.mjs'
+import { actionArgumentsHash } from './agent/action/agentActionGovernance.mjs'
 import { creativePlanHash } from './botanicCreativePlanCompiler.mjs'
 
 test('键序不影响哈希', () => {

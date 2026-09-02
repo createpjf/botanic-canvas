@@ -5,7 +5,7 @@ import {
   agentRunOperationalPayload,
   writeAgentRunOperationalEvent,
 } from './agentRunObservability.mjs'
-import { AGENT_SEMANTIC_EVENT_NAMES } from './agentSemanticEvent.mjs'
+import { AGENT_SEMANTIC_EVENT_NAMES } from '../../agentSemanticEvent.mjs'
 
 test('Agent 运行日志只保留运维字段，不泄露 Prompt、媒体或用户内容', () => {
   const payload = agentRunOperationalPayload({

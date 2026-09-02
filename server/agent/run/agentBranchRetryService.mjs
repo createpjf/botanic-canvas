@@ -1,15 +1,15 @@
 // @ts-check
-import { publicAgentRun } from './botanicAgentRun.mjs'
-import { generationJobIdForIdempotency } from './generation/generationIdempotency.mjs'
-import { createIdempotencyRequestBinding, matchingIdempotencyRequestBinding } from './idempotencyRequestBinding.mjs'
-import { persistedGenerationJob, publicGenerationJob } from './generation/generationProvider.mjs'
-import { retargetGenerationJobForRetry } from './generation/generationResultReconciliation.mjs'
-import { compareAndSetGenerationJob } from './generation/generationJobCas.mjs'
+import { publicAgentRun } from '../../botanicAgentRun.mjs'
+import { generationJobIdForIdempotency } from '../../generation/generationIdempotency.mjs'
+import { createIdempotencyRequestBinding, matchingIdempotencyRequestBinding } from '../../idempotencyRequestBinding.mjs'
+import { persistedGenerationJob, publicGenerationJob } from '../../generation/generationProvider.mjs'
+import { retargetGenerationJobForRetry } from '../../generation/generationResultReconciliation.mjs'
+import { compareAndSetGenerationJob } from '../../generation/generationJobCas.mjs'
 import {
   canvasProjectMutationId,
   commitCanvasProjectMutation,
   supportsDurableCanvasGraphMutation,
-} from './canvas/canvasGraphCommitService.mjs'
+} from '../../canvas/canvasGraphCommitService.mjs'
 
 /**
  * 分支重试的唯一实现。

@@ -1,6 +1,6 @@
 import { AgentToolRuntimeError, agentToolObject, agentToolText, createAgentToolRegistry, freezeAgentStepSnapshot, runAgentToolLoop } from '../../agentToolRuntime.mjs'
 import { botanicAgentProviderConfig } from '../../botanicAgentPlanner.mjs'
-import { createBotanicAgentModelProvider } from '../../botanicAgentModelProvider.mjs'
+import { createBotanicAgentModelProvider } from '../model/botanicAgentModelProvider.mjs'
 import { BotanicAgentChatError } from '../../botanicAgentChat.mjs'
 import { normalizeBotanicAgentLocale, readBotanicAgentInstructions } from '../../agentInstructions.mjs'
 import { botanicAgentContextBriefing, buildBotanicAgentOntology, safeBotanicAgentMemory } from '../../botanicAgentOntology.mjs'
@@ -26,7 +26,7 @@ import {
 import {
   projectAgentThreadContextSnapshotV2,
   resolveAgentModelContextBinding,
-} from '../../agentModelContextBinding.mjs'
+} from '../model/agentModelContextBinding.mjs'
 
 // Botanic Agent 回合解析器：把“这一句到底是聊天/建议/检索，还是要生成图片，以及要用什么
 // Prompt、生成几张”整体交给服务端模型判断。它读整段对话（包含 Agent 自己刚给出的建议）与

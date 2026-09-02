@@ -1,14 +1,14 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createAgentRouteHandler } from './agentRoutes.mjs'
-import { createConfiguredMcpRuntime, parseMcpToolConfigurations } from './mcpClient.mjs'
+import { createAgentRouteHandler } from '../../agentRoutes.mjs'
+import { createConfiguredMcpRuntime, parseMcpToolConfigurations } from '../../mcpClient.mjs'
 import { agentActionReconciliationIdentity } from './agentActionReconciliation.mjs'
 import {
   agentActionManualRetryConsumptionDecision,
   agentActionReceiptClaimDecision,
   agentActionReceiptResolutionDecision,
   settledAgentActionReceipt,
-} from './store/productStoreContract.mjs'
+} from '../../store/productStoreContract.mjs'
 
 const user = { id: 'user-action-route' }
 const projectId = 'project-action-route'

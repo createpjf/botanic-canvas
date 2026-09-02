@@ -1,7 +1,7 @@
 // @ts-check
 
 import { resolveAgentContextCompaction } from './agentContextCompaction.mjs'
-import { resolveAgentModelContextPolicy } from '../../agentModelContextPolicy.mjs'
+import { resolveAgentModelContextPolicy } from '../model/agentModelContextPolicy.mjs'
 
 /**
  * 只读影子评估器。它只运行 Context 的纯选择算法，不持久化 checkpoint、不调用

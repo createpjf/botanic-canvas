@@ -1,6 +1,6 @@
 // @ts-check
-import { prepareAgentBranchRetry } from './botanicAgentRun.mjs'
-import { matchingIdempotencyRequestBinding } from './idempotencyRequestBinding.mjs'
+import { prepareAgentBranchRetry } from '../../botanicAgentRun.mjs'
+import { matchingIdempotencyRequestBinding } from '../../idempotencyRequestBinding.mjs'
 
 function clone(value) {
   return value === undefined ? undefined : structuredClone(value)
