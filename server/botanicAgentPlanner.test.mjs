@@ -35,6 +35,8 @@ const validInput = {
 
 test('Agent 计划输入只接收结构化元数据，不允许图片字节进入文本模型', () => {
   assert.deepEqual(validateBotanicAgentPlanInput(validInput), validInput)
+  assert.equal(validateBotanicAgentPlanInput({ ...validInput, showRawReasoning: true }).showRawReasoning, true)
+  assert.throws(() => validateBotanicAgentPlanInput({ ...validInput, showRawReasoning: 'yes' }), /推理原文/u)
   assert.equal(validateBotanicAgentPlanInput({ ...validInput, locale: undefined }).locale, 'zh-CN')
   assert.throws(() => validateBotanicAgentPlanInput({ ...validInput, locale: 'fr' }), /locale/)
 
@@ -50,6 +52,28 @@ test('Agent 计划输入只接收结构化元数据，不允许图片字节进�
         && error.code === 'INVALID_REQUEST',
     )
   }
+})
+
+test('Agent Planner 只有服务端与本轮用户同时允许时才保留 raw reasoning', async () => {
+  const runtime = {
+    flockApiKey: 'flock-secret', flockTextModel: 'deepseek-v4-flash',
+    flockAgentModels: ['deepseek-v4-flash'], agentRawReasoning: true,
+  }
+  const fetchImpl = async () => new Response(JSON.stringify({ choices: [{ message: {
+    reasoning_content: '内部推理',
+    content: null,
+    tool_calls: [{ id: 'call-plan-raw', type: 'function', function: {
+      name: 'generation_create_plan', arguments: JSON.stringify({
+        intent: 'replace_scene', prompt: '保持主体，替换场景。', summary: '替换场景。',
+        constraints: [{ dimension: 'person', mode: 'preserve' }, { dimension: 'scene', mode: 'vary' }],
+      }),
+    } }],
+  } }] }), { status: 200 })
+
+  const hidden = await planBotanicGeneration({ ...validInput, plannerModel: 'deepseek-v4-flash' }, runtime, { fetchImpl })
+  assert.equal((hidden.reasoning ?? []).some((entry) => entry.source === 'raw'), false)
+  const shown = await planBotanicGeneration({ ...validInput, plannerModel: 'deepseek-v4-flash', showRawReasoning: true }, runtime, { fetchImpl })
+  assert.equal(shown.reasoning.some((entry) => entry.source === 'raw'), true)
 })
 
 test('Agent 计划只保留安全的上下文快照元数据，并拒绝重复节点', () => {

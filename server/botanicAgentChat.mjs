@@ -87,6 +87,9 @@ export function validateBotanicAgentChatInput(raw) {
   if (!CHAT_MODES.has(mode)) invalidRequest('Agent 对话模式不支持。')
   const projectId = requiredText(input.projectId, '项目', 160)
   const plannerModel = optionalText(input.plannerModel, 'Agent 模型', 160)
+  if (input.showRawReasoning !== undefined && typeof input.showRawReasoning !== 'boolean') {
+    invalidRequest('Agent 推理原文设置无效。')
+  }
   const sessionId = input.sessionId === undefined ? undefined : requiredText(input.sessionId, 'Agent 会话', 160)
   const inputMessage = input.inputMessage === undefined ? undefined : boundedInputMessage(input.inputMessage)
   if (Boolean(sessionId) !== Boolean(inputMessage)) invalidRequest('Agent 会话与当前消息必须同时提供。')
@@ -102,6 +105,7 @@ export function validateBotanicAgentChatInput(raw) {
     locale: normalizeBotanicAgentLocale(input.locale),
     mode,
     ...(plannerModel ? { plannerModel } : {}),
+    ...(input.showRawReasoning === true ? { showRawReasoning: true } : {}),
     ...(mountedSkillIds?.length ? { mountedSkillIds } : {}),
     ...(input.messages === undefined ? {} : { messages: boundedMessages(input.messages) }),
     contextNodeIds: boundedNodeIds(input.contextNodeIds),
@@ -278,7 +282,7 @@ function chatSearchGuidance(registry) {
 
 export async function chatWithBotanicAgent(input, runtimeConfig, options = {}) {
   const config = chatConfig(runtimeConfig, input?.plannerModel)
-  const allowRawReasoning = Boolean(runtimeConfig?.agentRawReasoning)
+  const allowRawReasoning = Boolean(runtimeConfig?.agentRawReasoning && input?.showRawReasoning)
   // 有实时通道时才向提供方请求流式；没有就完全走原来的一次性请求。
   const streaming = typeof options.onEvent === 'function'
   let emittedEvents = 0
@@ -351,12 +355,20 @@ export async function chatWithBotanicAgent(input, runtimeConfig, options = {}) {
   // 失败且尚未发出任何流事件时回退 caption + 所选文本模型。
   const nativeVisionModel = nativeAgentVisionModel(config.model)
   const captionVisionModel = captionAgentVisionModel(runtimeConfig)
+  const optionalVisionResult = (caught) => {
+    if (options.signal?.aborted) throw new BotanicAgentChatError(499, 'REQUEST_CANCELLED', 'Agent 对话请求已取消。')
+    if (caught?.code === 'AGENT_VISION_BYTES_EXCEEDED') {
+      throw new BotanicAgentChatError(caught.statusCode ?? 413, caught.code, caught.message)
+    }
+    return []
+  }
   const visionParts = nativeVisionModel || captionVisionModel
     ? await resolveBotanicAgentVisionParts({
       document: options.document,
       contextNodeIds: input.contextNodeIds,
       resolveMedia: options.resolveVisionMedia,
-    }).catch(() => [])
+      signal: options.signal,
+    }).catch(optionalVisionResult)
     : []
   if (visionParts.length && nativeVisionModel && resumeAttemptId !== 'chat_text') {
     try {
@@ -393,7 +405,7 @@ export async function chatWithBotanicAgent(input, runtimeConfig, options = {}) {
     fetchImpl: options.visionFetchImpl ?? fetch,
     signal: options.signal,
     ...(options.visionCache ? { cache: options.visionCache } : {}),
-  }).catch(() => [])
+  }).catch(optionalVisionResult)
   return executeChatAttempt({
     ...attemptShared,
     attemptId: 'chat_text',

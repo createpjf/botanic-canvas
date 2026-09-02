@@ -279,8 +279,10 @@ export function createAgentThreadContext(dependencies) {
     async resolve(input) {
       const { userId, projectId, sessionId, inputMessage, locale, model } = input ?? {}
       assertInputMessage(inputMessage)
-      const sessions = await productStore.listAgentSessions(userId, projectId, { limit: 80 })
-      const storedSession = (sessions ?? []).find((candidate) => candidate?.id === sessionId)
+      const storedSession = typeof productStore.readAgentSession === 'function'
+        ? await productStore.readAgentSession(userId, projectId, sessionId)
+        : (await productStore.listAgentSessions(userId, projectId, { limit: 80 }) ?? [])
+          .find((candidate) => candidate?.id === sessionId)
       if (!storedSession) {
         throw new AgentThreadContextError(
           'AGENT_SESSION_NOT_FOUND',

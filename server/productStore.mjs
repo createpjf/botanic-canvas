@@ -854,6 +854,14 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
       return stateSlice.sessions.slice(0, limit).map((session) => ({ ...session, messages: [] }))
     },
 
+    readAgentSession(userId, projectId, sessionId, options = {}) {
+      const project = state.projects.find((item) => item.id === projectId)
+      if (!project || !canAccess(project, userId)) return undefined
+      const record = state.agentSessions.find((item) => item.projectId === projectId && item.id === sessionId)
+      if (!record || (options.includeSubagents !== true && record.payload?.kind === 'subagent')) return undefined
+      return { ...clone(record.payload), messages: [] }
+    },
+
     listAgentSessionMessages(userId, projectId, sessionId, options = {}) {
       const project = state.projects.find((item) => item.id === projectId)
       if (!project || !canAccess(project, userId)) return undefined

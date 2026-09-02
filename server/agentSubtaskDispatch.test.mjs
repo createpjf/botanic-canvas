@@ -25,9 +25,10 @@ test('未配置子 Agent 时不注册派发工具', () => {
   assert.equal(registryOf({ subagentRunner: async () => ({ summary: 'ok' }) }).get('subagent_research') !== undefined, true)
 })
 
-test('派发工具是只读的，且不会结束整轮', () => {
+test('派发工具如实标记模型费用，仍由硬预算自动执行且不会结束整轮', () => {
   const tool = registryOf({ subagentRunner: async () => ({ summary: 'ok' }) }).get('subagent_research')
-  assert.equal(tool.risk, 'read')
+  assert.equal(tool.risk, 'costly')
+  assert.equal(tool.recovery, 'reexecute')
   assert.equal(tool.requiresConfirmation, false)
   assert.equal(tool.terminal, false)
 })

@@ -12,7 +12,7 @@ const MAX_CHECKPOINT_BYTES = 64 * 1024
 /** H6G 批准的 result 预算：单 call 8KiB、全 Turn 24KiB；总 checkpoint 仍 64KiB。 */
 const MAX_RESULT_ENVELOPE_BYTES = 8 * 1024
 const MAX_TURN_RESULT_BYTES = 24 * 1024
-const MAX_TERMINAL_CONTENT = 12_000
+export const AGENT_TURN_TERMINAL_CONTENT_LIMIT = 12_000
 const TOOL_NAME = /^[a-z][a-z0-9_]{1,63}$/
 const RISKS = new Set(['read', 'write', 'costly', 'external'])
 const RECOVERY_MODES = new Set(['reexecute', 'receipt', 'never', 'journal'])
@@ -360,7 +360,7 @@ export function validateAgentTurnCheckpoint(value) {
     // terminal cursor 允许等于 MAX_STEPS（H4 final synthesis）:它只写 terminalContent,
     // 不创建第 MAX_STEPS+1 个 tool step;工具步骤校验仍严格 < MAX_STEPS。
     if (checkpoint.completedSteps.length > MAX_STEPS) invalid('Terminal Checkpoint 步骤超出上限。')
-    checkpoint.terminalContent = text(raw.terminalContent, 'Terminal Checkpoint 内容', MAX_TERMINAL_CONTENT)
+    checkpoint.terminalContent = text(raw.terminalContent, 'Terminal Checkpoint 内容', AGENT_TURN_TERMINAL_CONTENT_LIMIT)
   }
   assertCheckpointSize(checkpoint)
   return structuredClone(checkpoint)
@@ -499,7 +499,7 @@ export function terminalAgentTurnCheckpoint(previous, input) {
     ? initialCheckpoint(input?.attempt)
     : validateAgentTurnCheckpoint(previous)
   const currentAttempt = assertSameAttempt(checkpoint, input?.attempt)
-  const content = text(input?.content, 'Terminal Checkpoint 内容', MAX_TERMINAL_CONTENT)
+  const content = text(input?.content, 'Terminal Checkpoint 内容', AGENT_TURN_TERMINAL_CONTENT_LIMIT)
   if (checkpoint.pendingStep) invalid('Pending 工具步骤尚未完成，不能写入终态内容。')
   if (!Number.isInteger(input?.step) || input.step !== checkpoint.completedSteps.length || input.step > MAX_STEPS) {
     invalid('Terminal Checkpoint 步骤与已完成游标不匹配。')

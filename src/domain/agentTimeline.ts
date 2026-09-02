@@ -18,7 +18,7 @@ export {
   timelineWebSourceHref,
 } from './agentTimelineWebSources.ts'
 
-export type TimelineStepKind = 'search' | 'fetch' | 'read_skill' | 'connect_runtime' | 'subagent' | 'read' | 'write' | 'other'
+export type TimelineStepKind = 'search' | 'fetch' | 'read_skill' | 'connect_runtime' | 'subagent' | 'no_progress' | 'read' | 'write' | 'other'
 
 /** thinking-orbs 的九态；只决定动画，不决定界面文案。 */
 export type AgentTimelineOrbState =

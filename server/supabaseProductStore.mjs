@@ -1016,6 +1016,19 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
       return state.sessions.slice(0, limit).map((session) => ({ ...session, messages: [] }))
     },
 
+    async readAgentSession(userId, projectId, sessionId, options = {}) {
+      if (!await memberRole(projectId, userId)) return undefined
+      const { data, error } = await supabaseRequest(() => supabase
+        .from('agent_sessions')
+        .select('payload')
+        .eq('project_id', projectId)
+        .eq('id', sessionId)
+        .maybeSingle())
+      fail(error)
+      if (options.includeSubagents !== true && data?.payload?.kind === 'subagent') return undefined
+      return data ? { ...clone(data.payload), messages: [] } : undefined
+    },
+
     async listAgentSessionMessages(userId, projectId, sessionId, options = {}) {
       if (!await memberRole(projectId, userId)) return undefined
       const { data: sessionRow, error: sessionError } = await supabase.from('agent_sessions').select('id').eq('project_id', projectId).eq('id', sessionId).maybeSingle()

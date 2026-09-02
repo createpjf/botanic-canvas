@@ -1299,7 +1299,7 @@ export async function executeProjectAgentAction(input: {
       timeoutMessage: `${input.action.label}响应超时，请稍后重试。`,
     })
   } catch (caught) {
-    if (caught instanceof ProductApiError && caught.status === 0 && !caught.code) {
+    if (caught instanceof ProductApiError && caught.status === 0 && (!caught.code || caught.code === 'REQUEST_TIMEOUT')) {
       throw new ProductApiError(caught.message, 0, 'AGENT_ACTION_OUTCOME_UNKNOWN')
     }
     throw caught

@@ -185,7 +185,7 @@ test('Runtime Request 用 Snapshot V2 创建主模型 Context Runtime 并持久�
 
 test('chat dispatcher 把 reasoning 提升到 Runtime 顶层，再恢复旧 chat 响应形状', async () => {
   const result = await resolveBotanicAgentRuntimeRequest(
-    createAgentCompatibilityRuntimeRequest('chat', chatInput),
+    createAgentCompatibilityRuntimeRequest('chat', { ...chatInput, showRawReasoning: true }),
     { ...runtime, agentRawReasoning: true },
     {
       document,
@@ -211,7 +211,7 @@ test('chat dispatcher 把 reasoning 提升到 Runtime 顶层，再恢复旧 chat
 
 test('plan dispatcher 把 reasoning 提升到 Runtime 顶层，再恢复旧 plan 响应形状', async () => {
   const result = await resolveBotanicAgentRuntimeRequest(
-    createAgentCompatibilityRuntimeRequest('plan', planInput),
+    createAgentCompatibilityRuntimeRequest('plan', { ...planInput, showRawReasoning: true }),
     { ...runtime, agentRawReasoning: true },
     {
       fetchImpl: async () => planToolResponse({ reasoning: '先锁定人物，再替换场景。' }),
@@ -245,9 +245,9 @@ test('plan clarification 保持受控追问形状并可还原兼容结果', asyn
   assert.equal(result.runtimeOperation, 'plan')
   assert.equal(result.clarification.question, '请确认这次输出的比例。')
   assert.equal(result.clarification.reasoning, undefined)
+  assert.equal(result.reasoning, undefined)
   assert.deepEqual(agentCompatibilityResult('plan', result), {
     clarification: result.clarification,
-    reasoning: result.reasoning,
   })
 })
 

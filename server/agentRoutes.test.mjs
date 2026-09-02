@@ -1441,8 +1441,36 @@ test('读取 Turn 时按权威边反查这次回合确认出的 Run', async () =
   assert.equal(responses.at(-1)?.body.turn.lastSequence, 4)
   assert.deepEqual(responses.at(-1)?.body.events.map((event) => event.sequence), [4])
   assert.deepEqual(responses.at(-1)?.body.cursor, { after: 4, hasMore: false })
-  assert.deepEqual(eventQueries, [{ after: 1, limit: 1 }])
+  assert.deepEqual(eventQueries, [{ after: 1, limit: 2 }])
   assert.deepEqual(queried, [{ userId: 'user-1', projectId: 'project-1', turnId: 'turn-1' }])
+})
+
+test('旧 Turn 缺少 lastSequence 时用多取一条判断分页，不制造空页轮询', async () => {
+  const responses = []
+  const handler = createAgentRouteHandler({
+    config: {},
+    productStore: {
+      projectAccess: async () => ({ exists: true, role: 'owner' }),
+      readAgentTurn: async () => ({
+        id: 'turn-legacy-cursor', version: 2, ownerId: 'user-1', projectId: 'project-1',
+        idempotencyKey: 'legacy-cursor', status: 'completed', createdAt: 1, updatedAt: 2,
+      }),
+      listAgentTurnEvents: async (_userId, _projectId, _turnId, options) => ([
+        { id: 'event-1', turnId: 'turn-legacy-cursor', sequence: 1, type: 'turn.completed' },
+      ].slice(0, options.limit)),
+      listAgentRunsForTurn: async () => [],
+    },
+    json: (_response, status, body) => { responses.push({ status, body }); return true },
+    requireUser: async () => ({ id: 'user-1' }),
+  })
+
+  await handler(
+    { method: 'GET', headers: {} }, {},
+    new URL('http://botanic.test/api/agent-turns/turn-legacy-cursor?limit=1'),
+    { agentTurn: ['path', 'turn-legacy-cursor'] }, 'request-legacy-cursor',
+  )
+
+  assert.deepEqual(responses.at(-1)?.body.cursor, { after: 1, hasMore: false })
 })
 
 test('同幂等 Turn 已在执行时返回 202 与 observer，不伪造空业务 turn', async () => {

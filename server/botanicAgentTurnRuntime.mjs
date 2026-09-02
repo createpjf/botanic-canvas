@@ -230,6 +230,7 @@ export function createBotanicAgentTurnRuntime({
   leaseMs = 120_000,
   heartbeatMs = 30_000,
   turnLifetimeMs = DEFAULT_AGENT_TURN_LIFETIME_MS,
+  durabilityDrainMs = 15_000,
 } = {}) {
   if (!productStore) throw new TypeError('Agent Turn Runtime 缺少 ProductStore。')
   const activeTurns = new Map()
@@ -241,6 +242,7 @@ export function createBotanicAgentTurnRuntime({
   const boundedLeaseMs = Math.max(30_000, Math.min(Number(leaseMs) || 120_000, 900_000))
   const boundedHeartbeatMs = Math.max(10, Math.min(Number(heartbeatMs) || 30_000, Math.floor(boundedLeaseMs / 2)))
   const boundedTurnLifetimeMs = boundedAgentTurnLifetimeMs(turnLifetimeMs)
+  const boundedDurabilityDrainMs = Math.max(10, Math.min(Number(durabilityDrainMs) || 15_000, 30_000))
 
   const executionError = (code, message, statusCode = 409) => Object.assign(new Error(message), { code, statusCode })
   const event = (turnId, projectId, type, payload) => ({
@@ -351,12 +353,34 @@ export function createBotanicAgentTurnRuntime({
       // 失去观察通道；只有 durable cancel fence 或跨实例 cancel signal 才能中止 Provider。
       const controller = new AbortController()
       controller.signal.addEventListener('abort', observeCancellationAbort, { once: true })
-      const liveEvents = []
       const pendingDeliveries = []
+      const persistedRunningToolCallIds = new Set()
       let persistedEventChain = Promise.resolve()
       let heartbeatFailure
       let heartbeatTriggeredAbort = false
       let heartbeatInFlight = Promise.resolve()
+
+      const drainPersistence = async (settled = false) => {
+        const remainingMs = typeof deadlineAt === 'number' ? Math.max(0, deadlineAt - now()) : boundedDurabilityDrainMs
+        const timeoutMs = Math.min(boundedDurabilityDrainMs, remainingMs)
+        let timeout
+        try {
+          await Promise.race([
+            settled
+              ? Promise.allSettled([heartbeatInFlight, ...pendingDeliveries])
+              : Promise.all([heartbeatInFlight, ...pendingDeliveries]),
+            new Promise((_, reject) => {
+              timeout = setTimeout(() => reject(executionError(
+                'AGENT_TURN_DURABILITY_UNAVAILABLE',
+                'Agent 回合持久化收尾超时，请稍后恢复。',
+                503,
+              )), timeoutMs)
+            }),
+          ])
+        } finally {
+          clearTimeout(timeout)
+        }
+      }
 
       const notify = (entry) => {
         try { onEvent?.(entry) } catch { /* 展示层异常不得中断权威执行。 */ }
@@ -539,7 +563,6 @@ export function createBotanicAgentTurnRuntime({
             text: stored.text, ...(stored.truncated ? { truncated: true } : {}),
             ...(Number.isInteger(committed.event?.sequence) ? { sequence: committed.event.sequence } : {}),
           }
-          liveEvents.push(envelope)
           notify(envelope)
           return stored
         }),
@@ -549,6 +572,13 @@ export function createBotanicAgentTurnRuntime({
         const persistLiveEvent = () => {
           const envelope = { ...clone(rawEvent), turnId: id, eventId: `turn_live_${randomUUID()}` }
           const payload = eventPayload(rawEvent)
+          const repeatedRunning = payload?.status === 'running'
+            && payload.toolCallId
+            && persistedRunningToolCallIds.has(payload.toolCallId)
+          if (repeatedRunning) return persistedEventChain.then(() => notify(envelope))
+          if (payload?.status === 'running' && payload.toolCallId) {
+            persistedRunningToolCallIds.add(payload.toolCallId)
+          }
           return trackPersistence(async () => {
             if (payload) {
               const committed = await commit({
@@ -560,7 +590,6 @@ export function createBotanicAgentTurnRuntime({
               }
               if (Number.isInteger(committed.event?.sequence)) envelope.sequence = committed.event.sequence
             }
-            liveEvents.push(envelope)
             notify(envelope)
           })
         }
@@ -620,8 +649,7 @@ export function createBotanicAgentTurnRuntime({
         }))
         outputPreview.discard()
         clearInterval(heartbeatTimer)
-        await heartbeatInFlight
-        await Promise.all(pendingDeliveries)
+        await drainPersistence()
         if (heartbeatFailure) throw heartbeatFailure
         const authoritative = await productStore.readAgentTurn(userId, id)
         if (cancelledTurns.has(activeKey) || ['cancelling', 'cancelled'].includes(authoritative?.status)) {
@@ -646,18 +674,18 @@ export function createBotanicAgentTurnRuntime({
           turn: publicTurn(turn),
           result: clone(result),
           // reasoning/answer 只随实时连接存在；持久化 Event 仅含安全工具摘要。
-          events: [...(persistedEvents ?? []), ...liveEvents.filter((entry) => entry.type !== 'tool')],
+          events: persistedEvents ?? [],
         }
       } catch (caught) {
         outputPreview.discard()
         clearInterval(heartbeatTimer)
-        await heartbeatInFlight.catch(() => undefined)
         // resolver 可能在 emit 后立刻失败。先等已排队的事件 commit 收口，再写终态，
         // 避免 terminal commit 抢先后让迟到的 running/tool commit 反向制造竞态。
-        await Promise.allSettled(pendingDeliveries)
+        let drainFailure
+        try { await drainPersistence(true) } catch (caughtDrain) { drainFailure = caughtDrain }
         // heartbeat abort 会让下游先抛 ABORT_ERR，但真实失败来源仍是
         // 续租提交。以 heartbeatFailure 为准，避免把存储/失租故障误记为用户取消。
-        const failureSource = heartbeatFailure ?? caught
+        const failureSource = heartbeatFailure ?? drainFailure ?? caught
         const error = safeError(failureSource)
         const authoritative = await productStore.readAgentTurn(userId, id).catch(() => undefined)
         if (error.code === 'AGENT_TURN_LEASE_STALE') {
@@ -665,7 +693,7 @@ export function createBotanicAgentTurnRuntime({
             code: error.code,
             statusCode: 409,
             turn: publicTurn(authoritative),
-            events: liveEvents,
+            events: [],
           })
         }
         const heartbeatObservedCancellation = heartbeatFailure?.code === 'AGENT_TURN_CANCELLED'
@@ -682,7 +710,7 @@ export function createBotanicAgentTurnRuntime({
             code: 'AGENT_TURN_CANCELLED',
             statusCode: failureSource?.statusCode ?? 499,
             turn: publicTurn(authoritative ?? turn),
-            events: liveEvents,
+            events: [],
           })
         }
         let settled
@@ -702,7 +730,7 @@ export function createBotanicAgentTurnRuntime({
           code: cancellationWon ? 'AGENT_TURN_CANCELLED' : error.code,
           statusCode: failureSource?.statusCode ?? (cancellationWon ? 499 : 502),
           turn: publicTurn(saved),
-          events: liveEvents,
+          events: [],
         })
       }
       } finally {

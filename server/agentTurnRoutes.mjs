@@ -221,10 +221,11 @@ export function createAgentTurnHttpAdapter({
     if (!Number.isSafeInteger(after ?? 0) || !Number.isSafeInteger(limit) || limit < 1 || limit > 200) {
       return error(response, 400, 'INVALID_AGENT_TURN_CURSOR', 'Agent Turn 续读参数无效。')
     }
-    const turnEvents = await productStore.listAgentTurnEvents(user.id, turn.projectId, turn.id, {
+    const eventPage = await productStore.listAgentTurnEvents(user.id, turn.projectId, turn.id, {
       ...(after !== undefined ? { after } : {}),
-      limit,
+      limit: limit + 1,
     }) ?? []
+    const turnEvents = eventPage.slice(0, limit)
     const linkedRuns = await productStore.listAgentRunsForTurn(user.id, turn.projectId, turn.id) ?? []
     return json(response, 200, {
       protocolVersion: AGENT_PROTOCOL_VERSION,
@@ -235,8 +236,7 @@ export function createAgentTurnHttpAdapter({
       events: turnEvents,
       cursor: {
         after: turnEvents.length ? agentTurnLastSequence(turnEvents) : (after ?? 0),
-        hasMore: turnEvents.length === limit
-          && agentTurnLastSequence(turnEvents) < Number(turn.lastSequence ?? Number.MAX_SAFE_INTEGER),
+        hasMore: eventPage.length > limit,
       },
     })
   }

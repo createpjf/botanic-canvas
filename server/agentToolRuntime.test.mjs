@@ -118,6 +118,21 @@ test('未提供 Model Context 时保持 legacy callModel 请求形状', async ()
   })
 })
 
+test('无工具终态在写 Checkpoint 前拒绝空白或超长 Provider 回答', async () => {
+  const registry = createAgentToolRegistry([])
+  for (const content of ['   ', 'x'.repeat(12_001)]) {
+    const checkpoints = []
+    await assert.rejects(runAgentToolLoop({
+      registry,
+      messages: [{ role: 'user', content: '继续' }],
+      attempt: { id: 'attempt-invalid-output', model: 'model-a', snapshotHash: 'hash-invalid-output' },
+      saveCheckpoint: async (checkpoint) => { checkpoints.push(checkpoint) },
+      callModel: async () => ({ choices: [{ message: { content } }] }),
+    }), (caught) => caught?.code === 'INVALID_PROVIDER_RESPONSE' && caught?.statusCode === 502)
+    assert.equal(checkpoints.length, 0)
+  }
+})
+
 test('Model Context 每步 prepare，模型响应后 observe 归一化 usage', async () => {
   const registry = createAgentToolRegistry([{
     name: 'probe', label: '探针', description: '读取探针。', risk: 'read',
@@ -1617,6 +1632,27 @@ test('journal 恢复:pre-dispatch 可重执行,post-dispatch 无结果收口 out
   })
   assert.equal(resumed.output, '完成')
   assert.equal(fetches, 1)
+  const recoveredEvents = []
+  const recovered = await runAgentToolLoop({
+    registry, messages: [], maximumSteps: 2, attempt,
+    resumeCheckpoint: {
+      ...journalCall('completed'),
+      pendingStep: {
+        ...journalCall('completed').pendingStep,
+        calls: [{
+          ...journalCall('completed').pendingStep.calls[0],
+          resultEnvelope: '{"url":"https://example.com/x","text":"正文"}',
+        }],
+      },
+    },
+    checkpointUrlLookup: async () => ['93.184.216.34'],
+    saveCheckpoint: async () => {},
+    onEvent: (event) => recoveredEvents.push(event),
+    callModel: async () => ({ choices: [{ message: { content: '恢复完成' } }] }),
+  })
+  assert.equal(recovered.output, '恢复完成')
+  assert.deepEqual(recoveredEvents.map((event) => event.toolCall.status), ['running', 'succeeded'])
+  assert.equal(fetches, 1, 'completed journal 只恢复结果，不得再次 fetch')
   // post-dispatch(dispatched):禁止自动重放,收口 AGENT_TOOL_OUTCOME_UNKNOWN。
   await assert.rejects(
     runAgentToolLoop({
