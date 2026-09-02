@@ -7,6 +7,7 @@ import { productStoreCoreMethods } from '../../store/productStoreContract.mjs'
 
 const local = readFileSync(new URL('../../store/productStore.mjs', import.meta.url), 'utf8')
 const postgres = readFileSync(new URL('../../store/postgresProductStore.mjs', import.meta.url), 'utf8')
+  + readFileSync(new URL('../../store/postgresSchema.mjs', import.meta.url), 'utf8')
 const supabase = readFileSync(new URL('../../store/supabaseProductStore.mjs', import.meta.url), 'utf8')
 const migration = readFileSync(new URL(
   '../../../supabase/migrations/20260828210000_agent_context_compaction_v2.sql', import.meta.url,

@@ -17,6 +17,7 @@ const canvasSyncMigration = readFileSync(
   'utf8',
 )
 const postgresStore = readFileSync(new URL('./store/postgresProductStore.mjs', import.meta.url), 'utf8')
+  + readFileSync(new URL('./store/postgresSchema.mjs', import.meta.url), 'utf8')
 const supabaseStore = readFileSync(new URL('./store/supabaseProductStore.mjs', import.meta.url), 'utf8')
 
 test('Supabase SECURITY DEFINER 只保留 RLS 所需权限', () => {

@@ -5,7 +5,9 @@ import test from 'node:test'
 const migrationUrl = new URL('../supabase/migrations/20260804140000_agent_artifact_index.sql', import.meta.url)
 const migration = readFileSync(migrationUrl, 'utf8')
 const postgresStoreUrl = new URL('../server/store/postgresProductStore.mjs', import.meta.url)
-const postgresStore = readFileSync(postgresStoreUrl, 'utf8')
+const postgresSchemaUrl = new URL('../server/store/postgresSchema.mjs', import.meta.url)
+// schema DDL 已拆至 postgresSchema.mjs;契约继续覆盖 Adapter+Schema 的合并文本。
+const postgresStore = readFileSync(postgresStoreUrl, 'utf8') + readFileSync(postgresSchemaUrl, 'utf8')
 
 test('Artifact Index 迁移在全部三类来源回填后执行事务内对账', () => {
   const insertPositions = [...migration.matchAll(/insert into public\.agent_artifacts/giu)].map((match) => match.index)
