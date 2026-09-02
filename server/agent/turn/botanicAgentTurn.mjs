@@ -1,32 +1,32 @@
-import { AgentToolRuntimeError, agentToolObject, agentToolText, createAgentToolRegistry, freezeAgentStepSnapshot, runAgentToolLoop } from './agentToolRuntime.mjs'
-import { botanicAgentProviderConfig } from './botanicAgentPlanner.mjs'
-import { createBotanicAgentModelProvider } from './botanicAgentModelProvider.mjs'
-import { BotanicAgentChatError } from './botanicAgentChat.mjs'
-import { normalizeBotanicAgentLocale, readBotanicAgentInstructions } from './agentInstructions.mjs'
-import { botanicAgentContextBriefing, buildBotanicAgentOntology, safeBotanicAgentMemory } from './botanicAgentOntology.mjs'
-import { BOTANIC_AGENT_MOUNTED_SKILL_LIMIT, botanicAgentMountedSkillBriefing, botanicAgentSearchableSkills, pinnedBotanicAgentProjectSkills, resolveBotanicAgentMountedSkills } from './botanicAgentTools.mjs'
+import { AgentToolRuntimeError, agentToolObject, agentToolText, createAgentToolRegistry, freezeAgentStepSnapshot, runAgentToolLoop } from '../../agentToolRuntime.mjs'
+import { botanicAgentProviderConfig } from '../../botanicAgentPlanner.mjs'
+import { createBotanicAgentModelProvider } from '../../botanicAgentModelProvider.mjs'
+import { BotanicAgentChatError } from '../../botanicAgentChat.mjs'
+import { normalizeBotanicAgentLocale, readBotanicAgentInstructions } from '../../agentInstructions.mjs'
+import { botanicAgentContextBriefing, buildBotanicAgentOntology, safeBotanicAgentMemory } from '../../botanicAgentOntology.mjs'
+import { BOTANIC_AGENT_MOUNTED_SKILL_LIMIT, botanicAgentMountedSkillBriefing, botanicAgentSearchableSkills, pinnedBotanicAgentProjectSkills, resolveBotanicAgentMountedSkills } from '../../botanicAgentTools.mjs'
 import {
   botanicAgentMultimodalMessages,
   botanicAgentVisionBriefing,
   describeBotanicAgentContextImages,
   resolveBotanicAgentVisionParts,
-} from './botanicAgentVision.mjs'
-import { captionAgentVisionModel, nativeAgentVisionModel } from './botanicAgentVisionCapability.mjs'
-import { botanicAgentContextToolSourceLabels, createBotanicAgentReadToolDefinitions } from './botanicAgentContextTools.mjs'
-import { botanicAgentWebResearchSourceLabels, createBotanicAgentWebResearchTools } from './botanicAgentWebTools.mjs'
-import { botanicAgentOperationalSourceLabels, createBotanicAgentOperationalToolDefinitions } from './botanicAgentOperationalTools.mjs'
-import { renderThreadSummary } from './agentThreadSummary.mjs'
-import { canonicalHash } from './canonicalHash.mjs'
-import { estimateAgentContextTokens, truncateAgentContextText } from './agentContextBudget.mjs'
+} from '../../botanicAgentVision.mjs'
+import { captionAgentVisionModel, nativeAgentVisionModel } from '../../botanicAgentVisionCapability.mjs'
+import { botanicAgentContextToolSourceLabels, createBotanicAgentReadToolDefinitions } from '../../botanicAgentContextTools.mjs'
+import { botanicAgentWebResearchSourceLabels, createBotanicAgentWebResearchTools } from '../../botanicAgentWebTools.mjs'
+import { botanicAgentOperationalSourceLabels, createBotanicAgentOperationalToolDefinitions } from '../../botanicAgentOperationalTools.mjs'
+import { renderThreadSummary } from '../../agentThreadSummary.mjs'
+import { canonicalHash } from '../../canonicalHash.mjs'
+import { estimateAgentContextTokens, truncateAgentContextText } from '../../agentContextBudget.mjs'
 import {
   GENERATION_ASPECT_RATIOS,
   GENERATION_RESOLUTIONS,
   NANO_BANANA_MODEL_ID,
-} from './generation/generationVocabulary.mjs'
+} from '../../generation/generationVocabulary.mjs'
 import {
   projectAgentThreadContextSnapshotV2,
   resolveAgentModelContextBinding,
-} from './agentModelContextBinding.mjs'
+} from '../../agentModelContextBinding.mjs'
 
 // Botanic Agent 回合解析器：把“这一句到底是聊天/建议/检索，还是要生成图片，以及要用什么
 // Prompt、生成几张”整体交给服务端模型判断。它读整段对话（包含 Agent 自己刚给出的建议）与

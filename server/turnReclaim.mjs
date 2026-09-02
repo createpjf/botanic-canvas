@@ -1,6 +1,6 @@
 // @ts-check
 import { stageError } from './executionTrace.mjs'
-import { validateAgentTurnCheckpoint } from './agentTurnCheckpoint.mjs'
+import { validateAgentTurnCheckpoint } from './agent/turn/agentTurnCheckpoint.mjs'
 
 /** 非终态 Turn 状态。终态 Turn 不参与回收。 */
 const RESUMABLE = new Set(['queued', 'running'])

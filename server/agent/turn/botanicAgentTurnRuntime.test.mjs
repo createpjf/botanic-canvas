@@ -6,8 +6,8 @@ import {
   committedAgentTurnExecution,
   finalizedAgentTurnCancellation,
   requestedAgentTurnCancellation,
-} from './store/productStoreContract.mjs'
-import { createLocalCancelRegistry } from './localCancelRegistry.mjs'
+} from '../../store/productStoreContract.mjs'
+import { createLocalCancelRegistry } from '../../localCancelRegistry.mjs'
 
 function fakeStore() {
   const turns = new Map()

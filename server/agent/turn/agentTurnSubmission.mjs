@@ -9,12 +9,12 @@ import {
   storedAgentTurnRequestBinding,
 } from './agentTurnRequestIdentity.mjs'
 import { validateBotanicAgentTurnInput } from './botanicAgentTurn.mjs'
-import { resolveBotanicAgentRuntimeRequest } from './agentRuntimeRequest.mjs'
-import { requireProjectPermission } from './projectAuthorization.mjs'
-import { projectPermissionDecision } from './authorization.mjs'
-import { createAgentOperationalReaders } from './agentOperationalReaders.mjs'
-import { assertAgentTargetBinding, createAgentTargetBinding } from './agentTargetBinding.mjs'
-import { freezeBotanicAgentSkillCatalog } from './botanicAgentTools.mjs'
+import { resolveBotanicAgentRuntimeRequest } from '../../agentRuntimeRequest.mjs'
+import { requireProjectPermission } from '../../projectAuthorization.mjs'
+import { projectPermissionDecision } from '../../authorization.mjs'
+import { createAgentOperationalReaders } from '../../agentOperationalReaders.mjs'
+import { assertAgentTargetBinding, createAgentTargetBinding } from '../../agentTargetBinding.mjs'
+import { freezeBotanicAgentSkillCatalog } from '../../botanicAgentTools.mjs'
 
 export function configuredAgentGenerationModels(config) {
   return (config?.modelOptions ?? []).map((model) => ({

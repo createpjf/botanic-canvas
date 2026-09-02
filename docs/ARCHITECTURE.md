@@ -154,7 +154,7 @@ compaction 当可靠性边界、平台 sandbox/Guardian。Botanic 的 durable Tu
 
 ## Agent Turn Runtime 与恢复
 
-`server/botanicAgentTurnRuntime.mjs` 是回合控制权的唯一入口。Turn 先以 `queued` 持久化，再由 ProductStore 原子
+`server/agent/turn/botanicAgentTurnRuntime.mjs` 是回合控制权的唯一入口。Turn 先以 `queued` 持久化，再由 ProductStore 原子
 `claimAgentTurnExecution` 取得 lease 与 fencing token；heartbeat、Checkpoint、事件和终态都只能由当前 token 通过
 `commitAgentTurnExecution` 提交。旧实例租约过期后即使继续返回，也不能覆盖新实例的 Checkpoint 或终态。本地、PostgreSQL、
 Supabase 三个 Adapter 实现同一契约，数据库 Adapter 使用数据库时钟和事务锁裁决多实例竞争。
@@ -165,7 +165,7 @@ AbortController。显式提交键按 operation 隔离；无键旧请求按 trans
 同样冻结模型、工具、Skill/Memory 快照并写步骤 Checkpoint，Worker 按存储的 operation 恢复；恢复时运维只读工具复用
 `agentOperationalReaders.mjs`，联网工具必须重新消费共享配额，缺少配额服务时 fail closed。
 
-`server/agentTurnCheckpoint.mjs` 在模型返回工具调用、任何副作用发生前持久化 prepared 步骤，完成后再推进步骤游标。
+`server/agent/turn/agentTurnCheckpoint.mjs` 在模型返回工具调用、任何副作用发生前持久化 prepared 步骤，完成后再推进步骤游标。
 Checkpoint 只保存固定模型/工具快照和安全恢复意图：只读调用保存可重放参数；写入、计费和外部调用只保存 Receipt 引用；
 不保存工具输出、媒体字节、Provider 原始回包或完整推理。`turnReclaim.mjs` 先读 Checkpoint 再决定继续、等待回执或明确失败，
 不会从头重跑整轮。

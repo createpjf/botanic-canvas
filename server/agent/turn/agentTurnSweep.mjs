@@ -1,6 +1,6 @@
 // @ts-check
-import { stageError } from './executionTrace.mjs'
-import { turnReclaimDecision } from './turnReclaim.mjs'
+import { stageError } from '../../executionTrace.mjs'
+import { turnReclaimDecision } from '../../turnReclaim.mjs'
 
 /**
  * 孤儿 Turn 清扫。策略判定在 `turnReclaim.mjs`（纯、已测），这里只负责 I/O 编排：

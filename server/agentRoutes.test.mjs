@@ -5,7 +5,7 @@ import { createAgentRouteHandler, createServerSentEventWriter } from './agentRou
 import { matchBotanicHttpRoutes } from './httpRouteTable.mjs'
 import { AgentSubagentServiceError } from './agentSubagentService.mjs'
 import { AgentSubagentPersistenceError } from './agentSubagentPersistence.mjs'
-import { agentTurnIdForIdempotency, createAgentTurnRecord } from './botanicAgentTurnRuntime.mjs'
+import { agentTurnIdForIdempotency, createAgentTurnRecord } from './agent/turn/botanicAgentTurnRuntime.mjs'
 import { agentReviewRetryMaterializationDecision } from './agentReviewRetryMaterialization.mjs'
 import {
   agentReviewCancellationRequestDecision,

@@ -5,11 +5,11 @@ import {
   currentAgentTurnRequestHashVersion,
   storedAgentTurnRequestBinding,
 } from './agentTurnRequestIdentity.mjs'
-import { validateAgentEntityReferences, validateAgentToolEntityReferences } from './agentEntityReferences.mjs'
-import { presentationWebSources } from './agentWebResearch.mjs'
-import { withBotanicSpan } from './executionTelemetry.mjs'
-import { AGENT_SEMANTIC_EVENT_NAMES, writeAgentSemanticEvent } from './agentSemanticEvent.mjs'
-import { registerAgentDiagnosticGauge } from './agentRuntimeDiagnostics.mjs'
+import { validateAgentEntityReferences, validateAgentToolEntityReferences } from '../../agentEntityReferences.mjs'
+import { presentationWebSources } from '../../agentWebResearch.mjs'
+import { withBotanicSpan } from '../../executionTelemetry.mjs'
+import { AGENT_SEMANTIC_EVENT_NAMES, writeAgentSemanticEvent } from '../../agentSemanticEvent.mjs'
+import { registerAgentDiagnosticGauge } from '../../agentRuntimeDiagnostics.mjs'
 import { createAgentTurnOutputPreview, agentTurnOutputPreviewEventPayload, normalizeAgentTurnOutputPreview } from './agentTurnOutputPreview.mjs'
 
 // completed Turn 仍可能拥有后续创建的 linked Run / Job；显式深取消必须能从

@@ -2,8 +2,8 @@
 
 import { createHash } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
-import { agentTurnRequestHash, agentTurnRequestHashVersion, storedAgentTurnRequestBinding } from '../agentTurnRequestIdentity.mjs'
-import { agentTurnOutputPreviewCommitDecision, agentTurnOutputPreviewEventPayload } from '../agentTurnOutputPreview.mjs'
+import { agentTurnRequestHash, agentTurnRequestHashVersion, storedAgentTurnRequestBinding } from '../agent/turn/agentTurnRequestIdentity.mjs'
+import { agentTurnOutputPreviewCommitDecision, agentTurnOutputPreviewEventPayload } from '../agent/turn/agentTurnOutputPreview.mjs'
 import {
   BotanicAgentSkillError,
   agentSkillExecutionContentHash,

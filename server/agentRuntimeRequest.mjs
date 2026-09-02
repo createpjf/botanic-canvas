@@ -3,7 +3,7 @@ import { canonicalHash } from './canonicalHash.mjs'
 import { generationIdempotencyKey } from './generation/generationIdempotency.mjs'
 import { planBotanicGeneration } from './botanicAgentPlanner.mjs'
 import { chatWithBotanicAgent } from './botanicAgentChat.mjs'
-import { resolveBotanicAgentTurn } from './botanicAgentTurn.mjs'
+import { resolveBotanicAgentTurn } from './agent/turn/botanicAgentTurn.mjs'
 import { bindAgentModelContextOptions } from './agentModelContextBinding.mjs'
 import { pinnedBotanicAgentProjectSkills } from './botanicAgentTools.mjs'
 

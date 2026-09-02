@@ -1,6 +1,6 @@
 // @ts-check
 import { canonicalHash } from './canonicalHash.mjs'
-import { createAgentTurnRecord, agentTurnIdForIdempotency } from './botanicAgentTurnRuntime.mjs'
+import { createAgentTurnRecord, agentTurnIdForIdempotency } from './agent/turn/botanicAgentTurnRuntime.mjs'
 import { validateAgentMessageEntity, validateAgentSessionEntity } from './botanicAgentPersistence.mjs'
 import { SUBAGENT_LIMITS, SUBAGENT_OUTPUT_KINDS, SUBAGENT_ROLES } from './agentSubtask.mjs'
 

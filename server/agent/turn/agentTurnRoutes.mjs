@@ -1,10 +1,10 @@
 // @ts-check
-import { generationIdempotencyKey } from './generation/generationIdempotency.mjs'
+import { generationIdempotencyKey } from '../../generation/generationIdempotency.mjs'
 import { validateBotanicAgentTurnInput } from './botanicAgentTurn.mjs'
 import { agentTurnLastSequence, publicAgentTurn } from './botanicAgentTurnRuntime.mjs'
-import { AGENT_PROTOCOL_VERSION } from './agentProtocol.mjs'
-import { publicAgentRun } from './botanicAgentRun.mjs'
-import { requireProjectPermission } from './projectAuthorization.mjs'
+import { AGENT_PROTOCOL_VERSION } from '../../agentProtocol.mjs'
+import { publicAgentRun } from '../../botanicAgentRun.mjs'
+import { requireProjectPermission } from '../../projectAuthorization.mjs'
 
 function routeFailure(caught) {
   return /** @type {Error & { code?: string, statusCode?: number }} */ (

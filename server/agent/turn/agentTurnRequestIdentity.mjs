@@ -1,5 +1,5 @@
 // @ts-check
-import { canonicalHash } from './canonicalHash.mjs'
+import { canonicalHash } from '../../canonicalHash.mjs'
 
 /** 当前 Turn 请求摘要规则。v1 绑定整份 request，v2 排除服务端派生的 messages 窗口。 */
 export const currentAgentTurnRequestHashVersion = 2

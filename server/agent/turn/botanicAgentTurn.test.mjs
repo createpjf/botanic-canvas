@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { BotanicAgentChatError } from './botanicAgentChat.mjs'
+import { BotanicAgentChatError } from '../../botanicAgentChat.mjs'
 import { resolveBotanicAgentTurn, validateBotanicAgentTurnInput } from './botanicAgentTurn.mjs'
-import { botanicAgentContextBriefing, buildBotanicAgentOntology } from './botanicAgentOntology.mjs'
-import { resolveAgentModelContextPolicy } from './agentModelContextPolicy.mjs'
-import { canonicalHash } from './canonicalHash.mjs'
+import { botanicAgentContextBriefing, buildBotanicAgentOntology } from '../../botanicAgentOntology.mjs'
+import { resolveAgentModelContextPolicy } from '../../agentModelContextPolicy.mjs'
+import { canonicalHash } from '../../canonicalHash.mjs'
 
 const runtime = {
   flockApiKey: 'flock-secret',

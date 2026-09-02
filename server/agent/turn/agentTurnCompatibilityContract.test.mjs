@@ -4,8 +4,8 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
-const adapter = readFileSync(new URL('./store/supabaseProductStore.mjs', import.meta.url), 'utf8')
-const migration = readFileSync(new URL('../supabase/migrations/20260827140000_agent_turn_execution_claim.sql', import.meta.url), 'utf8')
+const adapter = readFileSync(new URL('../../store/supabaseProductStore.mjs', import.meta.url), 'utf8')
+const migration = readFileSync(new URL('../../../supabase/migrations/20260827140000_agent_turn_execution_claim.sql', import.meta.url), 'utf8')
 
 function methodSlice(source, signature, nextSignature) {
   const start = source.indexOf(signature)

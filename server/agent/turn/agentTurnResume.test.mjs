@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createAgentTurnResumer } from './agentTurnResume.mjs'
-import { createAgentTargetBinding } from './agentTargetBinding.mjs'
+import { createAgentTargetBinding } from '../../agentTargetBinding.mjs'
 
 const turn = (extra = {}) => ({
   id: 'turn-1', ownerId: 'user-a', projectId: 'project-a', sessionId: 'session-a',

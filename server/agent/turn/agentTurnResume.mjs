@@ -1,14 +1,14 @@
 // @ts-check
 import { validateAgentTurnCheckpoint } from './agentTurnCheckpoint.mjs'
-import { resolveBotanicAgentRuntimeRequest } from './agentRuntimeRequest.mjs'
-import { createAgentOperationalReaders } from './agentOperationalReaders.mjs'
-import { createAgentContextCoordinator } from './agentContextCoordinator.mjs'
+import { resolveBotanicAgentRuntimeRequest } from '../../agentRuntimeRequest.mjs'
+import { createAgentOperationalReaders } from '../../agentOperationalReaders.mjs'
+import { createAgentContextCoordinator } from '../../agentContextCoordinator.mjs'
 import {
   createAgentContextCheckpointEnricher,
   createFlockContextSummaryInvoker,
-} from './agentContextSummarizer.mjs'
-import { projectPermissionDecision } from './authorization.mjs'
-import { assertAgentTargetBinding } from './agentTargetBinding.mjs'
+} from '../../agentContextSummarizer.mjs'
+import { projectPermissionDecision } from '../../authorization.mjs'
+import { assertAgentTargetBinding } from '../../agentTargetBinding.mjs'
 
 const RECEIPT_TEXT_KEYS = new Set(['message', 'status', 'kind', 'type', 'label', 'name'])
 const RECEIPT_BOOLEAN_KEYS = new Set(['ok', 'reused', 'created', 'updated', 'deleted', 'cancelled'])

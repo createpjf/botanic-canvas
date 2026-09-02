@@ -8,7 +8,7 @@ import {
   prepareAgentTurnCheckpoint,
   terminalAgentTurnCheckpoint,
   validateAgentTurnCheckpoint,
-} from './agentTurnCheckpoint.mjs'
+} from './agent/turn/agentTurnCheckpoint.mjs'
 import { assertPublicHttpsUrl } from './webEgressGuard.mjs'
 import { canonicalHash } from './canonicalHash.mjs'
 import { estimateAgentContextTokens, truncateAgentContextText } from './agentContextBudget.mjs'
