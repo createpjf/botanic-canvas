@@ -207,6 +207,8 @@ async function observeAgentRuntimeResult<TResult>(input: {
 }): Promise<{ result: TResult; turn: BotanicAgentObservedTurn<TResult> }> {
   let after = Number.isInteger(input.after) ? Number(input.after) : 0
   let deliveredPreviewRevision = 0
+  let activePreviewObserverRecorded = false
+  let previewRecoveryRecorded = false
   const startedAt = Date.now()
   for (;;) {
     if (input.signal?.aborted) throw new DOMException('The operation was aborted.', 'AbortError')
@@ -237,10 +239,22 @@ async function observeAgentRuntimeResult<TResult>(input: {
     if (page.turn.projectId !== input.projectId || page.turn.id !== input.turnId) {
       throw new ProductApiError('Agent 回合身份校验失败。', 409, 'AGENT_TURN_IDENTITY_MISMATCH')
     }
+    if (!activePreviewObserverRecorded && ['running', 'cancelling'].includes(page.turn.status)) {
+      activePreviewObserverRecorded = true
+      captureSentryMessage('agent_turn_preview_observer_started', {
+        component: 'agent-preview', level: 'info', tags: { operation: 'turn_observer' },
+      })
+    }
     const previewEvent = botanicAgentTurnOutputPreviewAsStreamEvent(page.turn, deliveredPreviewRevision)
     if (previewEvent) {
       deliveredPreviewRevision = previewEvent.revision
       input.onEvent?.(previewEvent)
+      if (!previewRecoveryRecorded) {
+        previewRecoveryRecorded = true
+        captureSentryMessage('agent_turn_preview_recovered', {
+          component: 'agent-preview', level: 'info', tags: { operation: 'turn_observer' },
+        })
+      }
     }
     let deliveredSequence = after
     for (const event of page.events) {

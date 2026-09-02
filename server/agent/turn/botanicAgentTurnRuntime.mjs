@@ -231,6 +231,7 @@ export function createBotanicAgentTurnRuntime({
   heartbeatMs = 30_000,
   turnLifetimeMs = DEFAULT_AGENT_TURN_LIFETIME_MS,
   durabilityDrainMs = 15_000,
+  semanticWriter = writeAgentSemanticEvent,
 } = {}) {
   if (!productStore) throw new TypeError('Agent Turn Runtime 缺少 ProductStore。')
   const activeTurns = new Map()
@@ -245,6 +246,14 @@ export function createBotanicAgentTurnRuntime({
   const boundedDurabilityDrainMs = Math.max(10, Math.min(Number(durabilityDrainMs) || 15_000, 30_000))
 
   const executionError = (code, message, statusCode = 409) => Object.assign(new Error(message), { code, statusCode })
+  const recordPreviewSummary = (outcome, reason, summary = {}) => {
+    try { semanticWriter(AGENT_SEMANTIC_EVENT_NAMES.HARNESS_LIFECYCLE, {
+      kind: 'preview', outcome, reason,
+      writeCount: Math.max(0, Number(summary.writeCount) || 0),
+      maxCharCount: Math.max(0, Number(summary.maxCharCount) || 0),
+      nonEmptyCount: typeof summary.text === 'string' && summary.text.trim() ? 1 : 0,
+    }) } catch { /* metrics旁路fail-open */ }
+  }
   const event = (turnId, projectId, type, payload) => ({
     id: `turn_event_${randomUUID()}`,
     turnId,
@@ -647,6 +656,7 @@ export function createBotanicAgentTurnRuntime({
           ...(turn.checkpoint ? { resumeCheckpoint: clone(turn.checkpoint) } : {}),
           saveCheckpoint,
         }))
+        const previewSummary = outputPreview.snapshot()
         outputPreview.discard()
         clearInterval(heartbeatTimer)
         await drainPersistence()
@@ -669,6 +679,7 @@ export function createBotanicAgentTurnRuntime({
         if (completed.kind === 'cancelling') {
           throw executionError('AGENT_TURN_CANCELLED', '用户取消了 Agent 回合。', 499)
         }
+        recordPreviewSummary('preview_settled', waitingUser ? 'WAITING_USER' : 'COMPLETED', previewSummary)
         const persistedEvents = await productStore.listAgentTurnEvents(userId, projectId, id)
         return {
           turn: publicTurn(turn),
@@ -677,6 +688,7 @@ export function createBotanicAgentTurnRuntime({
           events: persistedEvents ?? [],
         }
       } catch (caught) {
+        const previewSummary = outputPreview.snapshot()
         outputPreview.discard()
         clearInterval(heartbeatTimer)
         // resolver 可能在 emit 后立刻失败。先等已排队的事件 commit 收口，再写终态，
@@ -726,6 +738,9 @@ export function createBotanicAgentTurnRuntime({
         }
         const saved = settled?.turn ?? turn
         const cancellationWon = settled?.kind === 'cancelling'
+        if (!cancellationWon && settled?.kind === 'committed') {
+          recordPreviewSummary('preview_settled', 'FAILED', previewSummary)
+        }
         throw Object.assign(failureSource instanceof Error ? failureSource : new Error(error.message), {
           code: cancellationWon ? 'AGENT_TURN_CANCELLED' : error.code,
           statusCode: failureSource?.statusCode ?? (cancellationWon ? 499 : 502),
@@ -779,12 +794,20 @@ export function createBotanicAgentTurnRuntime({
     if (typeof productStore.finalizeAgentTurnCancellation !== 'function') {
       throw executionError('AGENT_TURN_ATOMIC_FINALIZE_REQUIRED', 'Agent Turn 原子取消收口迁移尚未部署。', 503)
     }
+    const before = await productStore.readAgentTurn(userId, turnId)
     const finalized = await productStore.finalizeAgentTurnCancellation(userId, {
       id: turnId,
       projectId,
       reason,
       event: event(turnId, projectId, 'turn.cancelled', { code: 'AGENT_TURN_CANCELLED', message: reason }),
     })
+    if (finalized?.kind === 'finalized') {
+      recordPreviewSummary('preview_cancelled', 'CANCELLED', {
+        writeCount: before?.outputPreview?.revision,
+        maxCharCount: before?.outputPreview?.text?.length,
+        text: before?.outputPreview?.text,
+      })
+    }
     return publicTurn(finalized?.turn ?? (finalized?.id ? finalized : undefined))
   }
 

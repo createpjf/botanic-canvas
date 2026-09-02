@@ -58,6 +58,6 @@
 - 不持久化raw reasoning、tool-call argument delta或partial answer。
 - 不迁移WebSocket mux。
 
-## 后续Gate
+## Cancel Partial Gate
 
-Durable TurnOutputPreview已由ADR 0012批准并实现。Cancel Partial仍需要独立ADR决定“继续notice”或新增长期`interrupted` Message；当前不保留取消后的partial。
+ADR 0013已建立但未采纳interrupted Message。当前收集：preview write P50/P95、max char P50/P95、取消样本数/非空率，以及浏览器active observer/recovered Sentry比率。至少观察14天、1000个Preview Turn、100次取消、50次active observer，且取消非空率>=25%并有明确用户证据后，才进入接受评审。当前取消仍只显示notice，不保留partial。

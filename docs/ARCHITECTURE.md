@@ -178,7 +178,7 @@ ID 相同，只要 request binding 不同就明确冲突；Message 已绑定但 
 Message 的 `turnId` 重挂 GET observer，以 `after` 游标与单调去重补齐丢帧，排空事件页后才按 Turn 终态用稳定结果
 Message ID 投影。accepted 前断网时，持久化的 pending Message 只用同一稳定键退避重提。原始 reasoning 与逐token answer delta仍只属于当次实时连接；ADR 0012仅允许当前lease持有者把用户可见answer合并为有界replace-style `TurnOutputPreview`。Preview正文只存在于active Turn payload，Event仅存revision/charCount元数据，所有终态原子清除。
 
-Provider SSE 只有 `[DONE]` 才正常结束；坏 JSON、未闭合 tail 或提前 EOF 以 `PROVIDER_STREAM_MALFORMED/CLOSED` 具名失败。非流采样使用总 timeout，流采样按每个网络 chunk/心跳重置 idle watchdog，总预算仍由 Turn deadline 拥有。每个 vision/text/chat/plan attempt 先发 `attempt-start`，answer/reasoning 带 attemptId + chunkIndex；客户端 domain PartialAccumulator 在新 attempt 清除废弃临时前缀，并拒绝重复或旧 attempt 迟到 chunk。Tool 状态仍只来自 execute 前后事件；attempt/chunk cursor 是 live-only。`answer_snapshot`只用于replace恢复当前TurnOutputPreview，不是Message或完成答案；reasoning、tool args与Provider body继续绝对禁止持久化。
+Provider SSE 只有 `[DONE]` 才正常结束；坏 JSON、未闭合 tail 或提前 EOF 以 `PROVIDER_STREAM_MALFORMED/CLOSED` 具名失败。非流采样使用总 timeout，流采样按每个网络 chunk/心跳重置 idle watchdog，总预算仍由 Turn deadline 拥有。每个 vision/text/chat/plan attempt 先发 `attempt-start`，answer/reasoning 带 attemptId + chunkIndex；客户端 domain PartialAccumulator 在新 attempt 清除废弃临时前缀，并拒绝重复或旧 attempt 迟到 chunk。Tool 状态仍只来自 execute 前后事件；attempt/chunk cursor 是 live-only。`answer_snapshot`只用于replace恢复当前TurnOutputPreview，不是Message或完成答案；reasoning、tool args与Provider body继续绝对禁止持久化。每个Turn终态只发一条content-free preview summary(writeCount/maxCharCount/nonEmptyCount)，浏览器observer以两条固定Sentry事件计算恢复命中率；ADR 0013在生产样本达到门槛前禁止新增interrupted Message。
 
 兼容 Plan/Chat 客户端收到 SSE `accepted` 后也切换到同一 GET observer；流断开不会再发起第二次模型调用。非流客户端可用
 `Prefer: respond-async` 获得 `202 + runtimeTurn + observer`。Planner 子 Turn 的稳定键由来源根 Turn 派生，刷新后重新进入生成

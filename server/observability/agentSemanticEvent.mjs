@@ -49,14 +49,15 @@ const compactionOutcomes = new Set(['compacted', 'reused', 'no_change', 'cas_con
 const overflowOutcomes = new Set(['recovered', 'failed', 'not_retried'])
 const usageAnchorOutcomes = new Set(['persisted', 'reused', 'cas_conflict', 'not_found', 'failed'])
 /** Harness 控制面事件（H7）。label 只有低基数枚举与安全 code,不含用户文本/URL/Skill ID/参数。 */
-const harnessKinds = new Set(['tool', 'skill', 'cancel', 'recovery', 'provider', 'loop'])
+const harnessKinds = new Set(['tool', 'skill', 'cancel', 'recovery', 'provider', 'preview', 'loop'])
 const harnessOutcomes = new Set([
   'started', 'succeeded', 'failed', 'aborted', 'unknown',
   'repair', 'loop_stop', 'final_synthesis',
   'requested', 'loaded', 'rejected', 'snapshot_mismatch',
   'cancel_observed', 'started_after_cancel', 'completed_after_cancel',
   'reused', 'reexecuted', 'duplicate_dispatch',
-  'retry', 'call_timeout', 'first_token', 'stream_completed', 'stream_closed', 'stream_malformed', 'deadline_exceeded', 'resume_limit',
+  'retry', 'call_timeout', 'first_token', 'stream_completed', 'stream_closed', 'stream_malformed',
+  'preview_settled', 'preview_cancelled', 'deadline_exceeded', 'resume_limit',
 ])
 
 const ID_LIMIT = 200
@@ -259,6 +260,9 @@ function harnessLifecycleEvent(target, source) {
   addOptionalInteger(target, source, 'durationMs', MAX_DURATION_MS)
   addOptionalInteger(target, source, 'chunkCount', MAX_COUNT)
   addOptionalInteger(target, source, 'maxChunkGapMs', MAX_DURATION_MS)
+  addOptionalInteger(target, source, 'writeCount', MAX_COUNT)
+  addOptionalInteger(target, source, 'maxCharCount', MAX_COUNT)
+  addOptionalInteger(target, source, 'nonEmptyCount', 1)
   addOptionalInteger(target, source, 'generation', 16)
   addError(target, source)
 }

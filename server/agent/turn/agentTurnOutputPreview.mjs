@@ -74,6 +74,7 @@ export function createAgentTurnOutputPreview(input) {
   let step = 0
   let text = ''
   let truncated = false
+  let maxCharCount = typeof input.initialPreview?.text === 'string' ? input.initialPreview.text.length : 0
   let persistedLength = 0
   let dirty = false
   let timer
@@ -122,6 +123,7 @@ export function createAgentTurnOutputPreview(input) {
       if (!delta || truncated) return Promise.resolve(undefined)
       const available = AGENT_TURN_OUTPUT_PREVIEW_MAX_CHARS - text.length
       text += delta.slice(0, available)
+      maxCharCount = Math.max(maxCharCount, text.length)
       if (delta.length > available) truncated = true
       dirty = true
       if (text.length - persistedLength >= flushChars || truncated) return flush()
@@ -135,5 +137,8 @@ export function createAgentTurnOutputPreview(input) {
     clearTimer()
     dirty = false
   }
-  return Object.freeze({ observe, flush, discard, snapshot: () => ({ revision, attemptId, step, text, truncated, dirty }) })
+  return Object.freeze({
+    observe, flush, discard,
+    snapshot: () => ({ revision, writeCount: revision, attemptId, step, text, maxCharCount, truncated, dirty }),
+  })
 }

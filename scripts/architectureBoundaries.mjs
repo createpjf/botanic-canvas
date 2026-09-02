@@ -31,7 +31,8 @@ export const legacyOversizeBudgets = Object.freeze({
   'server/agent/tools/agentToolRuntime.mjs': 1183,
   'src/features/agent/AgentConversationMessage.tsx': 1467,
   'server/agent/tools/botanicAgentTools.mjs': 1020,
-  'src/lib/agentApi.ts': 1388,
+  // +14:ADR 0013 observer恢复命中Sentry遥测(cherry-pick 47d4822)。
+  'src/lib/agentApi.ts': 1402,
   'src/components/bob/bobImpressions.ts': 1341,
   'server/agent/turn/botanicAgentTurn.mjs': 1273,
   'src/domain/agentTimeline.ts': 662,
@@ -42,7 +43,8 @@ export const legacyOversizeBudgets = Object.freeze({
   'src/features/agent/AgentUtilityPanels.tsx': 955,
   'src/store/canvasAssetGraphActions.ts': 901,
   'src/domain/agentVariations.ts': 898,
-  'server/agent/turn/botanicAgentTurnRuntime.mjs': 890,
+  // +23:ADR 0013 preview终态summary遥测(cherry-pick 47d4822)。
+  'server/agent/turn/botanicAgentTurnRuntime.mjs': 913,
   'server/agent/semantic/botanicAgentPersistence.mjs': 889,
   'server/agent/semantic/botanicAgentPlanner.mjs': 883,
   'src/features/canvas/useCanvasAgentExecutionBridge.ts': 862,

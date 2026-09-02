@@ -52,6 +52,15 @@ export function initializeAgentTelemetryMetrics(input) {
     const providerChunkGapHistogram = meter.createHistogram('botanic.agent.provider.max_chunk_gap', {
       description: '单次Provider流的最大安全语义chunk间隔。', unit: 'ms',
     })
+    const previewWriteHistogram = meter.createHistogram('botanic.agent.preview.write_count', {
+      description: '单次Turn的Durable OutputPreview写入次数。', unit: '{write}',
+    })
+    const previewSizeHistogram = meter.createHistogram('botanic.agent.preview.max_char_count', {
+      description: '单次Turn的Durable OutputPreview最大字符数。', unit: '{char}',
+    })
+    const previewNonEmptyHistogram = meter.createHistogram('botanic.agent.preview.nonempty', {
+      description: '取消终态是否存在非空OutputPreview(0/1)。', unit: '{boolean}',
+    })
     activeRecorder = Object.freeze({
       enabled: true,
       /** @param {Record<string, any>} event 已通过 agentSemanticEvent schema 的事件 */
@@ -67,6 +76,9 @@ export function initializeAgentTelemetryMetrics(input) {
           }
           if (Number.isSafeInteger(event.chunkCount)) providerChunkHistogram.record(event.chunkCount, attributes)
           if (Number.isSafeInteger(event.maxChunkGapMs)) providerChunkGapHistogram.record(event.maxChunkGapMs, attributes)
+          if (Number.isSafeInteger(event.writeCount)) previewWriteHistogram.record(event.writeCount, attributes)
+          if (Number.isSafeInteger(event.maxCharCount)) previewSizeHistogram.record(event.maxCharCount, attributes)
+          if (Number.isSafeInteger(event.nonEmptyCount)) previewNonEmptyHistogram.record(event.nonEmptyCount, attributes)
         } catch { /* metrics 旁路 fail-open。 */ }
       },
     })

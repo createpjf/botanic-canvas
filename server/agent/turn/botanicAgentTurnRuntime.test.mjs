@@ -106,7 +106,12 @@ function fakeStore() {
 
 test('Turn Runtime 为同一幂等键复用结果，并且不持久化 reasoning', async () => {
   const store = fakeStore()
-  const runtime = createBotanicAgentTurnRuntime({ productStore: store, now: (() => { let value = 100; return () => ++value })() })
+  const semanticEvents = []
+  const runtime = createBotanicAgentTurnRuntime({
+    productStore: store,
+    now: (() => { let value = 100; return () => ++value })(),
+    semanticWriter: (_name, event) => { semanticEvents.push(event) },
+  })
   const id = agentTurnIdForIdempotency('user-1', 'project-1', 'key-1')
   const events = []
   let toolEventWasPersistedBeforeDelivery = false
@@ -148,6 +153,10 @@ test('Turn Runtime 为同一幂等键复用结果，并且不持久化 reasoning
   assert.equal(store.events.get(id).some((event) => JSON.stringify(event).includes('secret chain')), false)
   assert.equal(toolEventWasPersistedBeforeDelivery, true)
   assert.equal(attemptResetWasDurableBeforeAnswer, true)
+  assert.deepEqual(semanticEvents.filter((event) => event.outcome === 'preview_settled'), [{
+    kind: 'preview', outcome: 'preview_settled', reason: 'COMPLETED',
+    writeCount: 2, maxCharCount: 5, nonEmptyCount: 1,
+  }])
   assert.equal(events[0].type, 'attempt')
 })
 
@@ -363,10 +372,15 @@ test('cancel 落中间态 cancelling，终态留给真正的执行实例或孤�
 
 test('深取消完成后 Runtime 用原子 finalize 把无活动执行者的 Turn 收口为 cancelled', async () => {
   const store = fakeStore()
-  const runtime = createBotanicAgentTurnRuntime({ productStore: store })
+  const semanticEvents = []
+  const runtime = createBotanicAgentTurnRuntime({
+    productStore: store,
+    semanticWriter: (_name, event) => { semanticEvents.push(event) },
+  })
   await store.putAgentTurn('u', {
     id: 'turn-finalize-cancel', version: 2, ownerId: 'u', projectId: 'p',
     idempotencyKey: 'k', status: 'running', createdAt: 1, updatedAt: 1,
+    outputPreview: { version: 1, attemptId: 'text', revision: 3, step: 0, text: '未完成', updatedAt: 1 },
   })
   await runtime.cancel({ userId: 'u', projectId: 'p', turnId: 'turn-finalize-cancel' })
   const finalized = await runtime.finalizeCancellation({
@@ -375,6 +389,10 @@ test('深取消完成后 Runtime 用原子 finalize 把无活动执行者的 Tur
   assert.equal(finalized.status, 'cancelled')
   assert.equal(store.turns.get('turn-finalize-cancel').status, 'cancelled')
   assert.equal(store.events.get('turn-finalize-cancel').at(-1).type, 'turn.cancelled')
+  assert.deepEqual(semanticEvents.filter((event) => event.outcome === 'preview_cancelled'), [{
+    kind: 'preview', outcome: 'preview_cancelled', reason: 'CANCELLED',
+    writeCount: 3, maxCharCount: 3, nonEmptyCount: 1,
+  }])
 })
 
 test('cancel 允许 completed Turn 进入深取消，failed/cancelled 才是无副作用终态', async () => {
