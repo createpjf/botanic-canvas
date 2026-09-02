@@ -302,21 +302,31 @@ test('V2 客户端只接收缺失增量，失去编辑权时收到永久 NACK', 
     value: { id: 'node-missing', type: 'text', position: { x: 80, y: 20 }, data: { kind: 'text', label: 'missing', content: 'missing' } },
   })
   const fullUpdate = Y.encodeStateAsUpdate(serverDocument)
+  const latestDocument = new Y.Doc()
+  Y.applyUpdate(latestDocument, fullUpdate)
+  latestDocument.getMap('nodes').set('node-durable', {
+    order: 2,
+    value: { id: 'node-durable', type: 'text', position: { x: 140, y: 20 }, data: { kind: 'text', label: 'durable', content: 'durable' } },
+  })
+  const latestGraph = {
+    nodes: [...latestDocument.getMap('nodes').values()].map((record) => record.value),
+    edges: [],
+  }
   const graph = {
     nodes: [...nodes.values()].map((record) => record.value),
     edges: [],
   }
-  let persisted = {
-    graph,
-    graphRevision: 7,
-    snapshot: Buffer.from(fullUpdate).toString('base64'),
+  const persisted = {
+    graph: latestGraph,
+    graphRevision: 8,
+    snapshot: Buffer.from(Y.encodeStateAsUpdate(latestDocument)).toString('base64'),
     updates: [],
   }
   const hub = createProjectRealtimeHub({
     server,
     ticketSecret: 'test-secret',
     productStore: {
-      async readProject() { return { document: graph, revision: 1 } },
+      async readProject() { return { document: graph, revision: 1, graphRevision: 8 } },
       async canEditProject() { return false },
       async loadCanvasCollaboration() {
         return structuredClone(persisted)
@@ -340,21 +350,6 @@ test('V2 客户端只接收缺失增量，失去编辑权时收到永久 NACK', 
   while (!messages.length) await new Promise((resolve) => setImmediate(resolve))
   await new Promise((resolve) => setTimeout(resolve, 40))
   assert.deepEqual(messages, [{ type: 'realtime.ready', projectId: 'project-1', protocol: 2 }], 'V2 握手前不应推送整份图谱')
-  const latestDocument = new Y.Doc()
-  Y.applyUpdate(latestDocument, fullUpdate)
-  latestDocument.getMap('nodes').set('node-durable', {
-    order: 2,
-    value: { id: 'node-durable', type: 'text', position: { x: 140, y: 20 }, data: { kind: 'text', label: 'durable', content: 'durable' } },
-  })
-  persisted = {
-    graph: {
-      nodes: [...latestDocument.getMap('nodes').values()].map((record) => record.value),
-      edges: [],
-    },
-    graphRevision: 8,
-    snapshot: Buffer.from(Y.encodeStateAsUpdate(latestDocument)).toString('base64'),
-    updates: [],
-  }
   const response = nextMessageWithin(socket)
   socket.send(JSON.stringify({
     type: 'canvas.sync.hello.v2',
@@ -772,14 +767,12 @@ test('房间初始化暂时失败后，下一次连接会重新加载', async (c
   retried.close()
 })
 
-test('V2 握手重载失败会显式关闭连接并上报', async (context) => {
+test('V2 握手复用已加载房间，不因重复重载失败而断开', async (context) => {
   const server = createServer((_request, response) => response.end())
   let loadCount = 0
-  const reported = []
   const hub = createProjectRealtimeHub({
     server,
     ticketSecret: 'test-secret',
-    reportError: (...input) => reported.push(input),
     productStore: {
       async readProject() { return { document: { nodes: [], edges: [] }, revision: 1 } },
       async canEditProject() { return true },
@@ -803,10 +796,7 @@ test('V2 握手重载失败会显式关闭连接并上报', async (context) => {
   })
 
   assert.deepEqual(await nextMessage(socket), { type: 'realtime.ready', projectId: 'project-1', protocol: 2 })
-  const closeResult = Promise.race([
-    new Promise((resolve) => socket.once('close', (code, reason) => resolve({ code, reason: reason.toString() }))),
-    new Promise((_, reject) => setTimeout(() => reject(new Error('V2 握手失败后连接仍保持 OPEN')), 300)),
-  ])
+  const response = nextMessageWithin(socket)
   socket.send(JSON.stringify({
     type: 'canvas.sync.hello.v2',
     protocol: 2,
@@ -816,9 +806,52 @@ test('V2 握手重载失败会显式关闭连接并上报', async (context) => {
     stateVectorBase64: Buffer.from(Y.encodeStateVector(new Y.Doc())).toString('base64'),
   }))
 
-  assert.deepEqual(await closeResult, { code: 1013, reason: 'canvas sync unavailable' })
-  assert.equal(reported.length, 1)
-  assert.equal(reported[0][1].tags.operation, 'handshake')
+  assert.equal((await response).type, 'canvas.sync.ready.v2')
+  assert.equal(loadCount, 1)
+})
+
+test('新连接发现更高图谱版本时只在升级前重载一次', async (context) => {
+  const server = createServer((_request, response) => response.end())
+  let loadCount = 0
+  const hub = createProjectRealtimeHub({
+    server,
+    ticketSecret: 'test-secret',
+    productStore: {
+      async readProject() { return { document: { nodes: [], edges: [] }, revision: 1, graphRevision: 2 } },
+      async canEditProject() { return true },
+      async loadCanvasCollaboration() {
+        loadCount += 1
+        return { graph: { nodes: [], edges: [] }, graphRevision: loadCount === 1 ? 1 : 2, updates: [] }
+      },
+    },
+  })
+  await listen(server)
+  const ticket = issueRealtimeTicket({ userId: 'user-1', projectId: 'project-1', origin: testOrigin, secret: 'test-secret' })
+  const socket = new WebSocket(
+    `ws://127.0.0.1:${server.address().port}/api/realtime?projectId=project-1&protocol=2&ticket=${encodeURIComponent(ticket)}`,
+    { origin: testOrigin },
+  )
+  context.after(async () => {
+    socket.close()
+    await hub.close()
+    await new Promise((resolve) => server.close(resolve))
+  })
+
+  assert.deepEqual(await nextMessage(socket), { type: 'realtime.ready', projectId: 'project-1', protocol: 2 })
+  const response = nextMessageWithin(socket)
+  socket.send(JSON.stringify({
+    type: 'canvas.sync.hello.v2',
+    protocol: 2,
+    projectId: 'project-1',
+    schemaVersion: 2,
+    clientInstanceId: 'client-stale-room',
+    stateVectorBase64: Buffer.from(Y.encodeStateVector(new Y.Doc())).toString('base64'),
+  }))
+
+  const ready = await response
+  assert.equal(ready.type, 'canvas.sync.ready.v2')
+  assert.equal(ready.graphRevision, 2)
+  assert.equal(loadCount, 2)
 })
 
 test('最后一个客户端离开后释放空闲房间', async (context) => {

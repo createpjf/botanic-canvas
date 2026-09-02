@@ -188,6 +188,17 @@ export function createProjectRealtimeHub({
     return roomPromise
   }
 
+  const refreshRoomIfStale = async (entry, actorId, graphRevision) => {
+    const targetRevision = Number(graphRevision)
+    if (!Number.isInteger(targetRevision) || targetRevision <= entry.room.graphRevision()) return
+    if (!entry.refreshPromise) {
+      entry.refreshPromise = entry.room.reloadPersistedState(actorId)
+        .then(() => { entry.hasState = true })
+        .finally(() => { entry.refreshPromise = undefined })
+    }
+    await entry.refreshPromise
+  }
+
   const publishCanvasRepair = async ({ projectId, update, mutationId, actorId, graphRevision, updatedAt, sourceSocket }) => {
     const payload = JSON.stringify({ type: 'canvas.crdt.update', projectId, update, mutationId })
     for (const socket of clientsByProject.get(projectId) ?? []) {
@@ -317,8 +328,6 @@ export function createProjectRealtimeHub({
           && (event.lastAckedGraphRevision === undefined
             || (Number.isInteger(event.lastAckedGraphRevision) && event.lastAckedGraphRevision > 0))) {
           try {
-            await context.roomEntry.room.reloadPersistedState(context.userId)
-            context.roomEntry.hasState = true
             const syncProtocolEpoch = await canvasSyncProtocolEpoch(context.userId, context.projectId)
             const synchronized = await context.roomEntry.room.syncState(event.stateVectorBase64)
             if (socket.readyState === WebSocket.OPEN) {
@@ -446,6 +455,7 @@ export function createProjectRealtimeHub({
       if (!authorized || !project) return socket.destroy()
       const canEdit = await productStore.canEditProject(authorized.userId, projectId)
       const roomEntry = await collaborationRoom(authorized.userId, projectId, project)
+      await refreshRoomIfStale(roomEntry, authorized.userId, project.graphRevision)
       webSocketServer.handleUpgrade(request, socket, head, (client) => {
         webSocketServer.emit('connection', client, request, { ...authorized, canEdit, roomEntry, canvasSyncProtocol })
       })
@@ -516,8 +526,12 @@ export function createProjectRealtimeHub({
       if (!roomPromise) return
       try {
         const entry = await roomPromise
-        await entry.room.reloadPersistedState(event.actorId)
-        entry.hasState = true
+        if (Number.isInteger(event.graphRevision)) {
+          await refreshRoomIfStale(entry, event.actorId, event.graphRevision)
+        } else {
+          await entry.room.reloadPersistedState(event.actorId)
+          entry.hasState = true
+        }
         const payload = JSON.stringify({
           type: 'canvas.crdt.update', projectId: event.projectId,
           update: event.update,
@@ -538,8 +552,12 @@ export function createProjectRealtimeHub({
       let roomEntry
       if (roomPromise) {
         roomEntry = await roomPromise
-        await roomEntry.room.reloadPersistedState(actorId)
-        roomEntry.hasState = true
+        if (Number.isInteger(graphRevision)) {
+          await refreshRoomIfStale(roomEntry, actorId, graphRevision)
+        } else {
+          await roomEntry.room.reloadPersistedState(actorId)
+          roomEntry.hasState = true
+        }
         scheduleRoomEviction(projectId)
       }
       if (duplicate) {

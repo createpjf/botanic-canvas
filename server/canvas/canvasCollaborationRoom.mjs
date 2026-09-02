@@ -596,6 +596,7 @@ export function createCanvasCollaborationRoom({ state, append, compact, reload, 
 
   return {
     graph: () => clone(graph),
+    graphRevision: () => graphRevision,
     stateUpdate() {
       if (requiresReload) throw new Error('画布权威状态暂时无法恢复。')
       return updateToBase64(Y.encodeStateAsUpdate(document))

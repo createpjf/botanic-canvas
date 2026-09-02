@@ -28,6 +28,8 @@ type CanvasSyncHelloEvent = {
 export type ProjectRealtimeChannel = {
   publish: (event: ProjectRealtimeEvent | CanvasSyncHelloEvent) => boolean
   restart: () => void
+  suspend: () => void
+  resume: () => void
   close: () => void
 }
 
@@ -61,7 +63,7 @@ export function openProjectRealtimeChannel(
   onConnectionStateChanged?: (state: ProjectRealtimeConnectionState) => void,
 ): ProjectRealtimeChannel {
   if (!serverPersistenceEnabled || !projectId) {
-    return { publish: () => false, restart: () => undefined, close: () => undefined }
+    return { publish: () => false, restart: () => undefined, suspend: () => undefined, resume: () => undefined, close: () => undefined }
   }
 
   let closed = false
@@ -71,6 +73,7 @@ export function openProjectRealtimeChannel(
   let retryCount = 0
   let openedBefore = false
   let connectionState: ProjectRealtimeConnectionState = 'closed'
+  let reconnectSuspended = false
 
   const notifyConnectionState = (state: ProjectRealtimeConnectionState) => {
     if (closed && state !== 'closed') return
@@ -80,7 +83,7 @@ export function openProjectRealtimeChannel(
   }
 
   const scheduleReconnect = () => {
-    if (closed || reconnectTimer !== undefined) return
+    if (closed || reconnectSuspended || reconnectTimer !== undefined) return
     notifyConnectionState(openedBefore ? 'reconnecting' : 'connecting')
     const delay = Math.min(15_000, 1_000 * (2 ** Math.min(retryCount, 4)))
     retryCount += 1
@@ -91,7 +94,7 @@ export function openProjectRealtimeChannel(
   }
 
   const connect = async () => {
-    if (closed || socket?.readyState === WebSocket.OPEN || socket?.readyState === WebSocket.CONNECTING) return
+    if (closed || reconnectSuspended || socket?.readyState === WebSocket.OPEN || socket?.readyState === WebSocket.CONNECTING) return
     const run = ++connectionRun
     try {
       const { ticket, websocketUrl: endpoint } = await productRequest<RealtimeTicket>('/api/realtime/ticket', {
@@ -132,6 +135,7 @@ export function openProjectRealtimeChannel(
   }
 
   const reconnectWhenOnline = () => {
+    if (reconnectSuspended) return
     retryCount = 0
     if (reconnectTimer !== undefined) {
       window.clearTimeout(reconnectTimer)
@@ -146,6 +150,7 @@ export function openProjectRealtimeChannel(
 
   const restart = () => {
     if (closed) return
+    reconnectSuspended = false
     connectionRun += 1
     const currentSocket = socket
     socket = undefined
@@ -157,6 +162,28 @@ export function openProjectRealtimeChannel(
     scheduleReconnect()
   }
 
+  const suspend = () => {
+    if (closed) return
+    reconnectSuspended = true
+    connectionRun += 1
+    const currentSocket = socket
+    socket = undefined
+    if (reconnectTimer !== undefined) {
+      window.clearTimeout(reconnectTimer)
+      reconnectTimer = undefined
+    }
+    currentSocket?.close(4000, 'canvas handshake paused')
+    notifyConnectionState(openedBefore ? 'reconnecting' : 'connecting')
+  }
+
+  const resume = () => {
+    if (closed) return
+    reconnectSuspended = false
+    retryCount = 0
+    notifyConnectionState(openedBefore ? 'reconnecting' : 'connecting')
+    void connect()
+  }
+
   return {
     publish(event) {
       if (closed || socket?.readyState !== WebSocket.OPEN || event.projectId !== projectId) return false
@@ -164,6 +191,8 @@ export function openProjectRealtimeChannel(
       return true
     },
     restart,
+    suspend,
+    resume,
     close() {
       if (closed) return
       closed = true
