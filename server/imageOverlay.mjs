@@ -1,7 +1,7 @@
 import { crc32, deflateSync, inflateSync } from 'node:zlib'
 import jpeg from 'jpeg-js'
-import { GenerationError } from './generationProvider.mjs'
-import { compositionOverlayReferences, shouldPixelOverlayCompose } from './generationComposition.mjs'
+import { GenerationError } from './generation/generationProvider.mjs'
+import { compositionOverlayReferences, shouldPixelOverlayCompose } from './generation/generationComposition.mjs'
 import { detectImageFormat } from './mediaFormats.mjs'
 import { normalizeRegionRect } from './regionMaskPng.mjs'
 

@@ -1,5 +1,5 @@
 import Redis from 'ioredis'
-import { ProviderCircuitBreaker } from './generationGovernance.mjs'
+import { ProviderCircuitBreaker } from './generation/generationGovernance.mjs'
 
 const FAILURE_SCRIPT = `
 local failures = redis.call('HINCRBY', KEYS[1], 'failures', 1)

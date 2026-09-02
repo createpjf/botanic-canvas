@@ -3,24 +3,24 @@ import { EventEmitter } from 'node:events'
 import test from 'node:test'
 import { createAgentRouteHandler, createServerSentEventWriter } from './agentRoutes.mjs'
 import { matchBotanicHttpRoutes } from './httpRouteTable.mjs'
-import { AgentSubagentServiceError } from './agentSubagentService.mjs'
-import { AgentSubagentPersistenceError } from './agentSubagentPersistence.mjs'
-import { agentTurnIdForIdempotency, createAgentTurnRecord } from './botanicAgentTurnRuntime.mjs'
-import { agentReviewRetryMaterializationDecision } from './agentReviewRetryMaterialization.mjs'
+import { AgentSubagentServiceError } from './agent/subagent/agentSubagentService.mjs'
+import { AgentSubagentPersistenceError } from './agent/subagent/agentSubagentPersistence.mjs'
+import { agentTurnIdForIdempotency, createAgentTurnRecord } from './agent/turn/botanicAgentTurnRuntime.mjs'
+import { agentReviewRetryMaterializationDecision } from './agent/review/agentReviewRetryMaterialization.mjs'
 import {
   agentReviewCancellationRequestDecision,
   agentReviewExecutionClaimDecision,
   agentReviewPreparedCheckpoint,
   committedAgentReviewExecution,
-} from './agentReviewExecution.mjs'
-import { agentReviewOutcomeReconciliationDecision } from './agentReviewReconciliation.mjs'
-import { agentReviewResultId } from './agentReviewTask.mjs'
+} from './agent/review/agentReviewExecution.mjs'
+import { agentReviewOutcomeReconciliationDecision } from './agent/review/agentReviewReconciliation.mjs'
+import { agentReviewResultId } from './agent/review/agentReviewTask.mjs'
 import {
   agentTurnExecutionClaimDecision,
   committedAgentTurnExecution,
   finalizedAgentTurnCancellation,
   requestedAgentTurnCancellation,
-} from './productStoreContract.mjs'
+} from './store/productStoreContract.mjs'
 import { createAgentTargetBinding } from './agentTargetBinding.mjs'
 
 const targetImage = 'data:image/png;base64,AQ=='
@@ -2790,7 +2790,7 @@ test('写工具按项目角色进注册表：Viewer 一个都拿不到', async (
 })
 
 test('服务端权限表与工具暴露判定同源，不会出现看不到却调得动', async () => {
-  const { agentToolPermission } = await import('./agentActionGovernance.mjs')
+  const { agentToolPermission } = await import('./agent/action/agentActionGovernance.mjs')
   const { OPERATIONAL_ACTION_TOOLS, operationalActionToolsForRole } = await import('./botanicAgentOperationalTools.mjs')
   const { projectPermissionDecision } = await import('./authorization.mjs')
   for (const role of ['viewer', 'editor', 'owner']) {

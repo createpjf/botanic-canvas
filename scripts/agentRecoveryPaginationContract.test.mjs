@@ -2,10 +2,10 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
-const contract = readFileSync(new URL('../server/productStoreContract.mjs', import.meta.url), 'utf8')
-const local = readFileSync(new URL('../server/productStore.mjs', import.meta.url), 'utf8')
-const postgres = readFileSync(new URL('../server/postgresProductStore.mjs', import.meta.url), 'utf8')
-const supabase = readFileSync(new URL('../server/supabaseProductStore.mjs', import.meta.url), 'utf8')
+const contract = readFileSync(new URL('../server/store/productStoreContract.mjs', import.meta.url), 'utf8')
+const local = readFileSync(new URL('../server/store/productStore.mjs', import.meta.url), 'utf8')
+const postgres = readFileSync(new URL('../server/store/postgresProductStore.mjs', import.meta.url), 'utf8')
+const supabase = readFileSync(new URL('../server/store/supabaseProductStore.mjs', import.meta.url), 'utf8')
 const runtimeStatuses = readFileSync(new URL('../supabase/migrations/20260827120000_agent_turn_runtime_statuses.sql', import.meta.url), 'utf8')
 const indexes = readFileSync(new URL('../supabase/migrations/20260827160000_agent_recovery_pagination.sql', import.meta.url), 'utf8')
 

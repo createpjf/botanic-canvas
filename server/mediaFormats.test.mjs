@@ -12,7 +12,7 @@ import {
   isCanonicalImageFormat,
   isUploadImageFormat,
 } from './mediaFormats.mjs'
-import { gptImage2CustomSizeLimits } from './generationOutputSize.mjs'
+import { gptImage2CustomSizeLimits } from './generation/generationOutputSize.mjs'
 
 function pngBytes(width, height) {
   const buffer = Buffer.alloc(33)

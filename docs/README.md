@@ -32,25 +32,8 @@
 
 以下规格正在本轮实现，完成后以代码与测试为准：
 
-- [批量变体：共享提示词、按支回填、尺寸与自定义像素](superpowers/specs/2026-08-19-variation-prompt-writeback-size-design.md)
-- [Agent 深度思考时间线与联网检索](superpowers/specs/2026-08-19-agent-thinking-web-search-design.md)
-- [Botanic 系统状态页（自建数据源）](superpowers/specs/2026-08-29-status-page-self-host-design.md)
 - [画布同步协议 V2：研究与重设计](CANVAS_SYNC_PROTOCOL_RESEARCH_AND_REDESIGN_2026-08-31.md)——**发布状态见 [审查记录](agents/issue-tracker.md)**：代码已纳入 Release Candidate，但部分 Supabase migration（SYNC-02/19/20 对应项）尚未应用、`sync_protocol_epoch` 尚未切换；接手同步协议改动前必读。
 
-## 评审与历史记录
+## 历史归档
 
-以下文档记录特定时点的评审、验收或迁移阶段，不代表当前通用开发规范：
-
-- [产品与代码深度评审（2026-08-16）](PRODUCT_CODE_REVIEW_2026-08-16.md)
-- [Agent AIGC 可规模化创意工作流审查](AGENT_AIGC_WORKFLOW_REVIEW.md)
-- [Agent 架构交接（2026-08）](HANDOFF_AGENT_ARCHITECTURE_2026-08.md)
-- [Agent + Canvas 线上故障交接（2026-08-31）](AGENT_CANVAS_INCIDENT_HANDOFF_2026-08-31.md)——目标已由后续修复提交完成
-- `ARCHITECTURE_OVERVIEW.md`
-- `FLOCK_API_MODEL_CATALOG_2026-08-31.md`
-- `P0-6_MIGRATION_ACCEPTANCE.md`
-- `PR15_REVIEW.md`
-- `RELEASE_ACCEPTANCE_2026-08-04.md`
-- `RELEASE_ACCEPTANCE_2026-08-05.md`
-- `RELEASE_CHECKLIST_AGENT_ONTOLOGY_ARTIFACT_INDEX.md`
-- `ROLE_MATRIX_ACCEPTANCE_PLAN.md`
-- `.agents/plans/` 中已完成的专项计划
+`docs/archive/` 保存特定时点的评审、验收、交接报告与已完成的设计规格（`reviews/`、`handoffs/`、`superpowers/`）。这些文档**不代表当前规范**，只作历史证据；当前入口永远是本索引的「当前规范」与「架构决策」。归档策略：一次性报告完成即入档，不在根目录堆积；引用历史文档时注明其时点。`.agents/plans/` 中已完成的专项计划同理。

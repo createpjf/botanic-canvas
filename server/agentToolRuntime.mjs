@@ -8,10 +8,10 @@ import {
   prepareAgentTurnCheckpoint,
   terminalAgentTurnCheckpoint,
   validateAgentTurnCheckpoint,
-} from './agentTurnCheckpoint.mjs'
+} from './agent/turn/agentTurnCheckpoint.mjs'
 import { assertPublicHttpsUrl } from './webEgressGuard.mjs'
 import { canonicalHash } from './canonicalHash.mjs'
-import { estimateAgentContextTokens, truncateAgentContextText } from './agentContextBudget.mjs'
+import { estimateAgentContextTokens, truncateAgentContextText } from './agent/context/agentContextBudget.mjs'
 import { extractAgentEntityReferences, mergeAgentEntityReferences } from './agentEntityReferences.mjs'
 import { normalizeProviderUsage } from './botanicAgentStream.mjs'
 import { withBotanicSpan } from './executionTelemetry.mjs'

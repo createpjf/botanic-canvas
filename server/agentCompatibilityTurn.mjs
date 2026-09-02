@@ -4,7 +4,7 @@ import {
   createAgentCompatibilityRuntimeRequest,
   resolveBotanicAgentRuntimeRequest,
 } from './agentRuntimeRequest.mjs'
-import { publicAgentTurn } from './botanicAgentTurnRuntime.mjs'
+import { publicAgentTurn } from './agent/turn/botanicAgentTurnRuntime.mjs'
 
 /** 旧 plan/chat/intent 的深模块：兼容响应不再拥有另一套 Turn 生命周期。 */
 export function createAgentCompatibilityTurn({

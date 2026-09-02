@@ -16,8 +16,8 @@ const canvasSyncMigration = readFileSync(
   new URL('../supabase/migrations/20260831120000_canvas_sync_v2_phase1.sql', import.meta.url),
   'utf8',
 )
-const postgresStore = readFileSync(new URL('./postgresProductStore.mjs', import.meta.url), 'utf8')
-const supabaseStore = readFileSync(new URL('./supabaseProductStore.mjs', import.meta.url), 'utf8')
+const postgresStore = readFileSync(new URL('./store/postgresProductStore.mjs', import.meta.url), 'utf8')
+const supabaseStore = readFileSync(new URL('./store/supabaseProductStore.mjs', import.meta.url), 'utf8')
 
 test('Supabase SECURITY DEFINER 只保留 RLS 所需权限', () => {
   assert.match(migration, /botanic_handle_new_user\(\) from public, anon, authenticated/u)

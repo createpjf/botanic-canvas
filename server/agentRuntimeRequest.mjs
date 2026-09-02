@@ -1,10 +1,10 @@
 // @ts-check
 import { canonicalHash } from './canonicalHash.mjs'
-import { generationIdempotencyKey } from './generationIdempotency.mjs'
+import { generationIdempotencyKey } from './generation/generationIdempotency.mjs'
 import { planBotanicGeneration } from './botanicAgentPlanner.mjs'
 import { chatWithBotanicAgent } from './botanicAgentChat.mjs'
-import { resolveBotanicAgentTurn } from './botanicAgentTurn.mjs'
-import { bindAgentModelContextOptions } from './agentModelContextBinding.mjs'
+import { resolveBotanicAgentTurn } from './agent/turn/botanicAgentTurn.mjs'
+import { bindAgentModelContextOptions } from './agent/model/agentModelContextBinding.mjs'
 import { pinnedBotanicAgentProjectSkills } from './botanicAgentTools.mjs'
 
 const COMPATIBILITY_OPERATIONS = new Set(['plan', 'chat', 'intent'])

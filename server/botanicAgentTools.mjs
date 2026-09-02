@@ -15,8 +15,8 @@ import {
   normalizeBotanicAgentSkillCapabilities,
   resolveAgentSkillDependencyClosure,
   skillRiskOrder,
-} from './botanicAgentSkill.mjs'
-import { estimateAgentContextTokens } from './agentContextBudget.mjs'
+} from './agent/action/botanicAgentSkill.mjs'
+import { estimateAgentContextTokens } from './agent/context/agentContextBudget.mjs'
 import { AGENT_SEMANTIC_EVENT_NAMES, writeAgentSemanticEvent } from './agentSemanticEvent.mjs'
 
 /** Skill 语义事件（H7）:只带低基数 reason(错误码词法),不带 Skill ID 或用户文本。 */

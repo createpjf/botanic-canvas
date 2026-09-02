@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { createIdempotencyRequestBinding } from './idempotencyRequestBinding.mjs'
 import { agentRunCompiledPlanProvenance } from './creativePlanResolver.mjs'
-import { inferAspectRatioFromPixels, normalizeCustomGenerationSize } from './generationOutputSize.mjs'
+import { inferAspectRatioFromPixels, normalizeCustomGenerationSize } from './generation/generationOutputSize.mjs'
 import { normalizeRegionRect } from './regionMaskPng.mjs'
 import { normalizeAgentToolCallId } from './agentToolCallIdentity.mjs'
 

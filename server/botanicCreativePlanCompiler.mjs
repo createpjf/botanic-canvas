@@ -1,6 +1,6 @@
 import { canonicalHash } from './canonicalHash.mjs'
 import { brandConstraintLines, brandKitFingerprint, brandReviewCriteria } from './brandKit.mjs'
-import { evaluatorSkillCriteria } from './agentReviewSkillEvaluator.mjs'
+import { evaluatorSkillCriteria } from './agent/review/agentReviewSkillEvaluator.mjs'
 
 const dimensions = new Set([
   'person', 'garment', 'product', 'scene', 'style', 'pose',

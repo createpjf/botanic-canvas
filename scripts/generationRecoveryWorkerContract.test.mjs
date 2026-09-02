@@ -7,7 +7,7 @@ const worker = readFileSync(new URL('../server/worker.mjs', import.meta.url), 'u
 test('Worker 启动与周期恢复复用同一个有界 Generation keyset sweep', () => {
   assert.match(
     worker,
-    /import \{ createGenerationRecoverySweep \} from '\.\/generationRecoverySweep\.mjs'/u,
+    /import \{ createGenerationRecoverySweep \} from '\.\/generation\/generationRecoverySweep\.mjs'/u,
   )
   assert.match(worker, /createGenerationRecoverySweep\(\{[\s\S]*productStore:\s*runtime\.productStore[\s\S]*enqueue:\s*\(jobId\)\s*=>\s*queue\.enqueue\(jobId\)/u)
   assert.match(worker, /async function recoverQueuedJobs\(\)[\s\S]*await sweepRecoverableGenerationJobs\(\)/u)

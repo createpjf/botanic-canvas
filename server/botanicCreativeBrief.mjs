@@ -1,4 +1,4 @@
-import { GENERATION_ASPECT_RATIOS, GENERATION_RESOLUTIONS } from './generationVocabulary.mjs'
+import { GENERATION_ASPECT_RATIOS, GENERATION_RESOLUTIONS } from './generation/generationVocabulary.mjs'
 
 export const botanicCreativeBriefFieldIds = Object.freeze([
   'model',

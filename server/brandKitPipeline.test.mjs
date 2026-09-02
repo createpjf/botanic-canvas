@@ -3,9 +3,9 @@ import test from 'node:test'
 import { compileCreativePlan } from './botanicCreativePlanCompiler.mjs'
 import { resolveBrandKit } from './brandKit.mjs'
 import { resolveRunBrandKit } from './creativePlanResolver.mjs'
-import { createAgentReviewTask } from './agentReviewTask.mjs'
-import { createAgentReviewResult } from './agentReviewTask.mjs'
-import { createAgentReviewVisionJudge, reviewVisionInstructions } from './agentReviewVision.mjs'
+import { createAgentReviewTask } from './agent/review/agentReviewTask.mjs'
+import { createAgentReviewResult } from './agent/review/agentReviewTask.mjs'
+import { createAgentReviewVisionJudge, reviewVisionInstructions } from './agent/review/agentReviewVision.mjs'
 
 /**
  * Brand Kit 的**贯通**测试（Epic 9.1）。

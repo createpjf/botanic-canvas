@@ -1,5 +1,5 @@
 import { AgentToolRuntimeError, freezeAgentStepSnapshot, runAgentToolLoop } from './agentToolRuntime.mjs'
-import { createBotanicAgentModelProvider } from './botanicAgentModelProvider.mjs'
+import { createBotanicAgentModelProvider } from './agent/model/botanicAgentModelProvider.mjs'
 import {
   BOTANIC_AGENT_MOUNTED_SKILL_LIMIT,
   botanicAgentMountedSkillBriefing,
@@ -8,14 +8,14 @@ import {
   pinnedBotanicAgentProjectSkills,
   resolveBotanicAgentMountedSkills,
 } from './botanicAgentTools.mjs'
-import { createAgentSubagentRunner } from './agentSubagentRunner.mjs'
+import { createAgentSubagentRunner } from './agent/subagent/agentSubagentRunner.mjs'
 import { normalizeBotanicAgentLocale, readBotanicAgentInstructions } from './agentInstructions.mjs'
 import {
   botanicCreativeBriefFieldIds,
   BotanicCreativeBriefValidationError,
   validateBotanicCreativeBrief,
 } from './botanicCreativeBrief.mjs'
-import { GENERATION_ASPECT_RATIOS, GENERATION_RESOLUTIONS } from './generationVocabulary.mjs'
+import { GENERATION_ASPECT_RATIOS, GENERATION_RESOLUTIONS } from './generation/generationVocabulary.mjs'
 import {
   applyBotanicAgentVariationToPlan,
   botanicAgentLooksLikePlannerNarration,
@@ -26,9 +26,9 @@ import {
   inferAspectRatioFromPixels,
   modelSupportsCustomSize,
   normalizeCustomGenerationSize,
-} from './generationOutputSize.mjs'
+} from './generation/generationOutputSize.mjs'
 import { canonicalHash } from './canonicalHash.mjs'
-import { resolveAgentModelContextBinding } from './agentModelContextBinding.mjs'
+import { resolveAgentModelContextBinding } from './agent/model/agentModelContextBinding.mjs'
 
 const INTENTS = new Set([
   'continue_generation', 'replace_scene', 'replace_person', 'replace_product',

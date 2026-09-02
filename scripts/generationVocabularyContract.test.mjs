@@ -5,7 +5,7 @@ import {
   GENERATION_ASPECT_RATIOS,
   GENERATION_RESOLUTIONS,
   NANO_BANANA_MODEL_ID,
-} from '../server/generationVocabulary.mjs'
+} from '../server/generation/generationVocabulary.mjs'
 
 const domain = readFileSync(new URL('../src/domain/canvas.ts', import.meta.url), 'utf8')
 

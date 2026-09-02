@@ -4,11 +4,11 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
-const postgres = readFileSync(new URL('./postgresProductStore.mjs', import.meta.url), 'utf8')
-const supabase = readFileSync(new URL('./supabaseProductStore.mjs', import.meta.url), 'utf8')
-const local = readFileSync(new URL('./productStore.mjs', import.meta.url), 'utf8')
+const postgres = readFileSync(new URL('./store/postgresProductStore.mjs', import.meta.url), 'utf8')
+const supabase = readFileSync(new URL('./store/supabaseProductStore.mjs', import.meta.url), 'utf8')
+const local = readFileSync(new URL('./store/productStore.mjs', import.meta.url), 'utf8')
 const persistence = readFileSync(new URL('./botanicAgentPersistence.mjs', import.meta.url), 'utf8')
-const productStoreContract = readFileSync(new URL('./productStoreContract.mjs', import.meta.url), 'utf8')
+const productStoreContract = readFileSync(new URL('./store/productStoreContract.mjs', import.meta.url), 'utf8')
 const migration = readFileSync(new URL('../supabase/migrations/20260827180000_agent_thread_summary_cas.sql', import.meta.url), 'utf8')
 const sessionSettingsMigration = readFileSync(new URL('../supabase/migrations/20260830052434_agent_session_settings_cas.sql', import.meta.url), 'utf8')
 
@@ -65,7 +65,7 @@ test('PostgreSQL Message writer 在锁内共用单调生命周期与 sticky 请�
     'async putAgentMessage(userId, projectId, sessionId, input)',
     'async putAgentMemoryItem(userId, projectId, input)',
   )
-  assert.match(postgres, /import \{ mergeAgentMessageForWrite \} from '\.\/agentMessageMerge\.mjs'/u)
+  assert.match(postgres, /import \{ mergeAgentMessageForWrite \} from '\.\.\/agentMessageMerge\.mjs'/u)
   for (const writer of [sync, putMessage]) {
     assert.match(writer, /mergeAgentMessageForWrite/u)
     assert.match(writer, /for update/u)
@@ -80,7 +80,7 @@ test('PostgreSQL 协作活动 Adapter 导入所有活动持久化辅助函数', 
     postgres.indexOf('async listCollaborationActivities'),
     postgres.indexOf('async putAgentSessionReadReceipt'),
   )
-  assert.match(header, /from '\.\/collaborationActivityPersistence\.mjs'/u)
+  assert.match(header, /from '\.\.\/collaborationActivityPersistence\.mjs'/u)
   for (const helper of [
     'collaborationActivitiesForMember',
     'collaborationActivityListOptions',

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
-const source = readFileSync(new URL('./postgresProductStore.mjs', import.meta.url), 'utf8')
+const source = readFileSync(new URL('./store/postgresProductStore.mjs', import.meta.url), 'utf8')
 
 function methodSource(name, nextName) {
   const start = source.indexOf(`async ${name}`)

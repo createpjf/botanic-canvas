@@ -6,7 +6,7 @@ import { matchBotanicHttpRoutes } from './httpRouteTable.mjs'
 import {
   agentTurnExecutionClaimDecision,
   committedAgentTurnExecution,
-} from './productStoreContract.mjs'
+} from './store/productStoreContract.mjs'
 
 const config = {
   flockApiBaseUrl: 'https://provider.test/v1',

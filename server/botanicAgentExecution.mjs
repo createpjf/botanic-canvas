@@ -1,10 +1,10 @@
 import { AgentToolRuntimeError } from './agentToolRuntime.mjs'
-import { validateGenerationInput } from './generationProvider.mjs'
-import { generationJobForCanvasProjection, generationJobProjectionComplete, reconcileGenerationResults } from './generationResultReconciliation.mjs'
+import { validateGenerationInput } from './generation/generationProvider.mjs'
+import { generationJobForCanvasProjection, generationJobProjectionComplete, reconcileGenerationResults } from './generation/generationResultReconciliation.mjs'
 import { compileAgentBranchRecipe } from './botanicCreativePlanCompiler.mjs'
 import { compiledBranchFromRun, normalizeResolverModels, resolveCreativePlan } from './creativePlanResolver.mjs'
 import { canonicalImageDataUrlPattern } from './mediaFormats.mjs'
-import { generationInputProvenance } from './generationInputProvenance.mjs'
+import { generationInputProvenance } from './generation/generationInputProvenance.mjs'
 
 function clone(value) {
   return structuredClone(value)

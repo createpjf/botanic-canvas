@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
 const migration = readFileSync(new URL('../supabase/migrations/20260827140000_agent_turn_execution_claim.sql', import.meta.url), 'utf8')
-const supabaseAdapter = readFileSync(new URL('../server/supabaseProductStore.mjs', import.meta.url), 'utf8')
+const supabaseAdapter = readFileSync(new URL('../server/store/supabaseProductStore.mjs', import.meta.url), 'utf8')
 const reconciliationMigration = readFileSync(new URL('../supabase/migrations/20260827150000_agent_action_reconciliation.sql', import.meta.url), 'utf8')
 
 test('Supabase Turn 执行 claim 使用数据库时钟、行锁与 execution version', () => {

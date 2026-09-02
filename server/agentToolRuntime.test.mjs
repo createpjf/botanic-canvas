@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { AgentToolRuntimeError, createAgentToolRegistry, executeConfirmedAgentAction, freezeAgentStepSnapshot, runAgentToolLoop, toolEventPresentation } from './agentToolRuntime.mjs'
-import { estimateAgentContextTokens } from './agentContextBudget.mjs'
+import { estimateAgentContextTokens } from './agent/context/agentContextBudget.mjs'
 
 test('Tool Registry 以 OpenAI 兼容函数协议暴露受控工具并执行参数校验', async () => {
   const registry = createAgentToolRegistry([

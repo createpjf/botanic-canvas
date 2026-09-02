@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import { PassThrough } from 'node:stream'
 import test from 'node:test'
-import { GenerationError } from './generationProvider.mjs'
+import { GenerationError } from './generation/generationProvider.mjs'
 import {
   buildFlockImageRequest,
   flockImageRequestFields,

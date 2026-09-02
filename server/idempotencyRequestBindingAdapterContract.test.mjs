@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 import { createPersistentAgentRun } from './botanicAgentRun.mjs'
 import { createIdempotencyRequestBinding } from './idempotencyRequestBinding.mjs'
-import { createProductStore } from './productStore.mjs'
+import { createProductStore } from './store/productStore.mjs'
 
 function localHarness() {
   const directory = mkdtempSync(join(tmpdir(), 'botanic-idempotency-binding-'))

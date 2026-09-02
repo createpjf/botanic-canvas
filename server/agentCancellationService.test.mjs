@@ -8,7 +8,7 @@ import {
 import {
   acknowledgedGenerationJobCancellation,
   requestedGenerationJobCancellation,
-} from './generationJobExecution.mjs'
+} from './generation/generationJobExecution.mjs'
 
 function branch(id, status, activeJobId) {
   return {

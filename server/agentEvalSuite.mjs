@@ -1,5 +1,5 @@
 // @ts-check
-import { reviewDeterministicLayer } from './agentReviewDeterministic.mjs'
+import { reviewDeterministicLayer } from './agent/review/agentReviewDeterministic.mjs'
 
 /**
  * 创意质量 Eval 套件（Epic 12）。

@@ -1,7 +1,7 @@
 import { AgentToolRuntimeError, createAgentToolRegistry, freezeAgentStepSnapshot, runAgentToolLoop } from './agentToolRuntime.mjs'
 import { botanicAgentWebResearchSourceLabels, createBotanicAgentWebResearchTools } from './botanicAgentWebTools.mjs'
 import { botanicAgentProviderConfig } from './botanicAgentPlanner.mjs'
-import { createBotanicAgentModelProvider } from './botanicAgentModelProvider.mjs'
+import { createBotanicAgentModelProvider } from './agent/model/botanicAgentModelProvider.mjs'
 import { normalizeBotanicAgentLocale, readBotanicAgentInstructions } from './agentInstructions.mjs'
 import { botanicAgentContextBriefing, buildBotanicAgentOntology, safeBotanicAgentMemory } from './botanicAgentOntology.mjs'
 import {
@@ -14,7 +14,7 @@ import { captionAgentVisionModel, nativeAgentVisionModel } from './botanicAgentV
 import { botanicAgentContextToolSourceLabels, createBotanicAgentReadToolDefinitions } from './botanicAgentContextTools.mjs'
 import { BOTANIC_AGENT_MOUNTED_SKILL_LIMIT, botanicAgentMountedSkillBriefing, botanicAgentSearchableSkills, pinnedBotanicAgentProjectSkills, resolveBotanicAgentMountedSkills } from './botanicAgentTools.mjs'
 import { canonicalHash } from './canonicalHash.mjs'
-import { resolveAgentModelContextBinding } from './agentModelContextBinding.mjs'
+import { resolveAgentModelContextBinding } from './agent/model/agentModelContextBinding.mjs'
 
 const CHAT_MODES = new Set(['conversation', 'prompt', 'research'])
 const MESSAGE_ROLES = new Set(['user', 'assistant'])
