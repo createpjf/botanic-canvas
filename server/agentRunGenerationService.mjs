@@ -393,7 +393,14 @@ export function createAgentRunGenerationService({
     const latestRun = await productStore.readAgentRun(userId, run.id) ?? run
     await publishAgentRunUpdated({ projectId, run: publicAgentRun(latestRun) })
     if (queueFailures.length) throw new AgentToolRuntimeError('QUEUE_UNAVAILABLE', queueFailures[0].error, 503)
-    return { run: latestRun, jobs: prepared.jobs, workflows: prepared.workflows, saved }
+    return {
+      run: latestRun,
+      jobs: prepared.jobs,
+      workflows: prepared.workflows,
+      saved,
+      baseRevision: project.revision,
+      baseGraphRevision: project.graphRevision,
+    }
   }
 
   async function submitGeneration(userId, projectId, runId) {

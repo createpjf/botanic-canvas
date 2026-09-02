@@ -364,26 +364,32 @@ export async function retryBotanicAgentTurnCancellation(input: {
   cancelTurn: (turnId: string) => Promise<unknown>
   signal?: AbortSignal
   wait?: (signal?: AbortSignal, attempt?: number) => Promise<void>
+  maximumAttempts?: number
 }) {
   const turnId = input.turnId.trim()
   if (!turnId) throw new TypeError('Agent Turn 取消缺少身份。')
-  let attempt = 0
-  for (;;) {
+  const maximumAttempts = Math.max(1, Math.min(input.maximumAttempts ?? 6, 20))
+  const exhausted = () => Object.assign(new Error('暂时无法确认 Agent 回合已取消；取消意图已保存，请稍后重试。'), {
+    code: 'AGENT_TURN_CANCELLATION_RETRY_EXHAUSTED',
+    status: 0,
+  })
+  for (let attempt = 1; attempt <= maximumAttempts; attempt += 1) {
     if (input.signal?.aborted) throw new DOMException('The operation was aborted.', 'AbortError')
     try {
       const result = await input.cancelTurn(turnId)
       if ((result as { turn?: { status?: string } } | undefined)?.turn?.status === 'cancelling') {
-        attempt += 1
+        if (attempt === maximumAttempts) throw exhausted()
         await (input.wait ?? waitForCancellationRetry)(input.signal, attempt)
         continue
       }
       return { kind: 'cancelling' as const, turnId }
     } catch (caught) {
       if (!retryableCancellationError(caught)) throw caught
-      attempt += 1
+      if (attempt === maximumAttempts) throw exhausted()
       await (input.wait ?? waitForCancellationRetry)(input.signal, attempt)
     }
   }
+  throw exhausted()
 }
 
 /**

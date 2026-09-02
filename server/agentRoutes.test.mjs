@@ -267,6 +267,8 @@ test('导演模式：创建 Run 后服务端直接提交生成，浏览器拿到
   assert.deepEqual(responses[0]?.body.canvasPatch.nodes.map((node) => node.id), ['agent-prompt-1', 'agent-generate-1', 'agent-result-1'])
   assert.deepEqual(responses[0]?.body.canvasPatch.edges.map((edge) => edge.id), ['agent-output-edge-job-1'])
   assert.equal(responses[0]?.body.canvasPatch.revision, 3)
+  assert.equal(responses[0]?.body.canvasPatch.baseRevision, 2)
+  assert.equal(responses[0]?.body.canvasPatch.baseGraphRevision, 1)
   assert.equal(submitted.length, 1)
   assert.equal(submitted[0].userId, 'user-1')
   assert.equal(submitted[0].projectId, runInput.projectId)
@@ -1154,6 +1156,8 @@ test('工作流创建回执携带已持久化的节点与连线，客户端可�
   assert.equal(responses[0]?.status, 200)
   assert.deepEqual(responses[0]?.body.output.canvasPatch.nodes.map((node) => node.id), ['prompt-1', 'generate-1', 'result-1'])
   assert.deepEqual(responses[0]?.body.output.canvasPatch.edges.map((edge) => edge.id), ['prompt-generate', 'generate-result'])
+  assert.equal(responses[0]?.body.output.canvasPatch.baseRevision, 1)
+  assert.equal(responses[0]?.body.output.canvasPatch.baseGraphRevision, 1)
 })
 
 function fakeServerResponse() {

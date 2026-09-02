@@ -413,3 +413,17 @@ test('失败消息可由用户手动重新排队，并沿用原幂等键只提�
   assert.deepEqual(delivered, ['agent-message-m-retry'])
   assert.deepEqual(queue.list(), [])
 })
+
+test('失败消息可由用户明确放弃同步并清出持久队列', async () => {
+  const storage = createMemoryStorage()
+  const queue = createAgentMessageQueue({
+    storage,
+    deliver: async () => { throw Object.assign(new Error('无权限'), { status: 403 }) },
+  })
+  queue.enqueue(fixture('m-discard', 10))
+  await queue.flush()
+
+  assert.equal(queue.discard('m-discard')?.message.id, 'm-discard')
+  assert.deepEqual(queue.list(), [])
+  assert.equal(storage.value, '[]')
+})

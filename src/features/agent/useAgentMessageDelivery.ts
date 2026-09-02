@@ -156,6 +156,12 @@ export function useAgentMessageDelivery({
     if (online) void flush()
   }, [flush, isCurrentProject, onUpdateMessage, online, queue])
 
+  const discardMessage = useCallback((messageId: string) => {
+    const item = queue.discard(messageId)
+    if (!item || !isCurrentProject()) return
+    onUpdateMessage(item.sessionId, messageId, { deliveryStatus: undefined })
+  }, [isCurrentProject, onUpdateMessage, queue])
+
   const ensureMessageDurable = useCallback(async (message: BotanicAgentMessage) => {
     // 恢复路径重新 enqueue 同一 Message 操作，不依赖上次本地队列恰好还在。
     // enqueue 失败必须在此冒泡：消息不在队列里时，下面的送达断言会因
@@ -172,5 +178,5 @@ export function useAgentMessageDelivery({
     assertAgentMessageQueueItemDelivered(queue, message.id)
   }, [enqueueSafely, flush, isCurrentProject, online, queue, session])
 
-  return { appendMessage, persistMessage, retryMessage, ensureMessageDurable }
+  return { appendMessage, persistMessage, retryMessage, discardMessage, ensureMessageDurable }
 }

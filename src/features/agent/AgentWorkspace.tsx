@@ -513,6 +513,7 @@ export default function AgentWorkspace({
   const [pendingRegionInstruction, setPendingRegionInstruction] = useState<{
     instruction: string
     options: AgentInstructionRetryOptions
+    target: { id: string; name: string; image: string }
   } | null>(null)
   const [liveConversation, setLiveConversation] = useState<AgentLiveConversation>()
   /** 气泡旁路时间线：回合结束后的工具步骤，以及确认后的 Run 进度投影。 */
@@ -588,7 +589,7 @@ export default function AgentWorkspace({
     createFailedMessage: flowCopy.skillCreateFailed,
   })
   const { skills, systemSkills } = skillRegistry
-  const { appendMessage: appendNewMessage, persistMessage, retryMessage, ensureMessageDurable } = useAgentMessageDelivery({
+  const { appendMessage: appendNewMessage, persistMessage, retryMessage, discardMessage, ensureMessageDurable } = useAgentMessageDelivery({
     projectId,
     session,
     isCurrentProject: isCurrentAgentProject,
@@ -685,6 +686,7 @@ export default function AgentWorkspace({
   const readingAnchorTimerRef = useRef<number | null>(null)
   const readingPositionRestoredRef = useRef(false)
   const followLatestMessagesRef = useRef(true)
+  const followingScrollTweenRef = useRef<ReturnType<typeof scrollElementIntoView> | undefined>(undefined)
   const lastReadingAnchorRef = useRef(session?.readingAnchorMessageId ?? '')
   const locatedMessageTimerRef = useRef<number | null>(null)
   const [locatedMessageId, setLocatedMessageId] = useState('')
@@ -1118,22 +1120,23 @@ export default function AgentWorkspace({
     }
     onDismissRemoteChange()
   }, [locateTaskSourceMessage, onDismissRemoteChange, onFocusNodes, showTaskForRun])
-
+  const scrollToLatestConversation = useCallback(() => {
+    const viewport = messagesViewportRef.current
+    if (viewport) followingScrollTweenRef.current = scrollElementIntoView(viewport, messageEndRef.current ?? 'max', { duration: botanicMotion.duration.panel, block: 'end' })
+  }, [])
   const jumpToLatestConversation = useCallback(() => {
     const latestMessageId = session?.messages.at(-1)?.id
     if (!session || !latestMessageId) return
     followLatestMessagesRef.current = true
     lastReadingAnchorRef.current = latestMessageId
     setReadingRestoreNotice(false)
-    const viewport = messagesViewportRef.current
-    if (viewport) scrollElementIntoView(viewport, messageEndRef.current ?? 'max', { duration: botanicMotion.duration.panel, block: 'end' })
+    scrollToLatestConversation()
     onUpdateReadingAnchor(session.id, latestMessageId)
-  }, [onUpdateReadingAnchor, session])
-
+  }, [onUpdateReadingAnchor, scrollToLatestConversation, session])
   const scheduleReadingAnchorUpdate = useCallback(() => {
     const viewport = messagesViewportRef.current
     if (!viewport) return
-    followLatestMessagesRef.current = isFollowingLatest(viewport)
+    if (!followingScrollTweenRef.current?.isActive()) followLatestMessagesRef.current = isFollowingLatest(viewport)
     if (!readingPositionRestoredRef.current || utilityPanelOpen || !session?.id) return
     if (readingAnchorTimerRef.current !== null) window.clearTimeout(readingAnchorTimerRef.current)
     readingAnchorTimerRef.current = window.setTimeout(() => {
@@ -1395,9 +1398,8 @@ export default function AgentWorkspace({
 
   useEffect(() => {
     if (!readingPositionRestoredRef.current || utilityPanelOpen || !followLatestMessagesRef.current) return
-    const viewport = messagesViewportRef.current
-    if (viewport) scrollElementIntoView(viewport, messageEndRef.current ?? 'max', { duration: botanicMotion.duration.panel, block: 'end' })
-  }, [session?.messages.length, latestRun?.updatedAt, liveConversation, planning, runtimeSteps.length, runtimeSteps[runtimeSteps.length - 1]?.status, utilityPanelOpen])
+    scrollToLatestConversation()
+  }, [session?.messages.length, latestRun?.updatedAt, liveConversation, planning, runtimeSteps.length, runtimeSteps[runtimeSteps.length - 1]?.status, scrollToLatestConversation, utilityPanelOpen])
 
   const latestRenderedMessageId = renderedConversationMessages.at(-1)?.id ?? ''
   const latestAssistantMessageId = [...renderedConversationMessages].reverse().find((message) => message.role === 'assistant')?.id
@@ -1454,7 +1456,6 @@ export default function AgentWorkspace({
       (composerTextareaRef.current ?? utilityButtonRef.current)?.focus()
     }))
   }
-
   const openUtilityPanel = (panel: AgentUtilityPanel) => {
     setUtilityPanel(panel)
     setHistoryOpen(false)
@@ -1462,12 +1463,10 @@ export default function AgentWorkspace({
     setActiveTransientSurface(null)
     setMentionQuery(undefined)
   }
-
   const openRunFeedback = (run: BotanicAgentRun) => {
     const feedback = agentRunFeedback(run, artifacts, availableCanvasNodeIds, locale)
     openUtilityPanel(feedback.action === 'view_results' ? 'result' : 'task')
   }
-
   const decideReview = async (message: BotanicAgentMessage, decision: 'accepted' | 'rejected') => {
     const review = message.review
     if (!review?.id || !session || reviewDecisionPendingId) return
@@ -1479,13 +1478,12 @@ export default function AgentWorkspace({
         review: saved,
         content: formatBotanicAgentRunReviewMessage(saved, locale),
       })
-    } catch {
-      // 决策失败保留 pending 状态，用户可再次提交。
+    } catch (caught) {
+      if (isCurrentAgentProject()) setError(localizeProductError(caught, locale, { 'zh-CN': '评审提交失败，请重试。', en: 'Unable to submit the review decision. Try again.' }))
     } finally {
       setReviewDecisionPendingId('')
     }
   }
-
   useEffect(() => {
     if (!session) return
     for (const run of runs) {
@@ -2107,8 +2105,15 @@ export default function AgentWorkspace({
       return
     }
     if (entry.kind === 'select_region') {
-      // 局部重绘先框选：选区回来后带 region 重放这条指令，直接进入生成链路。
-      setPendingRegionInstruction({ instruction: cleanInstruction, options })
+      if (!instructionTarget?.image) {
+        setError(locale === 'en' ? 'The selected image is no longer available.' : '原选中图片已不可用，请重新选择。')
+        return
+      }
+      setPendingRegionInstruction({
+        instruction: cleanInstruction,
+        options: { ...options, targetNodeId: instructionTarget.id },
+        target: { id: instructionTarget.id, name: instructionTarget.label, image: instructionTarget.image },
+      })
       appendMessage({
         role: 'assistant',
         kind: 'notice',
@@ -2422,9 +2427,9 @@ export default function AgentWorkspace({
           }, 0)
           return
         }
+        const message = localizeProductError(caught, locale, { 'zh-CN': copy.unavailable, en: copy.unavailable })
         setLiveConversation((current) => {
           if (current?.sessionId !== session.id || current.message.id !== liveMessageId) return current
-          const message = caught instanceof Error ? caught.message : copy.unavailable
           const next = applyAgentConversationStreamEvent(
             { content: current.message.content, timeline: current.timeline },
             { type: 'error', message, receivedAt: Date.now() },
@@ -2443,10 +2448,6 @@ export default function AgentWorkspace({
           && !(caught.code === 'STREAM_DISCONNECTED' || caught.code === 'REQUEST_TIMEOUT')
         if (!fallBack) {
           if (!runtimeTurnId) persistedInputMessage = persistMessageUpdate(persistedInputMessage, { status: 'failed' })
-          const message = localizeProductError(caught, locale, {
-            'zh-CN': copy.unavailable,
-            en: copy.unavailable,
-          })
           const cancelled = caught instanceof ProductApiError && caught.code === 'AGENT_TURN_CANCELLED'
           if (runtimeTurnId) {
             appendMessage({
@@ -2459,8 +2460,8 @@ export default function AgentWorkspace({
                 ? (locale === 'en' ? 'Agent turn cancelled.' : '已取消本轮 Agent 任务。')
                 : message,
             })
-            setLiveConversation((current) => current?.message.id === liveMessageId ? undefined : current)
           }
+          setLiveConversation((current) => current?.message.id === liveMessageId ? undefined : current)
           if (cancelled) {
             setRuntimePhase('idle')
             return
@@ -3597,7 +3598,7 @@ export default function AgentWorkspace({
         className="agent-workspace__messages"
         role="log"
         aria-live="polite"
-        aria-relevant="additions text"
+        aria-relevant="additions"
         onScroll={handleMessagesScroll}
       >
         {loadingOlderMessages ? <div className="agent-workspace__history-loading" role="status">{flowCopy.processing}</div> : null}
@@ -3783,6 +3784,7 @@ export default function AgentWorkspace({
           onUsePrompt={usePromptForGeneration}
           onEdit={(content) => { setInstruction(content); requestAnimationFrame(() => composerTextareaRef.current?.focus()) }}
           onRetryDelivery={retryMessage}
+          onDiscardDelivery={discardMessage}
           onFeedback={(targetMessage, feedback) => onUpdateMessage(session.id, targetMessage.id, { feedback })}
           onSaveAsMemory={(targetMessage, kind, content) => onAddMemory(kind, content, targetMessage.sourceNodeIds ?? [])}
           onReviewDecision={(targetMessage, decision) => void decideReview(targetMessage, decision)}
@@ -3895,8 +3897,8 @@ export default function AgentWorkspace({
         onToggleImageContext={(itemId, selected) => { if (!session) return; changeSessionContext(selected ? session.contextNodeIds.filter((id) => id !== itemId) : [...session.contextNodeIds, itemId]) }}
         onExecutionModeChange={(mode) => { if (session) onExecutionModeChange(session.id, mode); setModeMenuOpen(false); requestAnimationFrame(() => modeMenuButtonRef.current?.focus()) }}
       /> : null}
-      {pendingRegionInstruction && target?.image ? <RegionMaskEditor
-        target={{ id: target.id, name: target.label, image: target.image }}
+      {pendingRegionInstruction ? <RegionMaskEditor
+        target={pendingRegionInstruction.target}
         busy={planning}
         hidePrompt
         submitLabel={locale === 'en' ? 'Continue with selection' : '按选区继续'}

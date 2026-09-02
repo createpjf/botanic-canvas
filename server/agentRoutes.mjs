@@ -1627,8 +1627,8 @@ export function createAgentRouteHandler({
                 nodes: prepared.workflows.flatMap((workflow) => [workflow.promptNode, workflow.generateNode, workflow.resultNode]),
                 edges: prepared.workflows.flatMap((workflow) => workflow.edges),
                 updatedAt: saved.document.updatedAt,
-                revision: saved.revision,
-                graphRevision: saved.graphRevision,
+                baseRevision: project.revision, revision: saved.revision,
+                baseGraphRevision: project.graphRevision, graphRevision: saved.graphRevision,
               },
             }
           },
@@ -1909,8 +1909,8 @@ export function createAgentRouteHandler({
           nodes: execution.workflows.flatMap((workflow) => [workflow.promptNode, workflow.generateNode, workflow.resultNode]),
           edges: execution.workflows.flatMap((workflow) => workflow.edges),
           updatedAt: execution.saved.document.updatedAt,
-          revision: execution.saved.revision,
-          graphRevision: execution.saved.graphRevision,
+          baseRevision: execution.baseRevision ?? Math.max(1, Number(execution.saved.revision) - 1), revision: execution.saved.revision,
+          baseGraphRevision: execution.baseGraphRevision ?? Math.max(1, Number(execution.saved.graphRevision) - 1), graphRevision: execution.saved.graphRevision,
         }
       }
       // 幂等重放时分支已带 jobIds 不再 autoSubmit；从项目文档按 Job 记录重建增量，重放响应仍能立即上画布。
@@ -1930,8 +1930,8 @@ export function createAgentRouteHandler({
             nodes,
             edges,
             updatedAt: project.document.updatedAt,
-            revision: project.revision,
-            graphRevision: project.graphRevision,
+            baseRevision: project.revision, revision: project.revision,
+            baseGraphRevision: project.graphRevision, graphRevision: project.graphRevision,
           }
         } catch {
           return undefined

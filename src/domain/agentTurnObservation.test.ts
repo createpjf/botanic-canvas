@@ -530,6 +530,22 @@ test('Stop 的 404/断网只保留取消意图并重试，不伪造 cancelled �
   assert.deepEqual(calls, [])
 })
 
+test('Stop 重试有上限，持续断网时释放 UI 等待态并保留可重试错误', async () => {
+  let attempts = 0
+  await assert.rejects(retryBotanicAgentTurnCancellation({
+    turnId: 'turn-offline',
+    maximumAttempts: 3,
+    cancelTurn: async () => {
+      attempts += 1
+      throw Object.assign(new Error('offline'), { status: 0 })
+    },
+    wait: async () => undefined,
+  }), (error: unknown) => (
+    (error as { code?: string }).code === 'AGENT_TURN_CANCELLATION_RETRY_EXHAUSTED'
+  ))
+  assert.equal(attempts, 3)
+})
+
 test('Stop 收到 cancelling 后继续请求，直到服务端确认 cancelled', async () => {
   const statuses = ['cancelling', 'cancelled'] as const
   let attempts = 0

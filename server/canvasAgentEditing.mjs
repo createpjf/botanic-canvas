@@ -170,6 +170,8 @@ export function createCanvasAgentEditExecutors({ productStore, publishProjectUpd
     }
     let saved
     let graphCommit
+    let baseRevision
+    let baseGraphRevision
     try {
       if (mutationId && supportsDurableCanvasGraphMutation(productStore)) {
         const committed = await commitCanvasProjectMutation({
@@ -181,11 +183,15 @@ export function createCanvasAgentEditExecutors({ productStore, publishProjectUpd
         })
         saved = committed?.saved
         graphCommit = committed?.graphCommit
+        baseRevision = committed?.baseRevision
+        baseGraphRevision = committed?.baseGraphRevision
       } else if (typeof productStore.updateProjectDocument === 'function') {
         saved = await productStore.updateProjectDocument(userId, projectId, mutateDocument)
       } else {
         const project = await productStore.readProject(userId, projectId)
         if (!project) throw editError('PROJECT_NOT_FOUND', '未找到当前项目。', 404)
+        baseRevision = project.revision
+        baseGraphRevision = project.graphRevision
         saved = await productStore.writeProject(userId, mutateDocument(project.document), project.revision, project.graphRevision)
       }
     } catch (caught) {
@@ -196,35 +202,39 @@ export function createCanvasAgentEditExecutors({ productStore, publishProjectUpd
       throw caught
     }
     if (!saved || !edited) throw editError('PROJECT_NOT_FOUND', '未找到当前项目。', 404)
+    baseRevision ??= Math.max(1, Number(saved.revision) - 1)
+    baseGraphRevision ??= Math.max(1, Number(saved.graphRevision) - 1)
     await publishProjectUpdated(saved, userId, graphCommit)
-    return { saved, edited }
+    return { saved, edited, baseRevision, baseGraphRevision }
   }
-  const nodePatch = (saved, node) => ({
+  const nodePatch = (saved, node, baseRevision, baseGraphRevision) => ({
     nodes: [node],
     edges: [],
     updatedAt: saved.document.updatedAt,
+    baseRevision,
     revision: saved.revision,
+    baseGraphRevision,
     graphRevision: saved.graphRevision,
   })
   return {
     updateCanvasText: async ({ nodeId, content, label }) => {
-      const { saved, edited } = await editDocument((document) => (
+      const { saved, edited, baseRevision, baseGraphRevision } = await editDocument((document) => (
         applyBotanicAgentCanvasTextUpdate(document, { nodeId, content, label })
       ))
       return {
         message: `已更新节点「${edited.node.data?.label ?? nodeId}」。`,
         canvasNodeIds: [nodeId],
-        canvasPatch: nodePatch(saved, edited.node),
+        canvasPatch: nodePatch(saved, edited.node, baseRevision, baseGraphRevision),
       }
     },
     updateGenerateSettings: async ({ nodeId, settings, batchCount }) => {
-      const { saved, edited } = await editDocument((document) => (
+      const { saved, edited, baseRevision, baseGraphRevision } = await editDocument((document) => (
         applyBotanicAgentGenerateSettingsUpdate(document, { nodeId, settings, batchCount }, models)
       ))
       return {
         message: `已调整「${edited.node.data?.label ?? nodeId}」的生成参数。`,
         canvasNodeIds: [nodeId],
-        canvasPatch: nodePatch(saved, edited.node),
+        canvasPatch: nodePatch(saved, edited.node, baseRevision, baseGraphRevision),
       }
     },
     deleteCanvasNodes: async ({ nodeIds }) => {

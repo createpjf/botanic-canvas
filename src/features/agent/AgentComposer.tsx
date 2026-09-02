@@ -255,6 +255,8 @@ export function AgentComposer({
         onSelectMention(mentionOptions[selectedSuggestionIndex])
         return
       }
+      event.preventDefault()
+      return
     }
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault()

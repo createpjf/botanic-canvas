@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   appendBotanicAgentReasoningDelta,
-  createBotanicAgentRuntimeSteps,
   insertBotanicAgentReasoningSteps,
   insertBotanicAgentToolCallSteps,
   restoreBotanicAgentRuntimeSteps,
@@ -115,21 +114,6 @@ function localizeRuntimeSteps({
   })
 }
 
-function yieldRuntimeFrame() {
-  return new Promise<void>((resolve) => {
-    let settled = false
-    const finish = () => {
-      if (settled) return
-      settled = true
-      window.clearTimeout(timeoutId)
-      window.cancelAnimationFrame(frameId)
-      resolve()
-    }
-    const frameId = window.requestAnimationFrame(finish)
-    const timeoutId = window.setTimeout(finish, 50)
-  })
-}
-
 /** Agent 运行轨迹的创建、恢复与阶段收敛模块。 */
 export function useAgentRuntimeTrace({
   latestRun,
@@ -164,23 +148,6 @@ export function useAgentRuntimeTrace({
     setSteps((current) => updateBotanicAgentRuntimeStep(current, stepId, status, Date.now(), localizeRuntimeError(errorMessage, locale)))
   }, [locale])
 
-  const begin = useCallback((input: {
-    hasTarget: boolean
-    referenceCount: number
-    memoryCount: number
-    assetGroupCount: number
-    mode?: BotanicAgentRuntimeMode
-  }) => {
-    const nextSteps = createBotanicAgentRuntimeSteps({ ...input, plannerLabel })
-    const firstStep = nextSteps[0]
-    const started = firstStep ? updateBotanicAgentRuntimeStep(nextSteps, firstStep.id, 'running') : nextSteps
-    setSteps(started)
-    setMode(input.mode ?? 'generation')
-    setPhase('reading')
-    setDetailsOpen(false)
-    return started
-  }, [plannerLabel])
-
   /** 切换会话时丢弃上一轮的运行轨迹，避免旧内容跟着新会话留在面板底部。 */
   const reset = useCallback(() => {
     setSteps([])
@@ -208,35 +175,6 @@ export function useAgentRuntimeTrace({
     setSteps((current) => appendBotanicAgentReasoningDelta(current, step, delta))
   }, [])
 
-  const updateStepDetail = useCallback((stepId: string, detail: string) => {
-    setSteps((current) => current.map((step) => step.id === stepId ? { ...step, detail } : step))
-  }, [])
-
-  /**
-   * 上下文（画布节点、参考、项目记忆、素材组）本来就在内存里，读取是同步且瞬时的。
-   * 这里一次性标记完成——此前逐条播 rAF 动画，会让人误以为后台正在做耗时工作，
-   * 也把真实的模型调用淹没在假进度里。轨迹只应反映真实发生的事。
-   */
-  const completeContextReads = useCallback(async (runtimeSteps: BotanicAgentRuntimeStep[]) => {
-    const contextStepIds = new Set(runtimeSteps
-      .filter((step) => !['call-planner', 'finalize-plan', 'create-workflow', 'respond'].includes(step.id))
-      .map((step) => step.id))
-    if (!contextStepIds.size) return
-    setSteps((current) => current.map((step) => contextStepIds.has(step.id)
-      ? { ...step, status: 'succeeded', completedAt: Date.now() }
-      : step))
-  }, [])
-
-  const complete = useCallback(async (targetPresent: boolean) => {
-    updateStep('call-planner', 'succeeded')
-    const finalStepId = targetPresent ? 'finalize-plan' : 'create-workflow'
-    updateStep(finalStepId, 'running')
-    await yieldRuntimeFrame()
-    updateStep(finalStepId, 'succeeded')
-    setPhase('completed')
-    setDetailsOpen(false)
-  }, [updateStep])
-
   const fail = useCallback((message: string) => {
     const localizedMessage = localizeRuntimeError(message, locale) ?? runtimeErrorCopy[locale]
     setPhase('failed')
@@ -250,7 +188,7 @@ export function useAgentRuntimeTrace({
 
   useEffect(() => {
     if (!hasSession || !latestRun || planning) return
-    if (phase === 'waiting_clarification' || phase === 'waiting_confirmation' || phase === 'waiting_reference' || phase === 'draft_ready') return
+    if (phase === 'failed' || phase === 'waiting_clarification' || phase === 'waiting_confirmation' || phase === 'waiting_reference' || phase === 'draft_ready') return
     const active = latestRun.status === 'queued' || latestRun.status === 'running' || latestRun.status === 'executing'
     const failed = latestRun.status === 'failed' || latestRun.status === 'cancelled'
     setPhase(active ? 'executing' : failed ? 'failed' : 'completed')
@@ -293,16 +231,10 @@ export function useAgentRuntimeTrace({
     runtimeDetailsOpen: detailsOpen,
     setRuntimePhase: setPhase,
     setRuntimeDetailsOpen: setDetailsOpen,
-    beginRuntimeTrace: begin,
     resetRuntimeTrace: reset,
-    updateRuntimeStep: updateStep,
     attachPlannerToolTrace: attachPlannerTools,
     attachRuntimeReasoning: attachReasoning,
     appendRuntimeReasoningDelta: appendReasoningDelta,
-    updateRuntimeStepDetail: updateStepDetail,
-    yieldRuntimeFrame,
-    completeRuntimeContextReads: completeContextReads,
-    completeRuntimeTrace: complete,
     failRuntimeTrace: fail,
   }
 }
