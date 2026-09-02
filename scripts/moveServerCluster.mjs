@@ -19,8 +19,12 @@ for (const file of files) {
   const source = readFileSync(file, 'utf8')
   let next = source
   if (file.startsWith(`server/${subdir}/`)) {
-    // 簇内文件引用簇外 server 模块: './x.mjs' -> '../x.mjs'（仅当 x 未被移动）
+    // 簇内文件引用簇外 server 模块: './x.mjs' -> '../x.mjs'（仅当 x 未被移动）;
+    // 已迁走的其他簇 './other/x.mjs' -> '../other/x.mjs'。
     next = next.replace(/(['"])\.\/([A-Za-z0-9_-]+)\.mjs\1/g, (m, q, ref) => moved.has(ref) ? m : `${q}../${ref}.mjs${q}`)
+    next = next.replace(/(['"])\.\/([A-Za-z0-9_-]+)\/([A-Za-z0-9_-]+)\.mjs\1/g, (m, q, dir, ref) => dir === subdir ? `${q}./${ref}.mjs${q}` : `${q}../${dir}/${ref}.mjs${q}`)
+    // 越出 server/ 的路径（如 ../supabase/migrations）再加一级。
+    next = next.replaceAll("'../supabase/", "'../../supabase/")
   } else {
     for (const base of bases) {
       // 簇外引用被移动模块: './base.mjs' -> './<subdir>/base.mjs'; '../server/base.mjs' 等按目录深度

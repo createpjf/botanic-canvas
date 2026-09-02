@@ -10,7 +10,7 @@ import { agentMessageListOptions, encodeAgentMessageCursor, normalizeAgentSessio
 import { mergeAgentMessageForWrite } from './agentMessageMerge.mjs'
 import { observeProductStoreRead } from './productStoreMetrics.mjs'
 import { collaborationActivitiesForMember, nextCollaborationReceipt, validateCollaborationActivity } from './collaborationActivityPersistence.mjs'
-import { acknowledgedGenerationJobCancellation, committedGenerationJobExecution, comparedAndSetGenerationJob, generationJobExecutionClaimDecision, generationJobPutDecision, requestedGenerationJobCancellation } from './generationJobExecution.mjs'
+import { acknowledgedGenerationJobCancellation, committedGenerationJobExecution, comparedAndSetGenerationJob, generationJobExecutionClaimDecision, generationJobPutDecision, requestedGenerationJobCancellation } from './generation/generationJobExecution.mjs'
 import { idempotencyRequestBindingWriteDecision } from './idempotencyRequestBinding.mjs'
 import { agentBranchRetryClaimDecision, agentBranchRetryJobDecision } from './agentBranchRetryClaim.mjs'
 import { agentReviewCancellationFinalizeDecision, agentReviewCancellationRequestDecision, agentReviewExecutionClaimDecision, agentReviewTaskPutDecision, committedAgentReviewExecution } from './agentReviewExecution.mjs'

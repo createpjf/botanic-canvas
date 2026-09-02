@@ -1,6 +1,6 @@
 // @ts-check
 
-import { mapWithConcurrency } from './concurrency.mjs'
+import { mapWithConcurrency } from '../concurrency.mjs'
 
 /**
  * @typedef {{ index?: number | string, status?: string, output?: unknown }} CompletedVariant

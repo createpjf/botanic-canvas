@@ -1,6 +1,6 @@
 // @ts-check
 import { canonicalHash } from './canonicalHash.mjs'
-import { generationIdempotencyKey } from './generationIdempotency.mjs'
+import { generationIdempotencyKey } from './generation/generationIdempotency.mjs'
 import { planBotanicGeneration } from './botanicAgentPlanner.mjs'
 import { chatWithBotanicAgent } from './botanicAgentChat.mjs'
 import { resolveBotanicAgentTurn } from './botanicAgentTurn.mjs'

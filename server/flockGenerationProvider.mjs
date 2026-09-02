@@ -2,8 +2,8 @@
 
 import { request as httpsRequest } from 'node:https'
 import { readMediaSpec } from './mediaSpec.mjs'
-import { GenerationError, providerRejectionError } from './generationProvider.mjs'
-import { runGenerationVariants } from './generationVariantRunner.mjs'
+import { GenerationError, providerRejectionError } from './generation/generationProvider.mjs'
+import { runGenerationVariants } from './generation/generationVariantRunner.mjs'
 import { detectImageFormat, isCanonicalImageFormat, MEDIA_LIMITS } from './mediaFormats.mjs'
 import { assertPublicHttpsUrl, createPinnedLookup } from './webEgressGuard.mjs'
 

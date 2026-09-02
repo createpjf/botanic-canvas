@@ -1,5 +1,5 @@
 // @ts-check
-import { boundedSweepPageSize, nextUpdatedAtIdSweepCursor } from './updatedAtIdSweepCursor.mjs'
+import { boundedSweepPageSize, nextUpdatedAtIdSweepCursor } from '../updatedAtIdSweepCursor.mjs'
 
 /**
  * Generation Job 恢复清扫的深模块。

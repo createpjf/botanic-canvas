@@ -2,7 +2,7 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { agentActionIntentHash } from './agentActionExecution.mjs'
 import { canonicalHash } from './canonicalHash.mjs'
-import { generationIdempotencyKey, generationJobIdForIdempotency } from './generationIdempotency.mjs'
+import { generationIdempotencyKey, generationJobIdForIdempotency } from './generation/generationIdempotency.mjs'
 export {
   agentActionManualRetryConsumptionDecision,
   agentActionReceiptResolutionDecision,

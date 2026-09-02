@@ -1,7 +1,7 @@
 import { readMediaSpec } from './mediaSpec.mjs'
 import { mapWithConcurrency } from './concurrency.mjs'
-import { compositionBrandGuard, creativeExecutionContract } from './generationComposition.mjs'
-import { GenerationError, providerRejectionError } from './generationProvider.mjs'
+import { compositionBrandGuard, creativeExecutionContract } from './generation/generationComposition.mjs'
+import { GenerationError, providerRejectionError } from './generation/generationProvider.mjs'
 import { detectImageFormat, isCanonicalImageFormat } from './mediaFormats.mjs'
 
 function dataUrl(media) {

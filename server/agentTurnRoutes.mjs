@@ -1,5 +1,5 @@
 // @ts-check
-import { generationIdempotencyKey } from './generationIdempotency.mjs'
+import { generationIdempotencyKey } from './generation/generationIdempotency.mjs'
 import { validateBotanicAgentTurnInput } from './botanicAgentTurn.mjs'
 import { agentTurnLastSequence, publicAgentTurn } from './botanicAgentTurnRuntime.mjs'
 import { AGENT_PROTOCOL_VERSION } from './agentProtocol.mjs'

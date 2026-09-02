@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto'
 import { redactSummaryText } from './agentThreadSummary.mjs'
 import { validateAgentEntityReferences } from './agentEntityReferences.mjs'
 import { validateAgentTargetBinding } from './agentTargetBinding.mjs'
-import { GENERATION_ASPECT_RATIOS, GENERATION_RESOLUTIONS } from './generationVocabulary.mjs'
+import { GENERATION_ASPECT_RATIOS, GENERATION_RESOLUTIONS } from './generation/generationVocabulary.mjs'
 
 const SESSION_LIMIT = 80
 const MESSAGE_LIMIT = 500

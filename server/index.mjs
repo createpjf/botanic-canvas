@@ -1,4 +1,4 @@
-import { createGenerationQueue } from './generationQueue.mjs'
+import { createGenerationQueue } from './generation/generationQueue.mjs'
 import { createAgentSubagentQueue } from './agentSubagentQueue.mjs'
 import { createConfiguredMcpRuntime } from './mcpClient.mjs'
 import { createAgentRunEventPublisher } from './agentRunEventBus.mjs'

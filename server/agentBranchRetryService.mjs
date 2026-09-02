@@ -1,10 +1,10 @@
 // @ts-check
 import { publicAgentRun } from './botanicAgentRun.mjs'
-import { generationJobIdForIdempotency } from './generationIdempotency.mjs'
+import { generationJobIdForIdempotency } from './generation/generationIdempotency.mjs'
 import { createIdempotencyRequestBinding, matchingIdempotencyRequestBinding } from './idempotencyRequestBinding.mjs'
-import { persistedGenerationJob, publicGenerationJob } from './generationProvider.mjs'
-import { retargetGenerationJobForRetry } from './generationResultReconciliation.mjs'
-import { compareAndSetGenerationJob } from './generationJobCas.mjs'
+import { persistedGenerationJob, publicGenerationJob } from './generation/generationProvider.mjs'
+import { retargetGenerationJobForRetry } from './generation/generationResultReconciliation.mjs'
+import { compareAndSetGenerationJob } from './generation/generationJobCas.mjs'
 import {
   canvasProjectMutationId,
   commitCanvasProjectMutation,

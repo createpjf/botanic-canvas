@@ -2,14 +2,14 @@ import { generationJobTimedOut, generationTimeoutForModel, timedOutGenerationJob
 import { cancelGenerationJob } from './generationCancellation.mjs'
 import { publicGenerationJob } from './generationProvider.mjs'
 import { reconcileGenerationResults } from './generationResultReconciliation.mjs'
-import { requireProjectPermission } from './projectAuthorization.mjs'
+import { requireProjectPermission } from '../projectAuthorization.mjs'
 import { compareAndSetGenerationJob } from './generationJobCas.mjs'
 import {
   canvasProjectMutationId,
   commitCanvasProjectMutation,
   supportsDurableCanvasGraphMutation,
-} from './canvas/canvasGraphCommitService.mjs'
-import { canvasSyncEpochStaleCode } from './productStoreContract.mjs'
+} from '../canvas/canvasGraphCommitService.mjs'
+import { canvasSyncEpochStaleCode } from '../productStoreContract.mjs'
 
 /**
  * 生成任务的提交、查询、取消与项目级结果对账模块。

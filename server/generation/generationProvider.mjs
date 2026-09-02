@@ -1,4 +1,4 @@
-import { readMediaSpecFromDataUrl } from './mediaSpec.mjs'
+import { readMediaSpecFromDataUrl } from '../mediaSpec.mjs'
 import { buildImageProviderPrompt, gptImage2EditQuality, orderCompositionReferences, providerInputImages } from './generationComposition.mjs'
 import { runGenerationVariants } from './generationVariantRunner.mjs'
 import {
@@ -8,7 +8,7 @@ import {
   normalizeCustomGenerationSize,
   resolveGenerationOutputSize,
 } from './generationOutputSize.mjs'
-import { buildRegionMaskPng, normalizeRegionRect } from './regionMaskPng.mjs'
+import { buildRegionMaskPng, normalizeRegionRect } from '../regionMaskPng.mjs'
 import {
   CANONICAL_IMAGE_FORMATS,
   canonicalImageDataUrlPattern,
@@ -17,7 +17,7 @@ import {
   imagePixelSize,
   isCanonicalImageFormat,
   MEDIA_LIMITS,
-} from './mediaFormats.mjs'
+} from '../mediaFormats.mjs'
 import { maximumReferencesForModel } from './generationVocabulary.mjs'
 
 const MAX_RESOLVED_INPUT_MEDIA_BYTES = MEDIA_LIMITS.maxUploadBytes

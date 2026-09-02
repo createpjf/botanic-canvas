@@ -22,7 +22,7 @@ import {
   GENERATION_ASPECT_RATIOS,
   GENERATION_RESOLUTIONS,
   NANO_BANANA_MODEL_ID,
-} from './generationVocabulary.mjs'
+} from './generation/generationVocabulary.mjs'
 import {
   projectAgentThreadContextSnapshotV2,
   resolveAgentModelContextBinding,

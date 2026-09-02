@@ -3,9 +3,9 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
-import { createPersistentAgentRun } from './botanicAgentRun.mjs'
-import { createProductStore } from './productStore.mjs'
-import { productStoreCoreMethods } from './productStoreContract.mjs'
+import { createPersistentAgentRun } from '../botanicAgentRun.mjs'
+import { createProductStore } from '../productStore.mjs'
+import { productStoreCoreMethods } from '../productStoreContract.mjs'
 
 const generationExecutionMethods = [
   'claimGenerationJobExecution',
@@ -45,9 +45,9 @@ test('ProductStore 核心契约显式要求五个 Generation Job 原子方法', 
 })
 
 test('PostgreSQL 与 Supabase Adapter 均实现五方法，迁移提供对应原子 RPC', () => {
-  const postgresAdapter = readFileSync(new URL('./postgresProductStore.mjs', import.meta.url), 'utf8')
-  const supabaseAdapter = readFileSync(new URL('./supabaseProductStore.mjs', import.meta.url), 'utf8')
-  const migration = readFileSync(new URL('../supabase/migrations/20260827170000_generation_job_execution_fence.sql', import.meta.url), 'utf8')
+  const postgresAdapter = readFileSync(new URL('../postgresProductStore.mjs', import.meta.url), 'utf8')
+  const supabaseAdapter = readFileSync(new URL('../supabaseProductStore.mjs', import.meta.url), 'utf8')
+  const migration = readFileSync(new URL('../../supabase/migrations/20260827170000_generation_job_execution_fence.sql', import.meta.url), 'utf8')
   for (const method of generationExecutionMethods) {
     assert.match(postgresAdapter, new RegExp(`async ${method}\\(`), method)
     assert.match(supabaseAdapter, new RegExp(`async ${method}\\(`), method)
@@ -69,8 +69,8 @@ test('PostgreSQL 与 Supabase Adapter 均实现五方法，迁移提供对应原
 })
 
 test('Supabase Agent Run 分支投影由行锁 RPC 合并，不做 read→whole payload update', () => {
-  const supabaseAdapter = readFileSync(new URL('./supabaseProductStore.mjs', import.meta.url), 'utf8')
-  const migration = readFileSync(new URL('../supabase/migrations/20260827170000_generation_job_execution_fence.sql', import.meta.url), 'utf8')
+  const supabaseAdapter = readFileSync(new URL('../supabaseProductStore.mjs', import.meta.url), 'utf8')
+  const migration = readFileSync(new URL('../../supabase/migrations/20260827170000_generation_job_execution_fence.sql', import.meta.url), 'utf8')
   const adapterStart = supabaseAdapter.indexOf('async function projectGenerationJob')
   const adapterEnd = supabaseAdapter.indexOf('\n  return {', adapterStart)
   const adapterProjection = supabaseAdapter.slice(adapterStart, adapterEnd)
@@ -88,9 +88,9 @@ test('Supabase Agent Run 分支投影由行锁 RPC 合并，不做 read→whole 
 })
 
 test('三个 Adapter 的普通 putAgentRun 都在锁内按分支合并，Supabase RPC 不再 whole-row LWW', () => {
-  const localAdapter = readFileSync(new URL('./productStore.mjs', import.meta.url), 'utf8')
-  const postgresAdapter = readFileSync(new URL('./postgresProductStore.mjs', import.meta.url), 'utf8')
-  const migration = readFileSync(new URL('../supabase/migrations/20260827170000_generation_job_execution_fence.sql', import.meta.url), 'utf8')
+  const localAdapter = readFileSync(new URL('../productStore.mjs', import.meta.url), 'utf8')
+  const postgresAdapter = readFileSync(new URL('../postgresProductStore.mjs', import.meta.url), 'utf8')
+  const migration = readFileSync(new URL('../../supabase/migrations/20260827170000_generation_job_execution_fence.sql', import.meta.url), 'utf8')
   assert.match(localAdapter, /mergeAgentRunForWrite\(existing, payload\)/u)
   assert.match(postgresAdapter, /mergeAgentRunForWrite\(asPayload\(existing\), payload\)/u)
 
@@ -106,9 +106,9 @@ test('三个 Adapter 的普通 putAgentRun 都在锁内按分支合并，Supabas
 })
 
 test('生产 Adapter 用 DB clock 扫过期 lease，且 authenticated 不能直读私有 token', () => {
-  const postgresAdapter = readFileSync(new URL('./postgresProductStore.mjs', import.meta.url), 'utf8')
-  const supabaseAdapter = readFileSync(new URL('./supabaseProductStore.mjs', import.meta.url), 'utf8')
-  const migration = readFileSync(new URL('../supabase/migrations/20260827170000_generation_job_execution_fence.sql', import.meta.url), 'utf8')
+  const postgresAdapter = readFileSync(new URL('../postgresProductStore.mjs', import.meta.url), 'utf8')
+  const supabaseAdapter = readFileSync(new URL('../supabaseProductStore.mjs', import.meta.url), 'utf8')
+  const migration = readFileSync(new URL('../../supabase/migrations/20260827170000_generation_job_execution_fence.sql', import.meta.url), 'utf8')
 
   const postgresStart = postgresAdapter.indexOf('async recoverStaleGenerationJobs')
   const postgresEnd = postgresAdapter.indexOf('\n    async createMediaObject', postgresStart)
@@ -129,7 +129,7 @@ test('生产 Adapter 用 DB clock 扫过期 lease，且 authenticated 不能直�
 })
 
 test('PostgreSQL Job 原子事务不耦合可重建的 Artifact Index', () => {
-  const postgresAdapter = readFileSync(new URL('./postgresProductStore.mjs', import.meta.url), 'utf8')
+  const postgresAdapter = readFileSync(new URL('../postgresProductStore.mjs', import.meta.url), 'utf8')
   const helperStart = postgresAdapter.indexOf('async function persistGenerationDecision')
   const helperEnd = postgresAdapter.indexOf('\n  async function refreshGenerationArtifactRecords', helperStart)
   assert.ok(helperStart >= 0 && helperEnd > helperStart)

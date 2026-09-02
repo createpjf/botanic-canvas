@@ -1,21 +1,21 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { GenerationError, persistedGenerationJob, resolveGenerationInputMedia, validateGenerationInput } from './generationProvider.mjs'
-import { assertAgentReferenceBindings } from './agentTargetBinding.mjs'
+import { assertAgentReferenceBindings } from '../agentTargetBinding.mjs'
 import { generationTimeoutForModel } from './generationModels.mjs'
 import { providerForModel } from './generationModels.mjs'
 import { generateMedia } from './generationService.mjs'
-import { publicAgentRun } from './botanicAgentRun.mjs'
-import { reconcileAgentGenerationJobToProject } from './botanicAgentExecution.mjs'
+import { publicAgentRun } from '../botanicAgentRun.mjs'
+import { reconcileAgentGenerationJobToProject } from '../botanicAgentExecution.mjs'
 import { compatibleFallbackModel, ProviderCircuitBreaker } from './generationGovernance.mjs'
 import { cancelGenerationJob } from './generationCancellation.mjs'
-import { matchingIdempotencyRequestBinding } from './idempotencyRequestBinding.mjs'
+import { matchingIdempotencyRequestBinding } from '../idempotencyRequestBinding.mjs'
 import { acquireGenerationProviderAdmission } from './generationProviderAdmission.mjs'
 import { compareAndSetGenerationJob } from './generationJobCas.mjs'
 import {
   canvasProjectMutationId,
   commitCanvasProjectMutation,
   supportsDurableCanvasGraphMutation,
-} from './canvas/canvasGraphCommitService.mjs'
+} from '../canvas/canvasGraphCommitService.mjs'
 
 const expectedProviderOutcomeCodes = new Set([
   'PROVIDER_REJECTED',

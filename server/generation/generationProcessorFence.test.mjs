@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createGenerationProcessor } from './generationProcessor.mjs'
 import { acknowledgedGenerationJobCancellation } from './generationJobExecution.mjs'
-import { createIdempotencyRequestBinding } from './idempotencyRequestBinding.mjs'
+import { createIdempotencyRequestBinding } from '../idempotencyRequestBinding.mjs'
 
 function queuedJob(id) {
   const createdAt = Date.now()

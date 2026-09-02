@@ -1,7 +1,7 @@
 // @ts-check
 
 import { applyGenerationJobToAgentRun, cancelPersistentAgentRun } from './botanicAgentRun.mjs'
-import { cancelGenerationJob } from './generationCancellation.mjs'
+import { cancelGenerationJob } from './generation/generationCancellation.mjs'
 
 const terminalTurnStatuses = new Set(['failed'])
 const cancellationFenceStatuses = new Set(['cancelling', 'cancelled'])

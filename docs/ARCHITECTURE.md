@@ -26,13 +26,13 @@ UI（App / features / components）
 | 浏览器基础设施 | `src/lib/` | 会话、生成请求、项目文档与离线草稿接口 | `domain`、浏览器/网络 Adapter，不依赖 UI 或 Store |
 | Node API | `server/index.mjs` | 鉴权后的 HTTP 与 WebSocket 接口；每类资源由独立 Route 模块拥有方法目录和 405 语义 | 队列、处理器、运行时组合根 |
 | 授权 | `server/authorization.mjs`、`server/projectAuthorization.mjs` | 工作区/项目权限决策与 403/404 语义 | ProductStore 的用户与项目成员关系，不依赖 UI |
-| 生成处理器 | `server/generationProcessor.mjs` | `processGenerationJob(jobId)` | 注入的 ProductStore、Media 与 Provider |
+| 生成处理器 | `server/generation/generationProcessor.mjs` | `processGenerationJob(jobId)` | 注入的 ProductStore、Media 与 Provider |
 | Agent Run 生成服务 | `server/agentRunGenerationService.mjs` | 为已确认 Run 准备工作流、复用幂等任务、入队并回写项目 | ProductStore、生成队列、安全配额与实时事件 |
 | Agent Run 提交恢复 | `server/agentRunSubmissionSweep.mjs` | 稳定分页找出已落库但尚无首个 Job 的 queued Run，并委托既有提交或深取消服务收口 | ProductStore 只读恢复查询、Agent Run 生成服务、Agent 深取消服务；由 Worker 的 `run.submit` 周期任务驱动 |
 | Adapter | `server/*Store.mjs`、`server/objectStore.mjs` 等 | 产品存储、媒体、队列、第三方图像能力 | 各自外部系统；由 `server/runtime.mjs` 选择并组装 |
 
-模型能力由 `server/generationModels.mjs` 统一声明，Worker 只能经
-`server/generationService.mjs` 路由到 OpenAI、MiniMax Image、MiniMax H3 或 Flock 生图。
+模型能力由 `server/generation/generationModels.mjs` 统一声明，Worker 只能经
+`server/generation/generationService.mjs` 路由到 OpenAI、MiniMax Image、MiniMax H3 或 Flock 生图。
 所有供应商输出都先转成 `{ mediaKind, mimeType, buffer }`，再由媒体服务持久化；
 H3 的 MP4 与历史图片共用授权 URL，但历史缺少 `mediaKind` 时始终按图片兼容读取。
 
@@ -227,7 +227,7 @@ Adapter 都在锁住根 Turn 后验证该 fence；takeover 后旧执行者不能
 Descriptor，任一子项状态不确定时根 Turn 保持 `cancelling`。普通 Session 列表默认隐藏子会话，
 专用 HTTP 资源只返回安全提案与公共状态。完整决策见 ADR 0007。
 
-`server/generationRecoverySweep.mjs` 拥有 Generation Job 恢复扫描：三个 Adapter 按毫秒时间与 ID 提供稳定 keyset 页，清扫器限制
+`server/generation/generationRecoverySweep.mjs` 拥有 Generation Job 恢复扫描：三个 Adapter 按毫秒时间与 ID 提供稳定 keyset 页，清扫器限制
 单轮页数、在尾部回绕、检测游标停滞，并逐 Job 隔离入队失败。Supabase 对 Turn、失败 Run 分支、待执行 ReviewTask 与可恢复
 GenerationJob 四类恢复记录持久化 `recovery_updated_at_ms`，由全量写 trigger 从 `updated_at` 回填重算；对应 RPC 的过滤、排序与
 `(recovery_updated_at_ms, id COLLATE "C")` partial index 使用同一复合行 cursor；首屏与续页拆成两条静态查询，避免 nullable `OR` 在 generic plan 下把深页 after 条件移出 Index Cond。各类任务复用拥有业务规则的 Service，不在 Worker 复制状态机。
@@ -326,11 +326,11 @@ token 仅用于旧服务兼容，且只能停留在组件内存，不能进入 M
 
 ## 生成成本与 Provider 容灾
 
-`server/generationGovernance.mjs` 把一次持久化 Generation Job 作为唯一记账单元，按工作区、项目、成员、模型、媒体类型和
+`server/generation/generationGovernance.mjs` 把一次持久化 Generation Job 作为唯一记账单元，按工作区、项目、成员、模型、媒体类型和
 任务记录估算成本单位；同一幂等任务的重连、查询、恢复和 Worker 重启不会再次预留预算。`securityControls.reserveMany`
 使用 Redis Lua 原子预留工作区、项目和成员额度，任一维度不足时全部拒绝，并在临界值向任务返回提醒。
 
-`server/generationJobExecution.mjs` 把 Job 的 `executionGeneration + leaseToken` 定义为 Worker 执行权。普通 `putGenerationJob`
+`server/generation/generationJobExecution.mjs` 把 Job 的 `executionGeneration + leaseToken` 定义为 Worker 执行权。普通 `putGenerationJob`
 不能创建或改写 fence；Worker 必须先原子 claim，heartbeat、变体进度与终态都由当前 generation 条件提交。任务 retry 会清除旧
 lease，并保留单调 generation 水位；旧 Worker、旧回写恢复器和旧 Job→Run 投影因此不能覆盖新尝试。Job 终态先 durable 落库，
 Canvas、Artifact Index 与 Agent Run 都只是可恢复投影；投影未完成时 `projectWritebackPending` 保持可扫描。Run 的普通整行写入在
@@ -352,7 +352,7 @@ deadline 与取消信号约束，跨 Provider fallback 只有真正进入 Flock 
 ## 版本化生产工作流
 
 `server/productionWorkflow.mjs` 定义只追加版本的生产工作流与运行状态机；每个版本固定 Prompt、模型参数、输出设置、
-品牌规则、素材组和确认策略。运行先持久化版本快照与批量输入，再经 `server/generationSubmissionService.mjs` 的单一提交
+品牌规则、素材组和确认策略。运行先持久化版本快照与批量输入，再经 `server/generation/generationSubmissionService.mjs` 的单一提交
 入口创建 Generation Job，避免工作流、HTTP 与 Agent 各自实现幂等、预算和队列语义。失败项重试复用运行项的稳定哈希键，
 不会再次预留预算，也不会复制已成功输出。
 

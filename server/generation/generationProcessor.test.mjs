@@ -3,12 +3,12 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
-import { applyGenerationJobToAgentRun, createPersistentAgentRun } from './botanicAgentRun.mjs'
+import { applyGenerationJobToAgentRun, createPersistentAgentRun } from '../botanicAgentRun.mjs'
 import { createGenerationProcessor as createRuntimeGenerationProcessor, shouldReportGenerationWorkerFailure } from './generationProcessor.mjs'
 import { GenerationError } from './generationProvider.mjs'
-import { createLocalCancelRegistry } from './localCancelRegistry.mjs'
-import { createProductStore } from './productStore.mjs'
-import { createAgentReferenceBindings } from './agentTargetBinding.mjs'
+import { createLocalCancelRegistry } from '../localCancelRegistry.mjs'
+import { createProductStore } from '../productStore.mjs'
+import { createAgentReferenceBindings } from '../agentTargetBinding.mjs'
 
 /** 旧测试夹具只实现 read/put；在测试边界补齐与真实 Adapter 同形的原子 seam。 */
 function createGenerationProcessor(input) {

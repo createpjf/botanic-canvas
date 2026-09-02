@@ -1,6 +1,6 @@
 import { AgentToolRuntimeError } from './agentToolRuntime.mjs'
 import { botanicAgentBranchGenerationPrompt } from './botanicAgentVariations.mjs'
-import { compositionOverlayReferences, orderCompositionReferences } from './generationComposition.mjs'
+import { compositionOverlayReferences, orderCompositionReferences } from './generation/generationComposition.mjs'
 import { compileCreativePlan, creativePlanHash } from './botanicCreativePlanCompiler.mjs'
 import { resolveBrandKit } from './brandKit.mjs'
 import { createAgentReferenceBindings } from './agentTargetBinding.mjs'

@@ -1,6 +1,6 @@
 // @ts-check
 import { branchesEligibleForRetry } from './agentBranchRetryPolicy.mjs'
-import { generationIdempotencyKey } from './generationIdempotency.mjs'
+import { generationIdempotencyKey } from './generation/generationIdempotency.mjs'
 import { boundedSweepPageSize, nextUpdatedAtIdSweepCursor } from './updatedAtIdSweepCursor.mjs'
 
 /**

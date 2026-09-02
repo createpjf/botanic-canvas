@@ -37,7 +37,7 @@ export const legacyOversizeBudgets = Object.freeze({
   'src/domain/agentTimeline.ts': 1257,
   'src/lib/db.ts': 1191,
   'server/productStoreContract.mjs': 1185,
-  'server/generationProcessor.mjs': 1041,
+  'server/generation/generationProcessor.mjs': 1041,
   'server/agentSubagentPersistence.mjs': 1001,
   'src/features/agent/AgentUtilityPanels.tsx': 955,
   'src/store/canvasAssetGraphActions.ts': 901,

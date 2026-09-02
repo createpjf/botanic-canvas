@@ -1,6 +1,6 @@
 // @ts-check
 
-import { idempotencyRequestBindingWriteDecision } from './idempotencyRequestBinding.mjs'
+import { idempotencyRequestBindingWriteDecision } from '../idempotencyRequestBinding.mjs'
 
 const terminalStatuses = new Set(['succeeded', 'failed', 'cancelled'])
 const allStatuses = new Set(['queued', 'running', ...terminalStatuses])

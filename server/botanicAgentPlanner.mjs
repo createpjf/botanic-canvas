@@ -15,7 +15,7 @@ import {
   BotanicCreativeBriefValidationError,
   validateBotanicCreativeBrief,
 } from './botanicCreativeBrief.mjs'
-import { GENERATION_ASPECT_RATIOS, GENERATION_RESOLUTIONS } from './generationVocabulary.mjs'
+import { GENERATION_ASPECT_RATIOS, GENERATION_RESOLUTIONS } from './generation/generationVocabulary.mjs'
 import {
   applyBotanicAgentVariationToPlan,
   botanicAgentLooksLikePlannerNarration,
@@ -26,7 +26,7 @@ import {
   inferAspectRatioFromPixels,
   modelSupportsCustomSize,
   normalizeCustomGenerationSize,
-} from './generationOutputSize.mjs'
+} from './generation/generationOutputSize.mjs'
 import { canonicalHash } from './canonicalHash.mjs'
 import { resolveAgentModelContextBinding } from './agentModelContextBinding.mjs'
 

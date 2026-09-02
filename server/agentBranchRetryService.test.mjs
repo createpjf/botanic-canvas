@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createAgentBranchRetryService } from './agentBranchRetryService.mjs'
 import { agentBranchRetryClaimDecision } from './agentBranchRetryClaim.mjs'
-import { generationJobIdForIdempotency } from './generationIdempotency.mjs'
+import { generationJobIdForIdempotency } from './generation/generationIdempotency.mjs'
 import { createIdempotencyRequestBinding } from './idempotencyRequestBinding.mjs'
 
 test('分支重试幂等键命中另一项目或分支的 Job 时 fail closed', async () => {

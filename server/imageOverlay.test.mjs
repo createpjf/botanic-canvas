@@ -8,7 +8,7 @@ import {
   jobRequestsPixelOverlay,
   knockoutMarkBackground,
 } from './imageOverlay.mjs'
-import { GenerationError } from './generationProvider.mjs'
+import { GenerationError } from './generation/generationProvider.mjs'
 
 function solidPng(width, height, rgba) {
   const pixels = Buffer.alloc(width * height * 4)
