@@ -20,6 +20,8 @@
 - Artifact Index 是历史血缘目录；删除画布节点或素材引用不得级联删除历史 Artifact。
 - ProductStore 有本地、PostgreSQL、Supabase 三个 Adapter；变更接口时同步维护全部 Adapter 和契约测试。
 - 优先形成拥有明确行为的深模块；不要只为缩短文件而增加透传层。
+- 模块大小硬规则：新模块目标 <500 行；任何非测试文件达到 800 行后，新功能必须开新模块而不是继续扩展（`check:architecture` 强制）。存量超限文件冻结在 `scripts/architectureBoundaries.mjs` 的 `legacyOversizeBudgets`，只准降不准升；触达它们时优先按既有 seam 拆分。
+- Agent 命名裁决：`botanicAgent*` 只用于产品语义解析层（Prompt/意图/计划/画布语义，如 botanicAgentTurn/Chat/Planner/Tools）；`agent*` 用于通用控制面（Turn 生命周期/Tool Loop/Context/恢复/协议/指标）。新文件必须按此选择前缀；存量不做机械全局改名，触达时再对齐。
 - `server/` 的类型检查按文件 opt-in：模块顶部写 `// @ts-check` 即纳入 `tsconfig.server.json`，由 `npm run build` 一并把关。**新增跨 Adapter 契约的模块必须 opt-in**，存量模块按接触到再补，不做一次性大改。`noImplicitAny` 关闭，因此不需要给内部工具函数的参数加标注。唯一需要处理的是 `({ a, b = 1 } = {})` 这种解构带默认值的参数 —— TS 只从有默认值的属性合成参数类型，`a` 会被判为不存在。优先改成具名参数在函数体内解构（`function f(input) { const { a, b = 1 } = input ?? {} }`）；不便改签名时再对默认值做 `/** @type {...} */ ({})` 断言。
 - 历史验收和已完成计划不是当前规范；当前入口见 [文档索引](docs/README.md)。
 - 未经维护者明确要求，不要自动创建 Pull Request；改动只提交并推送到已有工作分支。

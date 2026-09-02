@@ -14,6 +14,43 @@ const agentSamplingTransportForbidden = Object.freeze([
   ['readStreamedChatCompletion', 'agent-caller-cannot-own-stream-reader'],
 ])
 
+// —— 模块大小 gate（学 Codex 500/800 规则的 JS 等价物）——
+// 新文件(非测试)硬上限 800 行;存量超限文件按当前行数冻结为各自上限,只准降不准升。
+// 从此列表移除文件是唯一"毕业"方式;新增条目需要维护者明确批准。
+export const MODULE_SIZE_CEILING = 800
+export const legacyOversizeBudgets = Object.freeze({
+  'server/postgresProductStore.mjs': 4514,
+  'src/features/agent/AgentWorkspace.tsx': 3920,
+  'src/features/canvas/CanvasWorkspace.tsx': 2930,
+  'src/domain/agent.ts': 2870,
+  'server/supabaseProductStore.mjs': 2495,
+  'server/productStore.mjs': 2465,
+  'server/agentRoutes.mjs': 2263,
+  'src/features/canvas/CanvasWorkspacePanels.tsx': 1921,
+  'src/features/canvas/CanvasEditorViews.tsx': 1744,
+  'server/agentToolRuntime.mjs': 1524,
+  'src/features/agent/AgentConversationMessage.tsx': 1487,
+  'server/botanicAgentTools.mjs': 1473,
+  'src/lib/agentApi.ts': 1388,
+  'src/components/bob/bobImpressions.ts': 1341,
+  'server/botanicAgentTurn.mjs': 1273,
+  'src/domain/agentTimeline.ts': 1257,
+  'src/lib/db.ts': 1191,
+  'server/productStoreContract.mjs': 1185,
+  'server/generationProcessor.mjs': 1041,
+  'server/agentSubagentPersistence.mjs': 1001,
+  'src/features/agent/AgentUtilityPanels.tsx': 955,
+  'src/store/canvasAssetGraphActions.ts': 901,
+  'src/domain/agentVariations.ts': 898,
+  'server/botanicAgentTurnRuntime.mjs': 890,
+  'server/botanicAgentPersistence.mjs': 889,
+  'server/botanicAgentPlanner.mjs': 883,
+  'src/features/canvas/useCanvasAgentExecutionBridge.ts': 862,
+  'server/botanicAgentSkill.mjs': 821,
+  // 生成的 Bob 角色动画资产(坐标表+渲染循环),按资产豁免而非业务模块。
+  'src/components/bob/character-runtime.js': 3865,
+})
+
 const ownershipPolicies = Object.freeze({
   'server/agentRoutes.mjs': {
     maxLines: 2263,
@@ -191,9 +228,17 @@ export function checkArchitectureBoundaries({ rootDir }) {
     const source = readFileSync(file, 'utf8')
     const relativeFile = normalizedRelative(rootDir, file)
     const ownership = ownershipPolicies[relativeFile]
+    const lineCount = source.split('\n').length - (source.endsWith('\n') ? 1 : 0)
+    const sizeBudget = legacyOversizeBudgets[relativeFile] ?? MODULE_SIZE_CEILING
+    if (lineCount > sizeBudget) {
+      violations.push({
+        file: relativeFile,
+        importPath: `${lineCount} > ${sizeBudget}`,
+        rule: legacyOversizeBudgets[relativeFile] ? 'legacy-module-shrink-only' : 'module-size-ceiling',
+      })
+    }
     if (ownership) {
-      const lineCount = source.split('\n').length - (source.endsWith('\n') ? 1 : 0)
-      if (lineCount > ownership.maxLines) violations.push({
+      if (ownership.maxLines !== undefined && lineCount > ownership.maxLines) violations.push({
         file: relativeFile,
         importPath: `${lineCount} > ${ownership.maxLines}`,
         rule: 'core-orchestration-complexity-budget',
