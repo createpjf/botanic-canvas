@@ -62,11 +62,11 @@ function testResponse() {
   }
 }
 
-function testRequest({ method, url, body }) {
+function testRequest({ method, url, body, headers = {} }) {
   return Object.assign(Readable.from(body === undefined ? [] : [Buffer.from(JSON.stringify(body))]), {
     method,
     url,
-    headers: { host: 'localhost', authorization: 'Bearer test-token' },
+    headers: { host: 'localhost', authorization: 'Bearer test-token', ...headers },
     socket: { encrypted: false, remoteAddress: '127.0.0.1' },
   })
 }
@@ -107,9 +107,13 @@ test('未预期的 API 5xx 会把原始异常和安全请求上下文交给错�
   }
   dependencies.reportError = (...input) => reported.push(input)
   const application = createBotanicHttpServer(dependencies)
-  const { response } = testResponse()
+  const { headers, response } = testResponse()
 
-  await application.handleRequest(testRequest({ method: 'GET', url: '/api/projects' }), response)
+  await application.handleRequest(testRequest({
+    method: 'GET',
+    url: '/api/projects',
+    headers: { 'x-request-id': 'browser-request-1' },
+  }), response)
 
   assert.equal(response.statusCode, 500)
   assert.equal(reported.length, 1)
@@ -117,7 +121,8 @@ test('未预期的 API 5xx 会把原始异常和安全请求上下文交给错�
   assert.equal(reported[0][1].tags.component, 'api')
   assert.equal(reported[0][1].tags.error_code, 'INTERNAL_ERROR')
   assert.equal(reported[0][1].tags.route, '/api/projects')
-  assert.equal(typeof reported[0][1].contexts.request.id, 'string')
+  assert.equal(reported[0][1].contexts.request.id, 'browser-request-1')
+  assert.equal(headers['X-Request-ID'], 'browser-request-1')
   assert.equal(reported[0][1].contexts.request.route, '/api/projects')
 })
 

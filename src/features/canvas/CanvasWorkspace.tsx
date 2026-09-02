@@ -216,13 +216,17 @@ type WorkspaceHistoryMode = 'push' | 'replace' | 'none'
 
 const defaultWorkspaceLocation: WorkspaceLocation = { view: 'projects' }
 
-function readWorkspaceLocation(): WorkspaceLocation {
+function workspaceStorageKey(base: string, userId?: string) {
+  return userId ? `${base}:${userId}` : base
+}
+
+function readWorkspaceLocation(userId?: string): WorkspaceLocation {
   if (typeof window === 'undefined') return defaultWorkspaceLocation
   const locationFromHash = workspaceLocationFromHash(window.location.hash)
   if (locationFromHash) return locationFromHash
 
   try {
-    const stored = JSON.parse(window.localStorage.getItem(workspaceLocationStorageKey) ?? '') as Partial<WorkspaceLocation>
+    const stored = JSON.parse(window.localStorage.getItem(workspaceStorageKey(workspaceLocationStorageKey, userId)) ?? '') as Partial<WorkspaceLocation>
     if (stored.view === 'canvas' && typeof stored.projectId === 'string' && stored.projectId.trim()) {
       return { view: 'canvas', projectId: stored.projectId }
     }
@@ -233,20 +237,20 @@ function readWorkspaceLocation(): WorkspaceLocation {
   return defaultWorkspaceLocation
 }
 
-function writeWorkspaceLocationFallback(location: WorkspaceLocation) {
+function writeWorkspaceLocationFallback(location: WorkspaceLocation, userId?: string) {
   if (typeof window === 'undefined') return
   try {
     // The hash remains authoritative; this only restores legacy root URLs.
-    window.localStorage.setItem(workspaceLocationStorageKey, JSON.stringify(location))
+    window.localStorage.setItem(workspaceStorageKey(workspaceLocationStorageKey, userId), JSON.stringify(location))
   } catch {
     // Navigation must still work when local storage is unavailable.
   }
 }
 
-function readWorkspaceTabs() {
+function readWorkspaceTabs(userId?: string) {
   if (typeof window === 'undefined') return [] as string[]
   try {
-    const saved = JSON.parse(window.localStorage.getItem(workspaceTabsStorageKey) ?? '')
+    const saved = JSON.parse(window.localStorage.getItem(workspaceStorageKey(workspaceTabsStorageKey, userId)) ?? '')
     return Array.isArray(saved)
       ? [...new Set(saved.filter((id): id is string => typeof id === 'string' && Boolean(id.trim())))]
       : []
@@ -255,10 +259,10 @@ function readWorkspaceTabs() {
   }
 }
 
-function writeWorkspaceTabs(projectIds: string[]) {
+function writeWorkspaceTabs(projectIds: string[], userId?: string) {
   if (typeof window === 'undefined') return
   try {
-    window.localStorage.setItem(workspaceTabsStorageKey, JSON.stringify(projectIds))
+    window.localStorage.setItem(workspaceStorageKey(workspaceTabsStorageKey, userId), JSON.stringify(projectIds))
   } catch {
     // 标签只影响工作区导航，不影响项目数据保存。
   }
@@ -1019,10 +1023,10 @@ export default function CanvasWorkspace({
     window.addEventListener('keydown', closeConfirmation)
     return () => window.removeEventListener('keydown', closeConfirmation)
   }, [assetToDelete])
-  const [initialWorkspaceLocation] = useState<WorkspaceLocation>(readWorkspaceLocation)
+  const [initialWorkspaceLocation] = useState<WorkspaceLocation>(() => readWorkspaceLocation(currentUser?.id))
   const [workspaceLocation, setWorkspaceLocation] = useState<WorkspaceLocation>(initialWorkspaceLocation)
   const [workspaceTabIds, setWorkspaceTabIds] = useState<string[]>(() => {
-    const saved = readWorkspaceTabs()
+    const saved = readWorkspaceTabs(currentUser?.id)
     const initialId = initialWorkspaceLocation.view === 'canvas' ? initialWorkspaceLocation.projectId : undefined
     return initialId && !saved.includes(initialId) ? [...saved, initialId] : saved
   })
@@ -1142,7 +1146,7 @@ export default function CanvasWorkspace({
     const updateLocation = () => {
       if (location.view === 'canvas' && !sameWorkspaceLocation(workspaceLocation, location)) setViewportRestoring(true)
       setWorkspaceLocation(location)
-      writeWorkspaceLocationFallback(location)
+      writeWorkspaceLocationFallback(location, currentUser?.id)
       if (historyMode !== 'none') writeWorkspaceHash(location, historyMode)
     }
     const shouldAnimate = workspaceRestored && !workspaceRestoring && historyMode !== 'none'
@@ -1153,7 +1157,7 @@ export default function CanvasWorkspace({
     runWorkspaceTransition(workspaceTransitionDirection(workspaceLocation.view, view), () => {
       flushSync(updateLocation)
     })
-  }, [workspaceLocation, workspaceRestored, workspaceRestoring])
+  }, [currentUser?.id, workspaceLocation, workspaceRestored, workspaceRestoring])
 
   const returnToProjectLibrary = useCallback(() => {
     // 关闭最后一个标签必须走浏览器真实导航。history.replaceState 不会触发 hashchange，
@@ -1161,14 +1165,14 @@ export default function CanvasWorkspace({
     const location: WorkspaceLocation = { view: 'projects' }
     workspaceNavigationRunRef.current += 1
     setWorkspaceRestoring(false)
-    writeWorkspaceLocationFallback(location)
+    writeWorkspaceLocationFallback(location, currentUser?.id)
     const targetHash = workspaceHash(location)
     if (window.location.hash === targetHash) {
       setWorkspaceLocation(location)
       return
     }
     window.location.assign(targetHash)
-  }, [])
+  }, [currentUser?.id])
 
   const handleWorkspaceProjectOpened = useCallback((projectId: string) => {
     setWorkspaceView('canvas', projectId)
@@ -1206,8 +1210,8 @@ export default function CanvasWorkspace({
   })
 
   useEffect(() => {
-    writeWorkspaceTabs(workspaceTabIds)
-  }, [workspaceTabIds])
+    writeWorkspaceTabs(workspaceTabIds, currentUser?.id)
+  }, [currentUser?.id, workspaceTabIds])
 
   useEffect(() => {
     if (workspaceLocation.view !== 'canvas' || !workspaceLocation.projectId) return

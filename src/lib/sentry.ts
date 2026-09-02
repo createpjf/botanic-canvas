@@ -99,9 +99,10 @@ export function captureSentryApiFailure(
   input: { path?: string; method?: string; aborted?: boolean } = {},
 ) {
   if (input.aborted) return
-  const source = error && typeof error === 'object' ? error as { status?: unknown; code?: unknown } : {}
+  const source = error && typeof error === 'object' ? error as { status?: unknown; code?: unknown; requestId?: unknown } : {}
   const status = Number(source.status)
   const code = typeof source.code === 'string' && source.code ? source.code : undefined
+  const requestId = typeof source.requestId === 'string' && source.requestId ? source.requestId : undefined
   const reportable = status === 0 || status >= 500 || status === 401 || status === 403 || status === 429
   if (!reportable) return
   Sentry.captureException(error, {
@@ -111,8 +112,9 @@ export function captureSentryApiFailure(
       method: safeTag(input.method ?? 'GET'),
       http_status: safeTag(Number.isFinite(status) ? status : 'unknown'),
       ...(code ? { error_code: safeTag(code) } : {}),
+      ...(requestId ? { request_id: safeTag(requestId) } : {}),
     },
-    contexts: { request: { method: input.method ?? 'GET', path: safeApiPath(input.path) } },
+    contexts: { request: { method: input.method ?? 'GET', path: safeApiPath(input.path), ...(requestId ? { id: safeTag(requestId) } : {}) } },
   })
 }
 

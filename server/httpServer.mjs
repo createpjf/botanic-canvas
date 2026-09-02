@@ -518,8 +518,7 @@ const handleAgentRoute = createAgentRouteHandler({
   agentSubagentService,
 })
 
-const handleRequestCore = async (request, response) => {
-  const requestId = randomUUID()
+const handleRequestCore = async (request, response, requestId) => {
   let routePath = 'UNKNOWN'
   response.setHeader('X-Request-ID', requestId)
   const forwardedProtocol = request.headers['x-forwarded-proto']?.split(',')[0]?.trim()
@@ -632,28 +631,43 @@ const handleRequestCore = async (request, response) => {
   }
 }
 
-const handleRequest = (request, response) => withExtractedAgentTraceContext(
-  request.headers,
-  () => withBotanicSpan(`HTTP ${request.method ?? 'UNKNOWN'}`, {
-    kind: 'server',
-    automaticSuccessStatus: false,
-    attributes: {
-      'http.request.method': request.method ?? 'UNKNOWN',
-      'url.scheme': request.socket?.encrypted ? 'https' : 'http',
-      'botanic.component': 'api',
-      'botanic.phase': 'api',
-    },
-  }, async (span) => {
-    const carrier = injectAgentTraceContext()
-    if (carrier.traceparent && !response.headersSent) response.setHeader('traceparent', carrier.traceparent)
-    const result = await handleRequestCore(request, response)
-    try {
-      span?.setAttribute('http.response.status_code', response.statusCode)
-      setBotanicHttpSpanStatus(span, response.statusCode)
-    } catch { /* telemetry isolation */ }
-    return result
-  }),
-)
+const handleRequest = (request, response) => {
+  const requestId = safeErrorCode(request.headers['x-request-id']) ?? randomUUID()
+  const startedAt = Date.now()
+  let routePath = 'UNKNOWN'
+  try {
+    routePath = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`).pathname
+  } catch { /* malformed URL is handled by the shared HTTP error boundary. */ }
+  return withExtractedAgentTraceContext(
+    request.headers,
+    () => withBotanicSpan(`HTTP ${request.method ?? 'UNKNOWN'}`, {
+      kind: 'server',
+      automaticSuccessStatus: false,
+      attributes: {
+        'http.request.method': request.method ?? 'UNKNOWN',
+        'http.request.id': requestId,
+        'url.scheme': request.socket?.encrypted ? 'https' : 'http',
+        'botanic.component': 'api',
+        'botanic.phase': 'api',
+      },
+    }, async (span) => {
+      const carrier = injectAgentTraceContext()
+      if (carrier.traceparent && !response.headersSent) response.setHeader('traceparent', carrier.traceparent)
+      const result = await handleRequestCore(request, response, requestId)
+      try {
+        span?.setAttribute('http.response.status_code', response.statusCode)
+        setBotanicHttpSpanStatus(span, response.statusCode)
+      } catch { /* telemetry isolation */ }
+      if (routePath !== '/api/health') {
+        console.info(JSON.stringify({
+          event: 'api.response', requestId, method: request.method, route: routePath,
+          statusCode: response.statusCode, durationMs: Date.now() - startedAt,
+        }))
+      }
+      return result
+    }),
+  )
+}
 
 const server = createServer(handleRequest)
 
@@ -687,6 +701,7 @@ async function start() {
     productStore,
     ticketSecret: config.realtimeTicketSecret,
     crossInstancePublisher: canvasRealtimeEventPublisher,
+    reportError,
   })
   canvasRealtimeEventSubscriber = await createCanvasRealtimeEventSubscriber(config.redisUrl, {
     onCanvasUpdate: (event) => void realtimeHub.receiveCanvasUpdate(event).catch((caught) => {
@@ -728,8 +743,10 @@ async function start() {
 
 async function close() {
   if (localSubagentRecoveryTimer) clearInterval(localSubagentRecoveryTimer)
-  if (server.listening) await new Promise((resolveClose, rejectClose) => server.close((caught) => caught ? rejectClose(caught) : resolveClose()))
-  await realtimeHub?.close()
+  const serverClose = server.listening
+    ? new Promise((resolveClose, rejectClose) => server.close((caught) => caught ? rejectClose(caught) : resolveClose()))
+    : Promise.resolve()
+  await Promise.all([serverClose, realtimeHub?.close()])
   await canvasRealtimeEventSubscriber?.close()
   await canvasRealtimeEventPublisher?.close()
   await agentRunEventSubscriber?.close()

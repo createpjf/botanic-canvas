@@ -679,7 +679,7 @@ async function writeRemoteCanvasDocument(document: CanvasDocument) {
   const revision = remoteRevisions.get(document.id)
   const graphRevision = remoteGraphRevisions.get(document.id)
   const previous = remoteDocuments.get(document.id)
-  const patch = previous ? createCanvasDocumentPatch(previous, persistable, !v2) : undefined
+  let patch = previous ? createCanvasDocumentPatch(previous, persistable, !v2) : undefined
   const payload = v2 ? withoutCanvasGraph(persistable) : persistable
   const send = async (payload: CanvasDocumentPatch | CanvasDocument, method: 'PATCH' | 'PUT', expectedRevision?: number) => {
     const prepared = await serializeRemoteMediaValue(payload)
@@ -703,6 +703,32 @@ async function writeRemoteCanvasDocument(document: CanvasDocument) {
     } catch (error) {
       if (error instanceof ProductApiError && error.code === 'CANVAS_SYNC_EPOCH_STALE') {
         rememberRemoteSyncProtocolEpoch(document.id, 2)
+      }
+      if (error instanceof ProductApiError
+        && (error.code === 'REQUEST_TIMEOUT' || error.code === 'INVALID_API_RESPONSE')
+        && patch
+        && conflictAttempts < 3) {
+        let confirmed: CanvasDocument | undefined
+        try {
+          confirmed = await readRemoteCanvasDocument(document.id)
+        } catch {
+          throw error
+        }
+        if (confirmed) {
+          patch = createCanvasDocumentPatch(confirmed, persistable, !v2)
+          const confirmedRevision = remoteRevisions.get(document.id)
+          if (!Object.keys(patch).length && confirmedRevision !== undefined) {
+            response = {
+              document: confirmed,
+              revision: confirmedRevision,
+              graphRevision: remoteGraphRevisions.get(document.id) ?? 1,
+              syncProtocolEpoch: lastKnownCanvasSyncProtocolEpoch(document.id),
+            }
+            break
+          }
+          conflictAttempts += 1
+          continue
+        }
       }
       if (!isRemoteDocumentConflict(error) || !patch || conflictAttempts >= 3) {
         if (isRemoteDocumentConflict(error)) remoteConflictRevisions.set(document.id, {

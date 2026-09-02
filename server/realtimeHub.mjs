@@ -15,6 +15,7 @@ export function createProjectRealtimeHub({
   now = Date.now,
   presenceHeartbeatMs = 20_000,
   presenceTtlMs = 65_000,
+  reportError = () => {},
 }) {
   if (!server || !productStore || !ticketSecret) throw new TypeError('实时服务配置不完整。')
   const webSocketServer = new WebSocketServer({ noServer: true })
@@ -315,21 +316,41 @@ export function createProjectRealtimeHub({
           && /^[A-Za-z0-9+/]*={0,2}$/.test(event.stateVectorBase64)
           && (event.lastAckedGraphRevision === undefined
             || (Number.isInteger(event.lastAckedGraphRevision) && event.lastAckedGraphRevision > 0))) {
-          await context.roomEntry.room.reloadPersistedState(context.userId)
-          context.roomEntry.hasState = true
-          const syncProtocolEpoch = await canvasSyncProtocolEpoch(context.userId, context.projectId)
-          const synchronized = await context.roomEntry.room.syncState(event.stateVectorBase64)
-          if (socket.readyState === WebSocket.OPEN) {
-            socket.send(JSON.stringify({
-              type: 'canvas.sync.ready.v2',
-              protocol: 2,
+          try {
+            await context.roomEntry.room.reloadPersistedState(context.userId)
+            context.roomEntry.hasState = true
+            const syncProtocolEpoch = await canvasSyncProtocolEpoch(context.userId, context.projectId)
+            const synchronized = await context.roomEntry.room.syncState(event.stateVectorBase64)
+            if (socket.readyState === WebSocket.OPEN) {
+              socket.send(JSON.stringify({
+                type: 'canvas.sync.ready.v2',
+                protocol: 2,
+                projectId: context.projectId,
+                schemaVersion: 2,
+                syncProtocolEpoch,
+                graphRevision: synchronized.graphRevision,
+                updateBase64: synchronized.update,
+              }))
+            }
+          } catch (caught) {
+            if (socket.readyState === WebSocket.OPEN) socket.close(1013, 'canvas sync unavailable')
+            try {
+              reportError(caught, {
+                level: 'warning',
+                tags: { component: 'realtime', operation: 'handshake' },
+                contexts: { canvas_sync: { projectId: context.projectId, clientInstanceId: event.clientInstanceId } },
+              })
+            } catch { /* 错误上报不得阻断连接恢复。 */ }
+            console.error(JSON.stringify({
+              event: 'canvas_sync.handshake_failed',
               projectId: context.projectId,
-              schemaVersion: 2,
-              syncProtocolEpoch,
-              graphRevision: synchronized.graphRevision,
-              updateBase64: synchronized.update,
+              clientInstanceId: event.clientInstanceId,
             }))
           }
+          return
+        }
+        if (context.canvasSyncProtocol === 2 && event?.type === 'canvas.sync.hello.v2') {
+          socket.close(1008, 'invalid canvas sync hello')
           return
         }
         if (event?.type === 'canvas.crdt.update' && event.projectId === context.projectId) {
@@ -612,7 +633,12 @@ export function createProjectRealtimeHub({
       roomIdleTimers.clear()
       server.off('upgrade', onUpgrade)
       for (const socket of webSocketServer.clients) socket.close(1001, 'server shutdown')
+      const forceClose = setTimeout(() => {
+        for (const socket of webSocketServer.clients) socket.terminate()
+      }, 5_000)
+      forceClose.unref?.()
       await new Promise((resolve) => webSocketServer.close(resolve))
+      clearTimeout(forceClose)
       for (const roomPromise of roomsByProject.values()) {
         try { await (await roomPromise).room.destroy() } catch { /* 已失败房间无需再次关闭。 */ }
       }

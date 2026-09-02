@@ -27,6 +27,7 @@ type CanvasSyncHelloEvent = {
 
 export type ProjectRealtimeChannel = {
   publish: (event: ProjectRealtimeEvent | CanvasSyncHelloEvent) => boolean
+  restart: () => void
   close: () => void
 }
 
@@ -60,7 +61,7 @@ export function openProjectRealtimeChannel(
   onConnectionStateChanged?: (state: ProjectRealtimeConnectionState) => void,
 ): ProjectRealtimeChannel {
   if (!serverPersistenceEnabled || !projectId) {
-    return { publish: () => false, close: () => undefined }
+    return { publish: () => false, restart: () => undefined, close: () => undefined }
   }
 
   let closed = false
@@ -111,6 +112,7 @@ export function openProjectRealtimeChannel(
         nextSocket.send(JSON.stringify({ type: 'collaboration.presence.subscribe', projectId }))
       })
       nextSocket.addEventListener('message', (message) => {
+        if (closed || run !== connectionRun) return
         try {
           const event = parseProjectRealtimeEvent(JSON.parse(String(message.data)), projectId)
           if (event) onEvent(event)
@@ -142,12 +144,26 @@ export function openProjectRealtimeChannel(
   notifyConnectionState('connecting')
   void connect()
 
+  const restart = () => {
+    if (closed) return
+    connectionRun += 1
+    const currentSocket = socket
+    socket = undefined
+    if (reconnectTimer !== undefined) {
+      window.clearTimeout(reconnectTimer)
+      reconnectTimer = undefined
+    }
+    currentSocket?.close(4000, 'canvas handshake restart')
+    scheduleReconnect()
+  }
+
   return {
     publish(event) {
       if (closed || socket?.readyState !== WebSocket.OPEN || event.projectId !== projectId) return false
       socket.send(JSON.stringify(event))
       return true
     },
+    restart,
     close() {
       if (closed) return
       closed = true

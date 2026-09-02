@@ -26,12 +26,14 @@ type ApiErrorPayload = { error?: { code?: string; message?: string } }
 export class ProductApiError extends Error {
   status: number
   code?: string
+  requestId?: string
 
-  constructor(message: string, status: number, code?: string) {
+  constructor(message: string, status: number, code?: string, requestId?: string) {
     super(message)
     this.name = 'ProductApiError'
     this.status = status
     this.code = code
+    this.requestId = requestId
   }
 }
 
@@ -252,6 +254,7 @@ async function productRequestOnce<T>(path: string, init: ProductRequestInit = {}
     : productRequestTimeoutMs
   let response: Response
   const controller = new AbortController()
+  let requestId: string = globalThis.crypto.randomUUID()
   const abortFromCaller = () => controller.abort()
   if (requestInit.signal?.aborted) controller.abort()
   else requestInit.signal?.addEventListener('abort', abortFromCaller, { once: true })
@@ -260,6 +263,8 @@ async function productRequestOnce<T>(path: string, init: ProductRequestInit = {}
     const headers = new Headers(requestInit.headers)
     headers.set('Accept', 'application/json')
     headers.set('Accept-Language', readProductLocale())
+    requestId = headers.get('X-Request-ID') ?? requestId
+    headers.set('X-Request-ID', requestId)
     for (const [key, value] of Object.entries(await authorizationHeader())) headers.set(key, value)
     response = await fetch(path, {
       ...requestInit,
@@ -272,12 +277,27 @@ async function productRequestOnce<T>(path: string, init: ProductRequestInit = {}
     const message = !requestInit.signal?.aborted && controller.signal.aborted
       ? locale === 'en' ? 'The workspace service timed out. Try again.' : (timeoutMessage ?? '工作区服务响应超时，请稍后重试。')
       : locale === 'en' ? 'Unable to connect to the workspace service. Check your connection and try again.' : '无法连接工作区服务，请检查网络或稍后重试。'
-    throw new ProductApiError(message, 0, controller.signal.aborted ? 'REQUEST_TIMEOUT' : undefined)
+    throw new ProductApiError(message, 0, controller.signal.aborted ? 'REQUEST_TIMEOUT' : undefined, requestId)
   } finally {
     window.clearTimeout(timeoutId)
     requestInit.signal?.removeEventListener('abort', abortFromCaller)
   }
-  const payload = await response.json().catch(() => null) as T | ApiErrorPayload | null
+  const responseRequestId = response.headers.get('X-Request-ID') ?? requestId
+  const contentType = response.headers.get('Content-Type') ?? ''
+  const invalidResponseMessage = readProductLocale() === 'en'
+    ? 'The workspace service returned an invalid response. Try again.'
+    : '工作区服务返回了无效响应，请稍后重试。'
+  let payload: T | ApiErrorPayload | null | undefined
+  if (response.status === 204) payload = undefined
+  else if (!contentType.toLowerCase().includes('json')) {
+    throw new ProductApiError(invalidResponseMessage, 502, 'INVALID_API_RESPONSE', responseRequestId)
+  } else {
+    try {
+      payload = await response.json() as T | ApiErrorPayload | null
+    } catch {
+      throw new ProductApiError(invalidResponseMessage, 502, 'INVALID_API_RESPONSE', responseRequestId)
+    }
+  }
   if (!response.ok) {
     const error = payload as ApiErrorPayload | null
     invalidateProductSessionIfRequired({ status: response.status, code: error?.error?.code })
@@ -288,7 +308,7 @@ async function productRequestOnce<T>(path: string, init: ProductRequestInit = {}
     }, readProductLocale(), {
       'zh-CN': '工作区服务返回异常。',
       en: 'The workspace service returned an error. Try again.',
-    }), response.status, error?.error?.code)
+    }), response.status, error?.error?.code, responseRequestId)
   }
   return payload as T
 }

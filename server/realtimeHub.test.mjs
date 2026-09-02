@@ -772,6 +772,55 @@ test('房间初始化暂时失败后，下一次连接会重新加载', async (c
   retried.close()
 })
 
+test('V2 握手重载失败会显式关闭连接并上报', async (context) => {
+  const server = createServer((_request, response) => response.end())
+  let loadCount = 0
+  const reported = []
+  const hub = createProjectRealtimeHub({
+    server,
+    ticketSecret: 'test-secret',
+    reportError: (...input) => reported.push(input),
+    productStore: {
+      async readProject() { return { document: { nodes: [], edges: [] }, revision: 1 } },
+      async canEditProject() { return true },
+      async loadCanvasCollaboration() {
+        loadCount += 1
+        if (loadCount === 2) throw new Error('temporary handshake reload failure')
+        return { graph: { nodes: [], edges: [] }, graphRevision: 1, updates: [] }
+      },
+    },
+  })
+  await listen(server)
+  const ticket = issueRealtimeTicket({ userId: 'user-1', projectId: 'project-1', origin: testOrigin, secret: 'test-secret' })
+  const socket = new WebSocket(
+    `ws://127.0.0.1:${server.address().port}/api/realtime?projectId=project-1&protocol=2&ticket=${encodeURIComponent(ticket)}`,
+    { origin: testOrigin },
+  )
+  context.after(async () => {
+    socket.close()
+    await hub.close()
+    await new Promise((resolve) => server.close(resolve))
+  })
+
+  assert.deepEqual(await nextMessage(socket), { type: 'realtime.ready', projectId: 'project-1', protocol: 2 })
+  const closeResult = Promise.race([
+    new Promise((resolve) => socket.once('close', (code, reason) => resolve({ code, reason: reason.toString() }))),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('V2 握手失败后连接仍保持 OPEN')), 300)),
+  ])
+  socket.send(JSON.stringify({
+    type: 'canvas.sync.hello.v2',
+    protocol: 2,
+    projectId: 'project-1',
+    schemaVersion: 2,
+    clientInstanceId: 'client-handshake-failure',
+    stateVectorBase64: Buffer.from(Y.encodeStateVector(new Y.Doc())).toString('base64'),
+  }))
+
+  assert.deepEqual(await closeResult, { code: 1013, reason: 'canvas sync unavailable' })
+  assert.equal(reported.length, 1)
+  assert.equal(reported[0][1].tags.operation, 'handshake')
+})
+
 test('最后一个客户端离开后释放空闲房间', async (context) => {
   const server = createServer((_request, response) => response.end())
   let loadCount = 0
