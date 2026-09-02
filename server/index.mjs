@@ -5,7 +5,7 @@ import { createAgentRunEventPublisher } from './agent/run/agentRunEventBus.mjs'
 import { createProductRuntime, loadLocalEnv, runtimeConfig } from './runtime.mjs'
 import { installDatabaseResilience } from './databaseResilience.mjs'
 import { createSecurityControls } from './securityControls.mjs'
-import { createBotanicHttpServer } from './httpServer.mjs'
+import { createBotanicHttpServer } from './http/httpServer.mjs'
 import { initializeBotanicTelemetry } from './botanicTelemetry.mjs'
 import { captureException, flushSentry } from './sentry.mjs'
 

@@ -1,4 +1,4 @@
-import { accessTokenFromRequest } from './requestAuth.mjs'
+import { accessTokenFromRequest } from '../requestAuth.mjs'
 
 /**
  * 会话资源的完整 HTTP 模块。调用方只需要判断是否已处理，无需了解

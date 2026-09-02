@@ -1,8 +1,8 @@
 // @ts-check
 
-import { validateAgentEntityReferences } from './agentEntityReferences.mjs'
-import { createAgentTargetBinding } from './agentTargetBinding.mjs'
-import { requireProjectPermission } from './projectAuthorization.mjs'
+import { validateAgentEntityReferences } from '../agentEntityReferences.mjs'
+import { createAgentTargetBinding } from '../agentTargetBinding.mjs'
+import { requireProjectPermission } from '../projectAuthorization.mjs'
 
 /** Agent Message 写入边界：客户端字段只能由 durable Turn 权威投影覆盖。 */
 export function createAgentMessageRouteHandler(input) {

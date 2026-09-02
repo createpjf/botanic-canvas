@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createAgentRouteHandler } from '../../agentRoutes.mjs'
+import { createAgentRouteHandler } from '../../http/agentRoutes.mjs'
 import { createConfiguredMcpRuntime, parseMcpToolConfigurations } from '../../mcpClient.mjs'
 import { agentActionReconciliationIdentity } from './agentActionReconciliation.mjs'
 import {

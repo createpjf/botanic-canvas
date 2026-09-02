@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { requestedGenerationJobCancellation } from './generation/generationJobExecution.mjs'
+import { requestedGenerationJobCancellation } from '../generation/generationJobExecution.mjs'
 import { createProductionWorkflowRouteHandler } from './productionWorkflowRoutes.mjs'
 
 function harness(bodies, submitGeneration = async ({ idempotencyKey }) => ({

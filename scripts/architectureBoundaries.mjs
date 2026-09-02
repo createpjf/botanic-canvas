@@ -25,7 +25,7 @@ export const legacyOversizeBudgets = Object.freeze({
   'src/domain/agent.ts': 2870,
   'server/store/supabaseProductStore.mjs': 2495,
   'server/store/productStore.mjs': 2465,
-  'server/agentRoutes.mjs': 2263,
+  'server/http/agentRoutes.mjs': 2263,
   'src/features/canvas/CanvasWorkspacePanels.tsx': 1921,
   'src/features/canvas/CanvasEditorViews.tsx': 1744,
   'server/agentToolRuntime.mjs': 1524,
@@ -52,7 +52,7 @@ export const legacyOversizeBudgets = Object.freeze({
 })
 
 const ownershipPolicies = Object.freeze({
-  'server/agentRoutes.mjs': {
+  'server/http/agentRoutes.mjs': {
     maxLines: 2263,
     forbidden: [
       ['agentTurnRuntime.execute', 'agent-routes-cannot-execute-turn-runtime'],
