@@ -1,4 +1,4 @@
-export function createCanvasHandshakeDeadline(onExpired: () => void, timeoutMs = 10_000) {
+export function createCanvasHandshakeDeadline(onExpired: () => void, timeoutMs = 30_000) {
   let timeoutId: ReturnType<typeof setTimeout> | undefined
   const clear = () => {
     if (timeoutId !== undefined) clearTimeout(timeoutId)
