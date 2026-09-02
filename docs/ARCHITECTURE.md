@@ -264,8 +264,8 @@ Redis 发布成功都不是退出证明。当前 Worker 真正退出时用匹配
 失败类型、耗时、重试与回填状态留在可展开 Runtime/执行链路中。
 
 `server/agentRunObservability.mjs` 为 API 与 Worker 日志写入同一 traceId；失败分支继续使用原有幂等重试入口，
-已存在的 Job 在配额扣减前即被复用，因此重放不会重复创建任务或重复扣费。`server/agentQualityEvaluation.mjs`
-只消费固定离线夹具，计算成功率、等待时间、恢复率、重复提交率和结果回填完整性，普通验证不得调用真实 Provider。
+已存在的 Job 在配额扣减前即被复用，因此重放不会重复创建任务或重复扣费。离线质量评测由
+`server/agentEvalSuite.mjs` + `scripts/evalGate.mjs` 承担，只消费固定夹具，普通验证不得调用真实 Provider。
 
 分布式执行使用另一套真实 W3C 身份：`agentTraceContext.mjs` 只提取/注入 `traceparent` 与受限
 `tracestate`，并通过 Generation、Derived、Subagent 三类 BullMQ payload 跨实例传播；Worker 在进入业务
@@ -275,7 +275,7 @@ OTLP exporter 故障必须 fail-open，不能改变 Turn、Tool、Queue 或 Prov
 
 `agentSemanticEvent.mjs` 定义版本化安全 schema，Context rollout/shadow/compaction/overflow/usage anchor
 与 Run lifecycle 只记录受控身份、计数、耗时、cohort 和错误码。Legacy `agent.run.*` 在迁移期双写，旧消费者
-不变；新指标由 `agentSemanticMetrics.mjs` 独立聚合，零样本继续为 `null`。OTel trace ID 与既有
+不变；运维指标由 `agentOperationalMetrics.mjs` 聚合，零样本继续为 `null`。OTel trace ID 与既有
 `agent-trace:*` 不互换：前者描述一次分布式执行，后者仍是 Run/Job/Artifact 产品聚合视图。
 
 ## 项目权限与 Agent 行动审批
