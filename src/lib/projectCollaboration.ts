@@ -64,14 +64,24 @@ export function connectCanvasCollaboration({
   let handshakeReady = false
   let syncProtocolEpoch: number | undefined
   let replaying = false
-  let blocked = false
   let pendingCount = 0
   let lastSyncStatus: CanvasSyncStatus | undefined
   let nackRetryCount = 0
   let nackRetryTimer: number | undefined
   let handshakeFailureReported = false
+  let handshakeAttempts = 0
+  let handshakeBlocked = false
+  let outboxBlocked = false
+  const maxHandshakeAttempts = 3
   const clientInstanceId = globalThis.crypto.randomUUID()
-  const handshakeDeadline = createCanvasHandshakeDeadline(() => {
+  const notifySyncStatus = () => {
+    if (closed) return
+    const status = deriveCanvasSyncStatus({ connectionState, handshakeReady, pendingCount, replaying, blocked: handshakeBlocked || outboxBlocked })
+    if (!status || status === lastSyncStatus) return
+    lastSyncStatus = status
+    onSyncStatusChanged?.(status)
+  }
+  const recoverHandshake = () => {
     if (closed || handshakeReady) return
     if (!handshakeFailureReported) {
       handshakeFailureReported = true
@@ -80,15 +90,15 @@ export function connectCanvasCollaboration({
         tags: { operation: 'handshake', client_instance_id: clientInstanceId },
       })
     }
+    if (handshakeAttempts >= maxHandshakeAttempts) {
+      handshakeBlocked = true
+      channel?.suspend()
+      notifySyncStatus()
+      return
+    }
     channel?.restart()
-  })
-  const notifySyncStatus = () => {
-    if (closed) return
-    const status = deriveCanvasSyncStatus({ connectionState, handshakeReady, pendingCount, replaying, blocked })
-    if (!status || status === lastSyncStatus) return
-    lastSyncStatus = status
-    onSyncStatusChanged?.(status)
   }
+  const handshakeDeadline = createCanvasHandshakeDeadline(recoverHandshake)
   const permanentHttpFailure = (error: unknown): CanvasSyncFailure | undefined => {
     if (!(error instanceof ProductApiError)) return
     const code = error.code ?? (error.status === 404 ? 'PROJECT_NOT_FOUND' : '')
@@ -113,7 +123,7 @@ export function connectCanvasCollaboration({
     classifyPermanentFailure: permanentHttpFailure,
     onPendingChanged: (count, blockedFailure) => {
       pendingCount = count
-      blocked = Boolean(blockedFailure)
+      outboxBlocked = Boolean(blockedFailure)
       if (count === 0) {
         if (nackRetryTimer !== undefined) window.clearTimeout(nackRetryTimer)
         nackRetryTimer = undefined
@@ -139,8 +149,9 @@ export function connectCanvasCollaboration({
   }) ?? false
   const beginHandshake = () => {
     handshakeReady = false
+    handshakeAttempts += 1
     if (publishHello()) handshakeDeadline.arm()
-    else channel?.restart()
+    else recoverHandshake()
     notifySyncStatus()
   }
   const replayOutbox = () => {
@@ -169,6 +180,8 @@ export function connectCanvasCollaboration({
       if (event.type === 'realtime.ready') {
         if (event.protocol !== 2) {
           handshakeDeadline.clear()
+          handshakeAttempts = 0
+          handshakeBlocked = false
           handshakeReady = true
           replayOutbox()
         }
@@ -186,11 +199,13 @@ export function connectCanvasCollaboration({
               tags: { operation: 'handshake', client_instance_id: clientInstanceId },
             })
           }
-          channel?.restart()
+          recoverHandshake()
           return
         }
         handshakeDeadline.clear()
         handshakeFailureReported = false
+        handshakeAttempts = 0
+        handshakeBlocked = false
         rememberAppliedCanvasGraphRevision(projectId, event.graphRevision)
         syncProtocolEpoch = event.syncProtocolEpoch ?? 1
         rememberRemoteSyncProtocolEpoch(projectId, syncProtocolEpoch)
@@ -219,7 +234,6 @@ export function connectCanvasCollaboration({
         } else {
           if (nackRetryTimer !== undefined) window.clearTimeout(nackRetryTimer)
           nackRetryTimer = undefined
-          blocked = true
           replaying = false
           notifySyncStatus()
           void outbox.block(event.mutationId, { code: event.code }).catch(() => undefined)
@@ -279,7 +293,17 @@ export function connectCanvasCollaboration({
 
   return {
     replaceLocalGraph: graph.replaceLocalGraph,
-    retryBlocked: () => outbox.retryBlocked().then(() => undefined),
+    retryBlocked: async () => {
+      const shouldResumeHandshake = handshakeBlocked
+      if (shouldResumeHandshake) {
+        handshakeBlocked = false
+        handshakeAttempts = 0
+        handshakeFailureReported = false
+        channel?.resume()
+        notifySyncStatus()
+      }
+      await outbox.retryBlocked()
+    },
     close() {
       closed = true
       handshakeDeadline.clear()
