@@ -2,6 +2,8 @@
 
 这份地图回答三个问题：需求属于哪里、从哪个接口进入、改完验证什么。文件名表达所有权；同一行为只保留一个权威实现。
 
+`server/` 按子域分目录：`agent/{turn,review,subagent,context}`（Agent 控制面）、`generation/`（生成任务）、`canvas/`（画布协作）、`store/`（三个 ProductStore Adapter 与契约）、`skills/`（内置 Skill 资产）；HTTP 路由、鉴权、队列与其余 Agent 控制面模块仍在根目录，后续触达时按同法归簇。测试与实现同目录。
+
 ## 快速定位
 
 | 需求/行为 | 首要入口 | 相关实现 | 聚焦测试与不变量 |
