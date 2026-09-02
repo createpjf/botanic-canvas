@@ -1584,7 +1584,13 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
           existing.lastSequence = storedEvent.sequence
         }
       }
-      if (decision.changed) Object.assign(existing, decision.turn)
+      if (decision.changed) {
+        // commit decision 是整条 Turn replace 投影；先删缺失键，避免 terminal clear 被 Object.assign 遗留。
+        for (const key of Object.keys(existing)) {
+          if (!Object.hasOwn(decision.turn, key)) delete existing[key]
+        }
+        Object.assign(existing, decision.turn)
+      }
       if (decision.changed || storedEvent) {
         if (decision.kind === 'committed' && ['completed', 'failed', 'cancelled'].includes(existing.status)) {
           audit({ actorId: userId, action: `agent-turn.${existing.status}`, projectId: existing.projectId, targetId: existing.id })

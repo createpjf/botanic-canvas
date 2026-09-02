@@ -22,7 +22,7 @@ export const AGENT_TURN_PUBLIC_STATUSES = Object.freeze([
 
 /** 实时通道事件类型(chat/turn/plan 共用)。 */
 export const AGENT_STREAM_EVENT_TYPES = Object.freeze([
-  'attempt', 'accepted', 'handoff', 'reasoning', 'answer', 'tool', 'done', 'error',
+  'attempt', 'accepted', 'handoff', 'reasoning', 'answer', 'answer_snapshot', 'tool', 'done', 'error',
 ])
 
 /** 工具调用公开状态(含 H4 的 aborted)。 */

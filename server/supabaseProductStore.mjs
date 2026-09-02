@@ -27,6 +27,12 @@ import { BotanicAgentSkillError } from './botanicAgentSkill.mjs'
 
 const now = () => Date.now()
 const clone = (value) => structuredClone(value)
+const terminalTurnStatuses = new Set(['waiting_user', 'completed', 'failed', 'cancelled'])
+function withoutTerminalTurnOutputPreview(value) {
+  const result = clone(value)
+  if (terminalTurnStatuses.has(result?.turn?.status)) delete result.turn.outputPreview
+  return result
+}
 const postgrestQuotedValue = (value) => `"${String(value).replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"`
 
 function productError(message, code = 'PRODUCT_STORE_ERROR') {
@@ -1808,7 +1814,11 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
     },
 
     async commitAgentTurnExecution(userId, command) {
-      const { data, error } = await supabaseRequest(() => supabase.rpc('botanic_commit_agent_turn_execution', {
+      const previewCommit = Object.hasOwn(command ?? {}, 'outputPreview')
+      const rpcName = previewCommit
+        ? 'botanic_commit_agent_turn_output_preview'
+        : 'botanic_commit_agent_turn_execution'
+      const { data, error } = await supabaseRequest(() => supabase.rpc(rpcName, {
         p_owner_id: userId,
         p_turn_id: command?.id,
         p_project_id: command?.projectId,
@@ -1816,7 +1826,10 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
       }))
       if (error) {
         if (missingAgentEntityRpc(error)) {
-          throw productError('Agent Turn 原子 commit 迁移尚未部署。', 'AGENT_TURN_ATOMIC_CLAIM_REQUIRED')
+          throw productError(
+            previewCommit ? 'Agent Turn 输出预览迁移尚未部署。' : 'Agent Turn 原子 commit 迁移尚未部署。',
+            'AGENT_TURN_ATOMIC_CLAIM_REQUIRED',
+          )
         }
         if (error.code === 'PAT01') throw productError('Agent Turn 执行租约已失效。', 'AGENT_TURN_LEASE_STALE')
         if (error.code === 'PAT02') throw productError('未找到 Agent Turn。', 'AGENT_TURN_NOT_FOUND')
@@ -1824,7 +1837,7 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
         if (error.code === '22023') throw productError('Agent Turn 执行参数无效。', 'AGENT_TURN_EXECUTION_INVALID')
         fail(error)
       }
-      return clone(data)
+      return withoutTerminalTurnOutputPreview(data)
     },
 
     async requestAgentTurnCancellation(userId, request) {
@@ -1863,7 +1876,7 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
         if (error.code === '22023') throw productError('Agent Turn 取消收口参数无效。', 'AGENT_TURN_EXECUTION_INVALID')
         fail(error)
       }
-      return clone(data)
+      return withoutTerminalTurnOutputPreview(data)
     },
 
     async putAgentTurn(userId, turn) {

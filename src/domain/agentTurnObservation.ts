@@ -53,7 +53,29 @@ export type BotanicAgentObservedTurn<TResult = BotanicAgentTurnResult> = {
   status: BotanicAgentTurnRuntimeStatus
   result?: TResult
   error?: { code?: string; message?: string }
+  outputPreview?: {
+    version: 1; attemptId: string; revision: number; step: number; text: string
+    truncated?: boolean; updatedAt: number
+  }
   lastSequence?: number
+}
+
+const outputPreviewAttemptId = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$/u
+
+export function botanicAgentTurnOutputPreviewAsStreamEvent(
+  turn: Pick<BotanicAgentObservedTurn, 'outputPreview'>,
+  afterRevision = 0,
+): Extract<BotanicAgentStreamEvent, { type: 'answer_snapshot' }> | undefined {
+  const preview = turn.outputPreview
+  if (!preview || preview.version !== 1
+    || typeof preview.attemptId !== 'string' || !outputPreviewAttemptId.test(preview.attemptId)
+    || !Number.isSafeInteger(preview.revision) || preview.revision <= afterRevision
+    || !Number.isInteger(preview.step) || preview.step < 0 || preview.step > 64
+    || typeof preview.text !== 'string' || preview.text.length > 12_288) return undefined
+  return {
+    type: 'answer_snapshot', attemptId: preview.attemptId, revision: preview.revision,
+    step: preview.step, text: preview.text, ...(preview.truncated ? { truncated: true } : {}),
+  }
 }
 
 export type BotanicAgentTurnEventRecord = {

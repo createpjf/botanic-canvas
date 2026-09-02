@@ -8,6 +8,7 @@ import { buildBotanicAgentTurnRequest, type BotanicAgentTurnRequestInput, type B
 import {
   agentTurnStreamFailureMustReject,
   agentTurnEventAsStreamEvent,
+  botanicAgentTurnOutputPreviewAsStreamEvent,
   botanicAgentTurnRequestKey,
   continueBotanicAgentTurnSubmission,
   monotonicAgentTurnEventDecision,
@@ -205,6 +206,7 @@ async function observeAgentRuntimeResult<TResult>(input: {
   missingTurnTimeoutMs?: number
 }): Promise<{ result: TResult; turn: BotanicAgentObservedTurn<TResult> }> {
   let after = Number.isInteger(input.after) ? Number(input.after) : 0
+  let deliveredPreviewRevision = 0
   const startedAt = Date.now()
   for (;;) {
     if (input.signal?.aborted) throw new DOMException('The operation was aborted.', 'AbortError')
@@ -234,6 +236,11 @@ async function observeAgentRuntimeResult<TResult>(input: {
     }
     if (page.turn.projectId !== input.projectId || page.turn.id !== input.turnId) {
       throw new ProductApiError('Agent 回合身份校验失败。', 409, 'AGENT_TURN_IDENTITY_MISMATCH')
+    }
+    const previewEvent = botanicAgentTurnOutputPreviewAsStreamEvent(page.turn, deliveredPreviewRevision)
+    if (previewEvent) {
+      deliveredPreviewRevision = previewEvent.revision
+      input.onEvent?.(previewEvent)
     }
     let deliveredSequence = after
     for (const event of page.events) {

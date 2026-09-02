@@ -3,6 +3,7 @@ import test from 'node:test'
 import {
   agentTurnStreamFailureMustReject,
   agentTurnEventAsStreamEvent,
+  botanicAgentTurnOutputPreviewAsStreamEvent,
   botanicAgentTurnProjectionMessageId,
   botanicAgentTurnRecoveryKey,
   botanicAgentTurnRequestKey,
@@ -541,4 +542,20 @@ test('Stop 收到 cancelling 后继续请求，直到服务端确认 cancelled',
   })
   assert.equal(attempts, 2)
   assert.equal(waits, 1)
+})
+
+test('TurnOutputPreview reader只投影新revision且拒绝越界正文', () => {
+  const turn = {
+    outputPreview: {
+      version: 1 as const, attemptId: 'text', revision: 2, step: 0,
+      text: '已恢复正文', updatedAt: 100,
+    },
+  }
+  assert.deepEqual(botanicAgentTurnOutputPreviewAsStreamEvent(turn, 1), {
+    type: 'answer_snapshot', attemptId: 'text', revision: 2, step: 0, text: '已恢复正文',
+  })
+  assert.equal(botanicAgentTurnOutputPreviewAsStreamEvent(turn, 2), undefined)
+  assert.equal(botanicAgentTurnOutputPreviewAsStreamEvent({
+    outputPreview: { ...turn.outputPreview, text: 'x'.repeat(12_289) },
+  }, 0), undefined)
 })

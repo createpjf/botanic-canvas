@@ -10,8 +10,8 @@ export function isAgentTurnPublicStatus(value: unknown): value is AgentTurnPubli
   return typeof value === 'string' && AgentTurnPublicStatusSet.has(value)
 }
 
-export type AgentStreamEventType = 'attempt' | 'accepted' | 'handoff' | 'reasoning' | 'answer' | 'tool' | 'done' | 'error'
-export const AGENT_STREAM_EVENT_TYPE_VALUES = Object.freeze(['attempt', 'accepted', 'handoff', 'reasoning', 'answer', 'tool', 'done', 'error']) as readonly AgentStreamEventType[]
+export type AgentStreamEventType = 'attempt' | 'accepted' | 'handoff' | 'reasoning' | 'answer' | 'answer_snapshot' | 'tool' | 'done' | 'error'
+export const AGENT_STREAM_EVENT_TYPE_VALUES = Object.freeze(['attempt', 'accepted', 'handoff', 'reasoning', 'answer', 'answer_snapshot', 'tool', 'done', 'error']) as readonly AgentStreamEventType[]
 const AgentStreamEventTypeSet: ReadonlySet<string> = new Set(AGENT_STREAM_EVENT_TYPE_VALUES)
 export function isAgentStreamEventType(value: unknown): value is AgentStreamEventType {
   return typeof value === 'string' && AgentStreamEventTypeSet.has(value)

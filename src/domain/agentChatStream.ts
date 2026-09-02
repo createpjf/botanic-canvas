@@ -37,6 +37,7 @@ export type BotanicAgentStreamEvent = ({ sequence?: number; attemptId?: string }
     }
   | { type: 'reasoning'; step: number; delta: string; chunkIndex?: number }
   | { type: 'answer'; step: number; delta: string; chunkIndex?: number }
+  | { type: 'answer_snapshot'; attemptId: string; revision: number; step: number; text: string; truncated?: boolean }
   | { type: 'tool'; step: number; toolCall: AgentToolCallTrace; presentation?: TimelineToolPresentation }
   | {
       type: 'done'

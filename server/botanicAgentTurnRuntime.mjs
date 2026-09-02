@@ -10,6 +10,7 @@ import { presentationWebSources } from './agentWebResearch.mjs'
 import { withBotanicSpan } from './executionTelemetry.mjs'
 import { AGENT_SEMANTIC_EVENT_NAMES, writeAgentSemanticEvent } from './agentSemanticEvent.mjs'
 import { registerAgentDiagnosticGauge } from './agentRuntimeDiagnostics.mjs'
+import { createAgentTurnOutputPreview, agentTurnOutputPreviewEventPayload, normalizeAgentTurnOutputPreview } from './agentTurnOutputPreview.mjs'
 
 // completed Turn 仍可能拥有后续创建的 linked Run / Job；显式深取消必须能从
 // completed 进入 cancelling，才能撤销这些已授权但尚未完成的下游任务。
@@ -107,6 +108,9 @@ function eventPayload(event) {
  */
 function publicTurn(turn, links = {}) {
   if (!turn) return undefined
+  const outputPreview = ['running', 'cancelling'].includes(turn.status)
+    ? normalizeAgentTurnOutputPreview(turn.outputPreview, turn.outputPreview?.updatedAt)
+    : undefined
   const result = {
     id: turn.id,
     version: 2,
@@ -122,6 +126,7 @@ function publicTurn(turn, links = {}) {
       ? { lastSequence: turn.lastSequence }
       : (Number.isInteger(links.lastSequence) ? { lastSequence: links.lastSequence } : {})),
     ...(Array.isArray(links.linkedRunIds) ? { linkedRunIds: [...links.linkedRunIds] } : {}),
+    ...(outputPreview ? { outputPreview: clone(outputPreview) } : {}),
     ...(turn.result ? { result: clone(turn.result) } : {}),
     ...(turn.error ? { error: clone(turn.error) } : {}),
   }
@@ -365,6 +370,7 @@ export function createBotanicAgentTurnRuntime({
           executionGeneration,
           status,
           ...(Object.hasOwn(input, 'checkpoint') ? { checkpoint: clone(checkpoint) } : {}),
+          ...(Object.hasOwn(input, 'outputPreview') ? { outputPreview: clone(input.outputPreview) } : {}),
           ...(result !== undefined ? { result: clone(result) } : {}),
           ...(error !== undefined ? { error: clone(error) } : {}),
           ...(turnEvent ? { event: turnEvent } : {}),
@@ -512,23 +518,60 @@ export function createBotanicAgentTurnRuntime({
       }, boundedHeartbeatMs)
       heartbeatTimer.unref?.()
 
-      const emit = (rawEvent) => {
-        const envelope = { ...clone(rawEvent), turnId: id, eventId: `turn_live_${randomUUID()}` }
-        const payload = eventPayload(rawEvent)
-        trackPersistence(async () => {
-          if (payload) {
-            const committed = await commit({
-              status: 'running',
-              turnEvent: event(id, projectId, 'turn.tool', payload),
-            })
-            if (committed.kind === 'cancelling') {
-              throw executionError('AGENT_TURN_CANCELLED', '用户取消了 Agent 回合。', 499)
-            }
-            if (Number.isInteger(committed.event?.sequence)) envelope.sequence = committed.event.sequence
+      const outputPreview = createAgentTurnOutputPreview({
+        initialPreview: turn.outputPreview,
+        persist: (snapshot) => trackPersistence(async () => {
+          const previewEvent = event(
+            id,
+            projectId,
+            'turn.output_preview.updated',
+            agentTurnOutputPreviewEventPayload(snapshot),
+          )
+          previewEvent.id = `turn_preview_${stableId(`${id}:${executionGeneration}:${snapshot.revision}`)}`
+          const committed = await commit({ status: 'running', outputPreview: snapshot, turnEvent: previewEvent })
+          if (committed.kind === 'cancelling') {
+            throw executionError('AGENT_TURN_CANCELLED', '用户取消了 Agent 回合。', 499)
+          }
+          const stored = committed.turn?.outputPreview ?? snapshot
+          const envelope = {
+            type: 'answer_snapshot', turnId: id, eventId: previewEvent.id,
+            attemptId: stored.attemptId, revision: stored.revision, step: stored.step,
+            text: stored.text, ...(stored.truncated ? { truncated: true } : {}),
+            ...(Number.isInteger(committed.event?.sequence) ? { sequence: committed.event.sequence } : {}),
           }
           liveEvents.push(envelope)
           notify(envelope)
-        })
+          return stored
+        }),
+      })
+
+      const emit = (rawEvent) => {
+        const persistLiveEvent = () => {
+          const envelope = { ...clone(rawEvent), turnId: id, eventId: `turn_live_${randomUUID()}` }
+          const payload = eventPayload(rawEvent)
+          return trackPersistence(async () => {
+            if (payload) {
+              const committed = await commit({
+                status: 'running',
+                turnEvent: event(id, projectId, 'turn.tool', payload),
+              })
+              if (committed.kind === 'cancelling') {
+                throw executionError('AGENT_TURN_CANCELLED', '用户取消了 Agent 回合。', 499)
+              }
+              if (Number.isInteger(committed.event?.sequence)) envelope.sequence = committed.event.sequence
+            }
+            liveEvents.push(envelope)
+            notify(envelope)
+          })
+        }
+        if (rawEvent?.type === 'tool') {
+          const previewDelivery = outputPreview.observe(rawEvent)
+          const liveDelivery = persistLiveEvent()
+          return Promise.all([previewDelivery, liveDelivery])
+        }
+        const liveDelivery = persistLiveEvent()
+        const previewDelivery = outputPreview.observe(rawEvent)
+        return Promise.all([liveDelivery, previewDelivery])
       }
 
       const saveCheckpoint = (checkpoint) => {
@@ -567,6 +610,7 @@ export function createBotanicAgentTurnRuntime({
         }, () => resolve({
           ...resolveOptions,
           runtimeIdentity,
+          requireDurableAttemptReset: true,
           // 明确覆盖调用方可能携带的 request.signal；传输层无权拥有 Turn 生命周期。
           signal: controller.signal,
           deadlineAt,
@@ -574,6 +618,7 @@ export function createBotanicAgentTurnRuntime({
           ...(turn.checkpoint ? { resumeCheckpoint: clone(turn.checkpoint) } : {}),
           saveCheckpoint,
         }))
+        outputPreview.discard()
         clearInterval(heartbeatTimer)
         await heartbeatInFlight
         await Promise.all(pendingDeliveries)
@@ -604,6 +649,7 @@ export function createBotanicAgentTurnRuntime({
           events: [...(persistedEvents ?? []), ...liveEvents.filter((entry) => entry.type !== 'tool')],
         }
       } catch (caught) {
+        outputPreview.discard()
         clearInterval(heartbeatTimer)
         await heartbeatInFlight.catch(() => undefined)
         // resolver 可能在 emit 后立刻失败。先等已排队的事件 commit 收口，再写终态，

@@ -64,7 +64,7 @@ export type TimelineBlock =
 export type AgentTimelineState = {
   blocks: TimelineBlock[]
   /** Live-only attempt/chunk cursor;不进入durable Turn Event。 */
-  stream?: { attemptId?: string; answerChunkIndex?: number; reasoningChunkIndex?: number }
+  stream?: { attemptId?: string; answerChunkIndex?: number; reasoningChunkIndex?: number; previewRevision?: number }
   truncation?: { loadedCount: number; nextAfter: number }
 }
 
@@ -72,6 +72,7 @@ export type AgentTimelineEvent =
   | { type: 'attempt'; action: 'start'; attemptId: string; receivedAt: number }
   | { type: 'reasoning'; step: number; delta: string; attemptId?: string; chunkIndex?: number; receivedAt: number }
   | { type: 'answer'; step: number; delta: string; attemptId?: string; chunkIndex?: number; receivedAt: number }
+  | { type: 'answer_snapshot'; attemptId: string; revision: number; step: number; text: string; truncated?: boolean; receivedAt: number }
   | { type: 'tool'; step: number; toolCall: AgentToolCallTrace; presentation?: TimelineToolPresentation; attemptId?: string; receivedAt: number }
   | { type: 'handoff'; receivedAt: number }
   | { type: 'done'; receivedAt: number }
@@ -445,6 +446,10 @@ export function agentTimelineEventFromStream(
     ...(event.attemptId ? { attemptId: event.attemptId } : {}),
     ...(event.chunkIndex === undefined ? {} : { chunkIndex: event.chunkIndex }), receivedAt,
   }
+  if (event.type === 'answer_snapshot') return {
+    type: 'answer_snapshot', attemptId: event.attemptId, revision: event.revision,
+    step: event.step, text: event.text, ...(event.truncated ? { truncated: true } : {}), receivedAt,
+  }
   if (event.type === 'tool') return {
     type: event.type, step: event.step, toolCall: event.toolCall,
     ...(event.attemptId ? { attemptId: event.attemptId } : {}),
@@ -461,6 +466,20 @@ export function applyAgentConversationStreamEvent(
   if (event.type === 'attempt') {
     if (state.timeline.stream?.attemptId === event.attemptId) return state
     return { content: '', timeline: { ...createAgentTimeline(event.receivedAt), stream: { attemptId: event.attemptId } } }
+  }
+  if (event.type === 'answer_snapshot') {
+    const cursor = state.timeline.stream
+    if (!Number.isSafeInteger(event.revision) || event.revision < 1
+      || (cursor?.previewRevision !== undefined && event.revision <= cursor.previewRevision)) return state
+    const sameAttempt = cursor?.attemptId === event.attemptId
+    const timeline = sameAttempt ? state.timeline : createAgentTimeline(event.receivedAt)
+    return {
+      content: event.text.slice(0, 12_288),
+      timeline: {
+        ...timeline,
+        stream: { ...(sameAttempt ? cursor : {}), attemptId: event.attemptId, previewRevision: event.revision },
+      },
+    }
   }
   const cursor = state.timeline.stream
   const eventAttemptId = 'attemptId' in event ? event.attemptId : undefined
@@ -516,7 +535,7 @@ export function reduceAgentTimeline(prev: AgentTimelineState, event: AgentTimeli
     return { blocks: rawGroup ? withRawGroup(blocks, rawGroup.items, rawGroup.open) : blocks }
   }
   // 回答属于气泡正文，不进入时间线；连续工具步骤因此不会被旁白打断。
-  if (event.type === 'answer') return prev
+  if (event.type === 'answer' || event.type === 'answer_snapshot') return prev
   if (event.type === 'tool') return reduceToolEvent(prev, event)
   if (event.type === 'done') {
     return {

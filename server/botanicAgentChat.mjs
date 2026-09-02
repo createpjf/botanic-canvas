@@ -180,7 +180,7 @@ async function executeChatAttempt({ input, config, model, system, messages, regi
     snapshotHash: canonicalHash(snapshot),
   }
   const emitAttemptEvent = (event) => emitEvent({ ...event, attemptId })
-  if (streaming) emitAttemptEvent({ type: 'attempt', action: 'start' })
+  if (streaming) await emitAttemptEvent({ type: 'attempt', action: 'start' })
   try {
     const result = await runAgentToolLoop({
       registry,
@@ -282,10 +282,13 @@ export async function chatWithBotanicAgent(input, runtimeConfig, options = {}) {
   // 有实时通道时才向提供方请求流式；没有就完全走原来的一次性请求。
   const streaming = typeof options.onEvent === 'function'
   let emittedEvents = 0
-  const emitEvent = (event) => {
+  const emitEvent = async (event) => {
     if (!streaming) return
     emittedEvents += 1
-    try { options.onEvent(event) } catch { /* 展示层异常不得中断本轮对话。 */ }
+    try { await options.onEvent(event) } catch (caught) {
+      if (event.type === 'attempt' && options.requireDurableAttemptReset === true) throw caught
+      // 非durable展示层异常不得中断本轮对话。
+    }
   }
   let baseSystem
   try {

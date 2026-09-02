@@ -25,6 +25,7 @@
         "handoff",
         "reasoning",
         "answer",
+        "answer_snapshot",
         "tool",
         "done",
         "error"
