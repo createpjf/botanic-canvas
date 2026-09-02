@@ -9,7 +9,7 @@ const local = readFileSync(new URL('./store/productStore.mjs', import.meta.url),
 const postgres = readFileSync(new URL('./store/postgresProductStore.mjs', import.meta.url), 'utf8')
 const supabase = readFileSync(new URL('./store/supabaseProductStore.mjs', import.meta.url), 'utf8')
 const threadContext = readFileSync(new URL('./agentThreadContext.mjs', import.meta.url), 'utf8')
-const agentRoutes = readFileSync(new URL('./agentRoutes.mjs', import.meta.url), 'utf8')
+const agentRoutes = readFileSync(new URL('./http/agentRoutes.mjs', import.meta.url), 'utf8')
 const migration = readFileSync(new URL('../supabase/migrations/20260827180000_agent_thread_summary_cas.sql', import.meta.url), 'utf8')
 const casMigration = migration.slice(
   migration.indexOf('create or replace function public.botanic_compare_and_set_agent_thread_summary'),

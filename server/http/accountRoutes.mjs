@@ -1,4 +1,4 @@
-import { productStoreSupports } from './store/productStoreContract.mjs'
+import { productStoreSupports } from '../store/productStoreContract.mjs'
 
 const accountSecurityAuditActions = new Set([
   'security.password.changed',

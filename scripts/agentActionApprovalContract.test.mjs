@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
-const serverRoutes = readFileSync(new URL('../server/agentRoutes.mjs', import.meta.url), 'utf8')
+const serverRoutes = readFileSync(new URL('../server/http/agentRoutes.mjs', import.meta.url), 'utf8')
 const clientApi = readFileSync(new URL('../src/lib/agentApi.ts', import.meta.url), 'utf8')
 const skillRegistry = readFileSync(new URL('../src/features/agent/useAgentSkillRegistry.ts', import.meta.url), 'utf8')
 

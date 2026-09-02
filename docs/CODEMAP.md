@@ -2,7 +2,7 @@
 
 这份地图回答三个问题：需求属于哪里、从哪个接口进入、改完验证什么。文件名表达所有权；同一行为只保留一个权威实现。
 
-`server/` 按子域分目录：`agent/{turn,review,subagent,context}`（Agent 控制面）、`generation/`（生成任务）、`canvas/`（画布协作）、`store/`（三个 ProductStore Adapter 与契约）、`skills/`（内置 Skill 资产）；HTTP 路由、鉴权、队列与其余 Agent 控制面模块仍在根目录，后续触达时按同法归簇。测试与实现同目录。
+`server/` 按子域分目录：`agent/{turn,review,subagent,context,run,action,model}`（Agent 控制面）、`generation/`（生成任务）、`canvas/`（画布协作）、`store/`（三个 ProductStore Adapter 与契约）、`http/`（HTTP 组合根与资源路由）、`skills/`（内置 Skill 资产）；鉴权、队列与其余控制面模块仍在根目录，触达时按同法归簇。测试与实现同目录。
 
 ## 快速定位
 
@@ -62,7 +62,7 @@
 | 项目同步 | `src/lib/db.ts` | `projectRealtime.ts`、`projectCollaboration.ts`、`server/realtimeHub.mjs`、`server/canvas/canvasRealtimeEventBus.mjs`、Store | Realtime/冲突/双实例测试；`revision` 与 `graphRevision` 分工明确，跨实例 Yjs 只在来源实例落库 |
 | 画布同步协议 V2（CRDT mutation log） | `server/canvas/canvasCollaborationRoom.mjs` | `src/lib/canvasSyncOutbox.ts`（浏览器 durable Outbox）、`src/lib/projectCollaboration.ts`、`src/domain/collaborativeGraph.ts`（客户端清洗/合并）、`src/domain/realtimeSync.ts`（`CanvasSyncStatus`：synced/saving/offline_pending/syncing/blocked）、`useCanvasWorkspaceSynchronization.ts`、`supabase/migrations/20260831120000_canvas_sync_v2_phase1.sql`、`scripts/canvasSyncEpoch2Cutover.mjs`（单项目 Canary） | `server/canvas/canvasCollaborationRoom.test.mjs`、`src/lib/canvasSyncOutbox.test.ts`、`src/domain/collaborativeGraph.test.ts`、`scripts/canvasCollaborationSanitizerContract.test.mjs`、`scripts/canvasSyncEpoch2Cutover.test.mjs`；服务端 room 持久化成功再广播，mutation 以内容哈希幂等；`sync_protocol_epoch` fencing 防 V1 覆盖 V2；两侧 CRDT 清洗器（媒体字段词表 + 节点/连线 `selected` 与节点 `dragging` 剥离）由契约测试锁一致；选中/拖拽态是本机私有视图，不进 mutation log 也不重播；`syncing`/`blocked` 期间画布只读，本地修改保留在 Outbox；Canary 仅在 schema、活动写入者与重建一致性全部通过后以单事务切换，并自动执行切后 verify；审查记录与发布边界见 `docs/agents/issue-tracker.md`（仅逐项目 Canary，禁止批量切换） |
 | 账户与权限 | `src/lib/productSession.ts` | `server/authorization.mjs`、`projectAuthorization.mjs` | 授权和账户测试；越权 403、真实缺失 404 |
-| HTTP 路由 | `server/httpRouteTable.mjs` | `sessionRoutes.mjs`、`projectRoutes.mjs`、`generationRoutes.mjs`、`accountRoutes.mjs`、`libraryRoutes.mjs`、`agentRoutes.mjs`、`promptMediaRoutes.mjs`、`realtimeTicketRoutes.mjs` | 资源模块返回是否已处理并拥有 405/Allow；组合根只负责鉴权基础设施与处理器编排 |
+| HTTP 路由 | `server/http/httpRouteTable.mjs` | `sessionRoutes.mjs`、`projectRoutes.mjs`、`generationRoutes.mjs`、`accountRoutes.mjs`、`libraryRoutes.mjs`、`agentRoutes.mjs`、`promptMediaRoutes.mjs`、`realtimeTicketRoutes.mjs` | 资源模块返回是否已处理并拥有 405/Allow；组合根只负责鉴权基础设施与处理器编排 |
 | ProductStore | `server/runtime.mjs` | `productStore.mjs`、`postgresProductStore.mjs`、`supabaseProductStore.mjs` | Adapter 契约及各 Store 测试 |
 | 投放交付 | `src/domain/deliveryPresentation.ts` | `src/lib/deliveryExport.ts` | delivery 测试；视频不进入图片投放模板 |
 

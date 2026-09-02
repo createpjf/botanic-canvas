@@ -34,8 +34,8 @@
 - Store 命令或状态形状：先核对 `src/store/canvasStore.types.ts`；Agent 实体命令从 `src/store/canvasAgentActions.ts` 开始，其余命令再进入 `src/store/canvasStore.ts`。
 - 浏览器会话、远端项目、协作：从 `src/lib/` 开始。
 - 画布同步协议（CRDT mutation log、Outbox、epoch）：服务端权威从 `server/canvas/canvasCollaborationRoom.mjs` 开始，浏览器侧从 `src/lib/canvasSyncOutbox.ts` 与 `src/domain/collaborativeGraph.ts` 开始；两侧清洗器由 `scripts/canvasCollaborationSanitizerContract.test.mjs` 锁一致，改一侧必须同步另一侧。
-- HTTP、鉴权、队列和存储 Adapter：从 `server/` 开始；项目资源见 `projectRoutes.mjs`，生成任务资源见 `server/generation/generationRoutes.mjs`。
-- 会话 HTTP 语义从 `server/sessionRoutes.mjs` 开始；动态路径目录仍在 `server/httpRouteTable.mjs`。
+- HTTP、鉴权、队列和存储 Adapter：从 `server/` 开始；HTTP 组合根与资源路由在 `server/http/`（项目资源 `projectRoutes.mjs`），生成任务资源见 `server/generation/generationRoutes.mjs`。
+- 会话 HTTP 语义从 `server/http/sessionRoutes.mjs` 开始；动态路径目录仍在 `server/http/httpRouteTable.mjs`。
 - 更完整的文件和测试对应关系见 [CODEMAP](docs/CODEMAP.md)。
 
 ## 最小验证

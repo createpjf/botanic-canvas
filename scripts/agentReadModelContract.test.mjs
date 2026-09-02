@@ -11,15 +11,15 @@ test('readProject 读路径不合并 Agent 消息', () => {
 })
 
 test('阅读锚点路由不再先读全量 Agent 状态', () => {
-  const source = readFileSync(new URL('../server/agentRoutes.mjs', import.meta.url), 'utf8')
+  const source = readFileSync(new URL('../server/http/agentRoutes.mjs', import.meta.url), 'utf8')
   const handler = source.slice(source.indexOf('if (agentSessionReadingAnchorMatch)'), source.indexOf('if (agentSessionMatch)'))
   assert.match(handler, /putAgentSessionReadReceipt/)
   assert.doesNotMatch(handler, /readAgentState/)
 })
 
 test('会话 CAS 不预读 Agent 状态，消息协作摘要只读无消息视图', () => {
-  const source = readFileSync(new URL('../server/agentRoutes.mjs', import.meta.url), 'utf8')
-  const messageRoute = readFileSync(new URL('../server/agentMessageRoutes.mjs', import.meta.url), 'utf8')
+  const source = readFileSync(new URL('../server/http/agentRoutes.mjs', import.meta.url), 'utf8')
+  const messageRoute = readFileSync(new URL('../server/http/agentMessageRoutes.mjs', import.meta.url), 'utf8')
   const sessionHandler = source.slice(source.indexOf('if (agentSessionMatch)'), source.indexOf('if (agentMessageMatch)'))
   const messageHandler = source.slice(source.indexOf('if (agentMessageMatch)'), source.indexOf('if (agentMemoryMatch)'))
   assert.match(sessionHandler, /compareAndSetAgentSessionSettings/)
@@ -29,13 +29,13 @@ test('会话 CAS 不预读 Agent 状态，消息协作摘要只读无消息视�
 })
 
 test('规划与知识绑定只读记忆，不拉会话消息', () => {
-  const source = readFileSync(new URL('../server/agentRoutes.mjs', import.meta.url), 'utf8')
+  const source = readFileSync(new URL('../server/http/agentRoutes.mjs', import.meta.url), 'utf8')
   assert.match(source, /readAgentState\(userId, input\.projectId, \{ includeMessages: false \}\)/)
   assert.match(source, /readAgentState\(user\.id, validatedInput\.projectId, \{ includeMessages: false \}\)/)
 })
 
 test('Artifact 分页游标实现仍从 botanicArtifactIndex 导入', () => {
-  const source = readFileSync(new URL('../server/agentRoutes.mjs', import.meta.url), 'utf8')
+  const source = readFileSync(new URL('../server/http/agentRoutes.mjs', import.meta.url), 'utf8')
   assert.match(source, /decodeArtifactCursor/)
   assert.match(source, /encodeArtifactCursor/)
   assert.match(source, /botanicArtifactIndex/)

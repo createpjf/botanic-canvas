@@ -66,7 +66,7 @@ test('运行时模块循环会被架构检查拒绝', () => {
 
 test('核心编排不能重新拥有 Turn 执行与恢复，也不能突破复杂度预算', () => {
   const rootDir = fixture({
-    'server/agentRoutes.mjs': 'agentTurnRuntime.execute(command)\n',
+    'server/http/agentRoutes.mjs': 'agentTurnRuntime.execute(command)\n',
     'src/features/agent/AgentWorkspace.tsx': 'retryBotanicAgentTurnRecovery(command)\n',
   })
 
