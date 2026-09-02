@@ -138,7 +138,9 @@ export function createCanvasAgentActions({
       const appliedRevision = readAppliedRemoteRevision(document.id)
       const appliedGraphRevision = readAppliedGraphRevision(document.id)
       if (Number(appliedRevision) >= patch.revision && Number(appliedGraphRevision) >= patch.graphRevision) return true
-      if (appliedRevision !== patch.baseRevision || appliedGraphRevision !== patch.baseGraphRevision) {
+      if (patch.revision < patch.baseRevision || patch.revision > patch.baseRevision + 1
+        || patch.graphRevision < patch.baseGraphRevision || patch.graphRevision > patch.baseGraphRevision + 1
+        || appliedRevision !== patch.baseRevision || appliedGraphRevision !== patch.baseGraphRevision) {
         const refreshed = await get().refreshDocumentFromRemote().catch(() => false)
         if (!refreshed) set({ assistantMessage: '画布已有新的协作版本；本地内容已保留，请同步后重试。' })
         return refreshed

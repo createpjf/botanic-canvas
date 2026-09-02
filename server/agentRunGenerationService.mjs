@@ -184,7 +184,7 @@ export function createAgentRunGenerationService({
 
   async function persistWorkflow(userId, project, prepared) {
     try {
-      let saved
+      let persistence
       let graphCommit
       if (supportsDurableCanvasGraphMutation(productStore)) {
         const committed = await commitCanvasProjectMutation({
@@ -199,23 +199,49 @@ export function createAgentRunGenerationService({
           }),
           mutate: (document) => mergePreparedWorkflow(document, prepared),
         })
-        saved = committed?.saved
+        if (committed) {
+          persistence = {
+            saved: committed.saved,
+            baseRevision: committed.baseRevision,
+            revision: committed.revision,
+            baseGraphRevision: committed.baseGraphRevision,
+            graphRevision: committed.graphRevision,
+          }
+        }
         graphCommit = committed?.graphCommit
       } else {
-        saved = await productStore.writeProject(
+        const saved = await productStore.writeProject(
           userId,
           prepared.document,
           project.revision,
           project.graphRevision,
         )
+        if (saved) {
+          persistence = {
+            saved,
+            baseRevision: project.revision,
+            revision: saved.revision,
+            baseGraphRevision: project.graphRevision,
+            graphRevision: saved.graphRevision,
+          }
+        }
       }
+      const saved = persistence?.saved
       if (!saved) throw new AgentToolRuntimeError('PROJECT_NOT_FOUND', '未找到当前项目。', 404)
       await publishProjectUpdated(saved, userId, graphCommit)
-      return saved
+      return persistence
     } catch (caught) {
       if (caught?.code === 'PROJECT_CONFLICT' || caught?.code === 'CANVAS_GRAPH_CONFLICT') {
         const latest = await productStore.readProject(userId, project.document.id)
-        if (latest && containsPreparedWorkflow(latest.document, prepared)) return latest
+        if (latest && containsPreparedWorkflow(latest.document, prepared)) {
+          return {
+            saved: latest,
+            baseRevision: latest.revision,
+            revision: latest.revision,
+            baseGraphRevision: latest.graphRevision,
+            graphRevision: latest.graphRevision,
+          }
+        }
         throw new AgentToolRuntimeError(caught.code, '画布刚刚发生变化，请刷新后重新执行 Agent 计划。', 409)
       }
       throw caught
@@ -360,7 +386,7 @@ export function createAgentRunGenerationService({
       job.usage = usage
       if (budget.warning) job.budgetWarning = '生成额度接近上限。'
     }
-    const saved = await persistWorkflow(userId, project, prepared)
+    const persistence = await persistWorkflow(userId, project, prepared)
     const queueFailures = []
     for (const job of pendingJobs) {
       // 每个 Job 写入前都重读 durable fence。至少首个提交必须被挡住；逐个检查还能
@@ -397,9 +423,7 @@ export function createAgentRunGenerationService({
       run: latestRun,
       jobs: prepared.jobs,
       workflows: prepared.workflows,
-      saved,
-      baseRevision: project.revision,
-      baseGraphRevision: project.graphRevision,
+      ...persistence,
     }
   }
 

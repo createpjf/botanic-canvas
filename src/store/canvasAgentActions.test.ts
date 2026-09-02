@@ -215,9 +215,9 @@ test('Agent 工作流回执 revision 不连续时刷新权威文档，不登记�
     }],
     edges: [],
     updatedAt: 60,
-    baseRevision: 2,
+    baseRevision: 1,
     revision: 3,
-    baseGraphRevision: 2,
+    baseGraphRevision: 1,
     graphRevision: 3,
   })
 

@@ -107,7 +107,9 @@ export async function commitCanvasProjectMutation({
     return {
       saved: project,
       baseRevision: project.revision,
+      revision: project.revision,
       baseGraphRevision: state.graphRevision,
+      graphRevision: state.graphRevision,
       graphCommit: {
         changed: false,
         applied: false,
@@ -171,11 +173,15 @@ export async function commitCanvasProjectMutation({
     await room.destroy()
   }
   const saved = await productStore.readProject(userId, projectId) ?? metadataSaved
+  const revision = metadataSaved?.revision ?? project.revision
+  const graphRevision = graphCommit.mutationRevision ?? graphCommit.graphRevision
 
   return {
     saved,
-    baseRevision: project.revision,
-    baseGraphRevision: state.graphRevision,
+    baseRevision: metadataSaved ? Math.max(1, revision - 1) : revision,
+    revision,
+    baseGraphRevision: graphCommit.changed ? Math.max(1, graphRevision - 1) : graphRevision,
+    graphRevision,
     graphCommit,
     changed: Boolean(graphCommit.changed || metadataSaved),
   }

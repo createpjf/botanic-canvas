@@ -62,4 +62,48 @@ test('图谱 CAS 重试会重读 tombstone 元数据，不复活并发删除的�
 
   assert.equal(appendCount, 1)
   assert.deepEqual(committed.graphCommit.graph.nodes.map((node) => node.id), ['source'])
+  assert.equal(committed.baseGraphRevision, 2)
+  assert.equal(committed.graphRevision, 2)
+})
+
+test('提交回执使用实际写入的 revision 区间，不认领前后并发版本', async () => {
+  const sourceNode = { id: 'source', type: 'text', position: { x: 0, y: 0 }, data: { label: '描述', content: '描述' } }
+  const resultNode = { id: 'result', type: 'result', position: { x: 320, y: 0 }, data: { label: '结果' } }
+  const initialDocument = { id: 'project-1', name: 'Demo', nodes: [sourceNode], edges: [], generationJobs: [], updatedAt: 10 }
+  const concurrentDocument = { ...initialDocument, name: '并发命名', updatedAt: 20 }
+  let committedDocument
+  let readCount = 0
+  const productStore = {
+    async readProject() {
+      readCount += 1
+      if (readCount === 1) return { document: structuredClone(initialDocument), revision: 1, graphRevision: 1 }
+      return { document: { ...structuredClone(committedDocument), name: '后续命名', updatedAt: 40 }, revision: 4, graphRevision: 2 }
+    },
+    async updateProjectDocument(_userId, _projectId, update) {
+      committedDocument = update(structuredClone(concurrentDocument))
+      return { document: structuredClone(committedDocument), revision: 3, graphRevision: 1 }
+    },
+    async loadCanvasCollaboration() {
+      return { graph: { nodes: [structuredClone(sourceNode)], edges: [] }, graphRevision: 1, syncProtocolEpoch: 2, updates: [] }
+    },
+    async appendCanvasGraphUpdate(_userId, _projectId, payload) {
+      assert.equal(payload.expectedGraphRevision, 1)
+      return { graphRevision: 2, mutationRevision: 2, updatedAt: 30, updateCount: 1, duplicate: false }
+    },
+    async compactCanvasGraphUpdates() {},
+  }
+
+  const committed = await commitCanvasProjectMutation({
+    productStore,
+    userId: 'user-1',
+    projectId: 'project-1',
+    mutationId: 'agent-workflow:result',
+    mutate: (document) => ({ ...document, nodes: [...document.nodes, resultNode], updatedAt: 30 }),
+  })
+
+  assert.equal(committed.saved.revision, 4)
+  assert.equal(committed.baseRevision, 2)
+  assert.equal(committed.revision, 3)
+  assert.equal(committed.baseGraphRevision, 1)
+  assert.equal(committed.graphRevision, 2)
 })
