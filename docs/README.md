@@ -21,6 +21,7 @@
 - [ADR 0009：Agent 分布式追踪与安全语义事件](adr/0009-agent-distributed-tracing.md)
 - [ADR 0010：MCP Runtime V2 与 Skill Manifest 快照](adr/0010-mcp-runtime-skill-manifests.md)
 - [ADR 0011：Agent Connector 与凭据边界(Gate,未采纳)](adr/0011-agent-connector-credential-gate.md)
+- [ADR 0012：Agent Turn 运行中输出预览持久化](adr/0012-agent-turn-output-preview.md)
 
 ## 功能规格
 
