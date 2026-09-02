@@ -348,6 +348,50 @@ test('看图模型被网关拒绝且未开始推送时回退 caption 描述 + �
   assert.match(result.answer, /好的/)
 })
 
+test('流式看图只发出 attempt reset 后被拒绝，仍回退文本 attempt', async () => {
+  const events = []
+  let providerCalls = 0
+  const result = await chatWithBotanicAgent({
+    ...input,
+    plannerModel: 'gemini-3.7-flash',
+    mode: 'conversation',
+    contextNodeIds: ['asset-scene'],
+  }, {
+    flockApiKey: 'flock-secret',
+    flockTextModel: 'deepseek-v4-pro',
+    flockAgentModels: ['deepseek-v4-pro', 'gemini-3.7-flash'],
+    agentVisionModel: 'gemini-3.7-flash',
+  }, {
+    document: {
+      ...document,
+      nodes: document.nodes.map((node) => node.id === 'asset-scene'
+        ? { ...node, data: { ...node.data, image: 'data:image/png;base64,U0NFTkU=' } }
+        : node),
+    },
+    onEvent: (event) => events.push(event),
+    visionFetchImpl: async () => new Response(JSON.stringify({ choices: [{ message: { content: '海边夕阳场景。' } }] }), { status: 200 }),
+    fetchImpl: async () => {
+      providerCalls += 1
+      if (providerCalls === 1) return new Response('unsupported', { status: 422 })
+      return new Response([
+        `data: ${JSON.stringify({ choices: [{ delta: { content: '已改用文本模型。' } }] })}\n\n`,
+        `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: 'stop' }] })}\n\n`,
+        'data: [DONE]\n\n',
+      ].join(''), { status: 200, headers: { 'Content-Type': 'text/event-stream' } })
+    },
+  })
+
+  assert.equal(result.answer, '已改用文本模型。')
+  assert.equal(providerCalls, 2)
+  assert.deepEqual(events.filter((event) => ['attempt', 'answer'].includes(event.type)).map((event) => (
+    event.type === 'attempt' ? `attempt:${event.attemptId}` : `answer:${event.attemptId}:${event.delta}`
+  )), [
+    'attempt:chat_vision',
+    'attempt:chat_text',
+    'answer:chat_text:已改用文本模型。',
+  ])
+})
+
 test('没有引用节点时不追加引用说明', async () => {
   const requests = []
   await chatWithBotanicAgent({ ...input, mode: 'conversation', contextNodeIds: [] }, {

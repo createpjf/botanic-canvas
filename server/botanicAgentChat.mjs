@@ -285,10 +285,10 @@ export async function chatWithBotanicAgent(input, runtimeConfig, options = {}) {
   const allowRawReasoning = Boolean(runtimeConfig?.agentRawReasoning && input?.showRawReasoning)
   // 有实时通道时才向提供方请求流式；没有就完全走原来的一次性请求。
   const streaming = typeof options.onEvent === 'function'
-  let emittedEvents = 0
+  let fallbackBoundaryReached = Boolean(options.resumeCheckpoint)
   const emitEvent = async (event) => {
     if (!streaming) return
-    emittedEvents += 1
+    if (event.type === 'tool') fallbackBoundaryReached = true
     try { await options.onEvent(event) } catch (caught) {
       if (event.type === 'attempt' && options.requireDurableAttemptReset === true) throw caught
       // 非durable展示层异常不得中断本轮对话。
@@ -330,12 +330,11 @@ export async function chatWithBotanicAgent(input, runtimeConfig, options = {}) {
   if (resumeAttemptId && !['chat_vision', 'chat_text'].includes(resumeAttemptId)) {
     throw new BotanicAgentChatError(409, 'AGENT_TURN_CHECKPOINT_SNAPSHOT_MISMATCH', 'Agent 对话恢复检查点与当前执行阶段不匹配。')
   }
-  let checkpointBoundaryReached = Boolean(options.resumeCheckpoint)
   const checkpointOptions = typeof options.saveCheckpoint === 'function'
     ? {
         ...options,
         saveCheckpoint: async (checkpoint) => {
-          checkpointBoundaryReached = true
+          fallbackBoundaryReached = true
           return options.saveCheckpoint(checkpoint)
         },
       }
@@ -387,8 +386,7 @@ export async function chatWithBotanicAgent(input, runtimeConfig, options = {}) {
     } catch (caught) {
       const recoverable = caught instanceof BotanicAgentChatError
         && [422, 429, 502].includes(caught.statusCode)
-        && emittedEvents === 0
-        && !checkpointBoundaryReached
+        && !fallbackBoundaryReached
       if (!recoverable) throw caught
     }
   }
