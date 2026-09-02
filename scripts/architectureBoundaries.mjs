@@ -22,7 +22,7 @@ export const legacyOversizeBudgets = Object.freeze({
   'server/store/postgresProductStore.mjs': 3779,
   'src/features/agent/AgentWorkspace.tsx': 3920,
   'src/features/canvas/CanvasWorkspace.tsx': 2930,
-  'src/domain/agent.ts': 2870,
+  'src/domain/agent.ts': 2229,
   'server/store/supabaseProductStore.mjs': 2495,
   'server/store/productStore.mjs': 2465,
   'server/http/agentRoutes.mjs': 1849,
