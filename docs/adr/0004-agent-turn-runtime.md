@@ -116,6 +116,7 @@ Worker 的恢复任务不使用 offset 或固定首页。Supabase 为 Turn、失
 13. `20260828170000_agent_cancellation_exit_ack.sql`
 14. `20260828180000_agent_message_entity_references.sql`
 15. `20260828190000_agent_review_cancellation_reconciliation.sql`
+16. `20260901120000_agent_turn_output_preview.sql`（ADR 0012，reader-first后启用writer）
 
 仓库中的 Local/PG/Supabase 契约与 SQL 静态测试不等于生产数据库已迁移；发布前仍需在真实 PostgreSQL/Supabase 做并发 claim、
 旧实例排空与回滚演练。
