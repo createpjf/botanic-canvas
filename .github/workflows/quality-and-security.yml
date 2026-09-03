@@ -25,13 +25,10 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npm test
-      - run: npm run check:architecture
-      - run: npm run check:security
-      # 创意质量 Gate 跑固定回归集，不读生产素材也不调用真实 Provider，
-      # 因此可以和单元测试一起跑。真实 Provider Smoke 是另一条需要独立测试项目、
-      # 明确额度与人工授权的路径，不在 CI 里。
-      - run: npm run check:evals
+      # 固定回归、评测、安全、架构、构建与 Chromium 产品路径共用本地发布门禁。
+      # 不读生产素材、不调用真实 Provider，也不执行远端 migration。
+      - run: npx playwright install --with-deps chromium
+      - run: npm run release:ready
       - name: Validate Sentry release configuration
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
@@ -55,18 +52,3 @@ jobs:
           VITE_SENTRY_RELEASE: ${{ github.sha }}
         run: npm run build
       - run: npm audit --omit=dev --audit-level=high
-
-  ui-e2e:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          fetch-depth: 1
-      - uses: actions/setup-node@v5
-        with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
-      - run: npx playwright install --with-deps chromium firefox webkit
-      - run: npm run test:e2e

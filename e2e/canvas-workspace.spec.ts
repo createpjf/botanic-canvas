@@ -354,7 +354,7 @@ test('Agent 生成卡片默认收起已完成步骤与提示词差异，主内�
         summary: '海边场景替换',
         prompt: '保持人物、五官、服装与姿态不变，仅将背景替换为晴朗海边。',
         settings: { model: 'gpt-image-2', aspectRatio: '3:4', resolution: '2K' },
-        constraints: [{ dimension: 'scene', mode: 'vary' }],
+        constraints: [{ dimension: 'person', mode: 'preserve' }, { dimension: 'scene', mode: 'vary' }],
         references: [],
         output: { mode: 'single', count: 1, candidatesPerItem: 1 },
         toolCalls: [
@@ -374,6 +374,11 @@ test('Agent 生成卡片默认收起已完成步骤与提示词差异，主内�
   await expect(toolTitle).toHaveAttribute('aria-expanded', 'false')
   expect(await promptDiff.evaluate((element: HTMLDetailsElement) => element.open)).toBe(false)
   await expect(page.getByText('保持人物、五官、服装与姿态不变，仅将背景替换为晴朗海边。')).toBeVisible()
+  const impact = page.getByRole('region', { name: '执行前影响' })
+  await expect(impact).toContainText('保持人物')
+  await expect(impact).toContainText('改变场景')
+  await expect(impact).toContainText('新增 1 个结果节点')
+  await expect(impact).toContainText('失败分支可在任务中重试或调整参数')
 })
 
 test('已提交生成卡直接展示提示词与规格芯片', async ({ page }) => {
@@ -402,7 +407,7 @@ test('已提交生成卡直接展示提示词与规格芯片', async ({ page }) 
         summary: '海边场景替换',
         prompt: '保持人物、五官、服装与姿态不变，仅将背景替换为晴朗海边。',
         settings: { model: 'gpt-image-2', aspectRatio: '3:4', resolution: '2K' },
-        constraints: [{ dimension: 'scene', mode: 'vary' }],
+        constraints: [{ dimension: 'person', mode: 'preserve' }, { dimension: 'scene', mode: 'vary' }],
         references: [],
         output: { mode: 'single', count: 1, candidatesPerItem: 1 },
       },
@@ -417,6 +422,9 @@ test('已提交生成卡直接展示提示词与规格芯片', async ({ page }) 
   await expect(page.getByText('GPT Image 2')).toBeVisible()
   await expect(page.getByText('3:4', { exact: true })).toBeVisible()
   await expect(page.getByText('保持人物、五官、服装与姿态不变，仅将背景替换为晴朗海边。')).toBeVisible()
+  const recovery = page.getByRole('region', { name: '执行影响与恢复' })
+  await expect(recovery).toContainText('结果与恢复')
+  await expect(recovery).toContainText('失败分支会在任务中保留重试与修改参数入口')
 })
 
 test('空画布优先提供目标入口，本地能力边界可见且不请求云端 Agent', async ({ page }) => {
