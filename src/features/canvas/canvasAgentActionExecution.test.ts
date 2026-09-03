@@ -3,6 +3,7 @@ import test from 'node:test'
 import {
   projectAcceptedAgentRunBestEffort,
   preserveCanvasAgentActionError,
+  removeUnstartedGenerateBranches,
 } from './canvasAgentActionExecution.ts'
 
 class ApiError extends Error {
@@ -48,4 +49,26 @@ test('Run 已被服务端接受后，本地投影与 Canvas flush 失败不能�
 
   assert.deepEqual(calls, ['apply', 'flush'])
   assert.deepEqual(settlement, { applied: false, flushed: false })
+})
+
+test('回退执行失败只清理本次创建且未进入提交流程的分支节点', () => {
+  const generateNode = (id: string, data: Record<string, unknown> = {}) => ({
+    id, type: 'generate' as const, position: { x: 0, y: 0 },
+    data: { kind: 'generate', label: '新图 · 图像 01', prompt: '', batchCount: 1, settings: { model: 'gpt-image-2', aspectRatio: '3:4', resolution: '2K' }, ...data },
+  })
+  const document = { nodes: [
+    generateNode('branch-clean'),
+    generateNode('branch-submitted', { submissionKey: 'key-1' }),
+    generateNode('branch-running', { status: 'uploading' }),
+    generateNode('branch-with-job', { jobId: 'job-1' }),
+    { id: 'result-1', type: 'result' as const, position: { x: 0, y: 0 }, data: { kind: 'result', image: '/image.png' } },
+  ] }
+  const removed: string[] = []
+  removeUnstartedGenerateBranches(
+    ['branch-clean', 'branch-submitted', 'branch-running', 'branch-with-job', 'result-1', 'missing-node'],
+    document as never,
+    (nodeId) => removed.push(nodeId),
+  )
+  // 只删干净的孤儿节点；已提交/运行中/带任务的留给恢复器，非 generate 节点与不存在的 id 忽略。
+  assert.deepEqual(removed, ['branch-clean'])
 })
