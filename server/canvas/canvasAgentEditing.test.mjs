@@ -10,6 +10,7 @@ import {
 } from './canvasAgentEditing.mjs'
 import { generationJobProjectionComplete, reconcileGenerationResults } from '../generation/generationResultReconciliation.mjs'
 import { createProductStore } from '../store/productStore.mjs'
+import { canvasAgentArtifactHash } from './canvasAgentArtifactProjection.mjs'
 
 function projectDocument() {
   return {
@@ -37,9 +38,11 @@ function projectDocument() {
 }
 
 function fakeStore(document) {
-  const state = { document, revision: 5, published: [] }
+  const historicalArtifact = { id: 'generation:job-old:output-old', kind: 'image', label: '历史结果', url: '/api/media/old', origin: { type: 'generation_output', jobId: 'job-old', outputId: 'output-old' }, metadata: { status: 'succeeded' }, createdAt: 1, updatedAt: 1 }
+  const state = { document, revision: 5, published: [], historicalArtifact }
   return {
     state,
+    listAgentArtifacts() { return [structuredClone(historicalArtifact)] },
     updateProjectDocument(_userId, _projectId, mutate) {
       const next = mutate(structuredClone(state.document))
       if (!next) return undefined
@@ -87,10 +90,16 @@ test('画布编辑执行器：改文字回增量 patch，调参校验模型目�
     /不支持这个清晰度/,
   )
 
+  const artifactAction = await executors.executeCanvasActionSet({
+    actionId: 'artifact-action', preconditions: [], operations: [{ kind: 'project_artifact', temporaryId: 'old-result',
+      artifactId: store.state.historicalArtifact.id, artifactHash: canvasAgentArtifactHash(store.state.historicalArtifact), position: { x: 700, y: 0 } }],
+  })
+  assert.equal(artifactAction.canvasPatch.nodes[0].data.image, '/api/media/old')
+
   const removal = await executors.deleteCanvasNodes({ nodeIds: ['text-1'] })
   assert.deepEqual(removal.canvasRemovedNodeIds, ['text-1'])
   assert.equal(store.state.document.nodes.some((node) => node.id === 'text-1'), false)
-  assert.equal(published.length, 3)
+  assert.equal(published.length, 4)
 })
 
 test('活跃任务绑定的节点不可删除，历史与任务恢复语义不受编辑影响', () => {

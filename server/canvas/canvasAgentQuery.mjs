@@ -72,8 +72,15 @@ function hasMatchingRelation(node, edges, nodeById, relation) {
   })
 }
 
+function publicConstraints(value) {
+  const dimensions = new Set(['person', 'garment', 'product', 'scene', 'style', 'pose', 'composition', 'lighting', 'aspect_ratio', 'copy_space'])
+  return Array.isArray(value) ? value.filter((item) => dimensions.has(item?.dimension) && ['preserve', 'change'].includes(item?.mode))
+    .slice(0, 10).map((item) => ({ dimension: item.dimension, mode: item.mode })) : []
+}
+
 function publicNode(node) {
   const data = node?.data ?? {}
+  const constraints = publicConstraints(data.constraints)
   return {
     id: node.id,
     type: node.type,
@@ -89,6 +96,7 @@ function publicNode(node) {
         resolution: data.settings?.resolution,
       },
       batchCount: Number(data.batchCount) || 1,
+      ...(constraints.length ? { constraints } : {}),
     } : {}),
     authority: {
       ...(data.assetId ? { assetId: data.assetId } : {}),

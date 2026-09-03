@@ -13,7 +13,7 @@ TapNow 公开工作流中的“明确上下文→确认→计划→执行→定�
 
 ### 1. 模型表达领域意图，不拥有内部图谱格式
 
-模型只能使用受限查询和领域操作；不能提交完整 CanvasDocument、React Flow node/edge、媒体地址或 Job/Run/Artifact 身份。服务端将领域操作解析为内部图谱变更。
+模型只能使用受限查询和领域操作；可以引用查询所得的稳定 Artifact ID，但不能提交完整 CanvasDocument、React Flow node/edge、媒体地址、Artifact 内容或 Job/Run/output 权威身份。服务端将领域操作解析为内部图谱变更。
 
 ### 2. 权威实体与系统血缘不可伪造
 
@@ -21,6 +21,8 @@ TapNow 公开工作流中的“明确上下文→确认→计划→执行→定�
 - Job、Run、submission key、candidate/version 身份只能由拥有它们的领域模块产生。
 - system、output、prompt、parent 等系统血缘边只能由对应生成/投影模块产生。
 - 删除画布投影不删除历史 Artifact。
+- 历史 Artifact 复用只投影生成图片/视频；服务端在提案和执行时有界解析并校验 Artifact hash，模型不能提供 Result 内部字段。
+- preserve/change 使用固定创意维度，编译进新 Generate 的执行契约；复用不创建 Job 或 system/output 血缘边。
 
 ### 3. 查询实时读取当前项目权威文档
 

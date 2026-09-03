@@ -1,7 +1,8 @@
 // @ts-check
 
 import { AgentToolRuntimeError } from '../agent/tools/agentToolRuntime.mjs'
-import { applyCanvasActionSet } from './canvasAgentActionSet.mjs'
+import { applyCanvasActionSet, normalizeCanvasActionSet } from './canvasAgentActionSet.mjs'
+import { resolveCanvasAgentArtifacts } from './canvasAgentArtifactProjection.mjs'
 import {
   applyBotanicAgentCanvasNodeDeletion,
   applyBotanicAgentCanvasTextUpdate,
@@ -95,8 +96,11 @@ export function createCanvasAgentEditExecutors({ productStore, publishProjectUpd
   })
   return {
     executeCanvasActionSet: async (input) => {
+      const normalized = normalizeCanvasActionSet(input)
+      const artifactIds = [...new Set(normalized.operations.filter((item) => item.kind === 'project_artifact').map((item) => item.artifactId))]
+      const artifacts = artifactIds.length ? await resolveCanvasAgentArtifacts(productStore, userId, projectId, artifactIds) : new Map()
       const { saved, edited, baseRevision, revision, baseGraphRevision, graphRevision } = await editDocument((document) => (
-        applyCanvasActionSet(document, input, models)
+        applyCanvasActionSet(document, normalized, models, Date.now(), artifacts)
       ))
       return {
         message: `已原子执行 ${edited.actionSet.operations.length} 项画布操作。`,

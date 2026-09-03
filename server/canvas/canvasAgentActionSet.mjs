@@ -2,6 +2,7 @@
 
 import { canonicalHash } from '../canonicalHash.mjs'
 import { canvasAgentEntityHash } from './canvasAgentEntityHash.mjs'
+import { canvasAgentArtifactHash, projectCanvasResultFromArtifact } from './canvasAgentArtifactProjection.mjs'
 import { AgentToolRuntimeError } from '../agent/tools/agentToolRuntime.mjs'
 import {
   applyBotanicAgentCanvasNodeDeletion,
@@ -12,7 +13,8 @@ import {
 } from './canvasAgentEditRules.mjs'
 
 const MAX_OPERATIONS = 20
-const OPERATION_KINDS = new Set(['create_text', 'create_generate', 'connect_reference', 'update_text', 'update_generate_settings', 'delete_nodes'])
+const OPERATION_KINDS = new Set(['create_text', 'create_generate', 'project_artifact', 'connect_reference', 'update_text', 'update_generate_settings', 'delete_nodes'])
+const CONSTRAINT_DIMENSIONS = new Set(['person', 'garment', 'product', 'scene', 'style', 'pose', 'composition', 'lighting', 'aspect_ratio', 'copy_space'])
 
 const nodeId = { type: 'string', maxLength: 160 }
 export const CANVAS_ACTION_SET_PARAMETERS = Object.freeze({
@@ -26,6 +28,7 @@ export const CANVAS_ACTION_SET_PARAMETERS = Object.freeze({
         position: { type: 'object', additionalProperties: false, properties: { x: { type: 'number' }, y: { type: 'number' } }, required: ['x', 'y'] },
         label: { type: 'string', maxLength: CANVAS_NODE_LABEL_LIMIT }, content: { type: 'string', maxLength: CANVAS_TEXT_CONTENT_LIMIT },
         prompt: { type: 'string', maxLength: CANVAS_TEXT_CONTENT_LIMIT }, batchCount: { type: 'number' }, settings: { type: 'object' },
+        artifactId: nodeId, artifactHash: { type: 'string', maxLength: 100 }, constraints: { type: 'array', maxItems: 10, items: { type: 'object', additionalProperties: false, properties: { dimension: { type: 'string', enum: [...CONSTRAINT_DIMENSIONS] }, mode: { type: 'string', enum: ['preserve', 'change'] } }, required: ['dimension', 'mode'] } },
       }, required: ['kind'],
     } },
     preconditions: { type: 'array', maxItems: 50, items: { type: 'object', additionalProperties: false,
@@ -75,6 +78,11 @@ function deterministicId(actionId, temporaryId, prefix) {
 function referenceEdgeId(actionId, source, target) {
   return 'agent-reference-' + canonicalHash({ actionId, source, target }).slice(0, 22)
 }
+function governedPrompt(prompt, constraints = []) {
+  if (!constraints.length) return prompt
+  const contract = constraints.map((item) => `${item.mode === 'preserve' ? 'PRESERVE' : 'CHANGE'} ${item.dimension}`).join('; ')
+  return `Execution contract (PRESERVE cannot be overridden): ${contract}.\n\n${prompt}`
+}
 
 /** @param {any} raw */
 export function normalizeCanvasActionSet(raw) {
@@ -89,17 +97,29 @@ export function normalizeCanvasActionSet(raw) {
     const kind = text(operation.kind, '操作类型', 40)
     if (!OPERATION_KINDS.has(kind)) fail('CANVAS_ACTION_NOT_ALLOWED', '不支持的画布操作：' + kind + '。')
     const result = { kind }
-    if (kind === 'create_text' || kind === 'create_generate') {
+    if (kind === 'create_text' || kind === 'create_generate' || kind === 'project_artifact') {
       const temporaryId = text(operation.temporaryId, '临时节点标识', 80)
       if (temporaryIds.has(temporaryId)) fail('CANVAS_ACTION_SET_INVALID', '临时节点标识不能重复：' + temporaryId + '。')
       temporaryIds.add(temporaryId)
       Object.assign(result, { temporaryId, position: position(operation.position), label: optionalText(operation.label, '节点名称', CANVAS_NODE_LABEL_LIMIT) })
       if (kind === 'create_text') result.content = text(operation.content, '文字内容', CANVAS_TEXT_CONTENT_LIMIT)
-      else {
+      else if (kind === 'project_artifact') {
+        result.artifactId = text(operation.artifactId, 'Artifact 标识', 240)
+        result.artifactHash = optionalText(operation.artifactHash, 'Artifact hash', 100)
+      } else {
         result.prompt = text(operation.prompt, '生成描述', CANVAS_TEXT_CONTENT_LIMIT)
         result.batchCount = Number(operation.batchCount ?? 1)
         if (!Number.isInteger(result.batchCount) || result.batchCount < 1 || result.batchCount > 8) fail('CANVAS_ACTION_SET_INVALID', '生成数量必须是 1–8 的整数。')
         result.settings = generationSettings(operation.settings)
+        const constraints = Array.isArray(operation.constraints) ? operation.constraints.map((entry) => {
+          const constraint = object(entry, '保留/修改约束')
+          const dimension = text(constraint.dimension, '约束维度', 40)
+          const mode = text(constraint.mode, '约束模式', 16)
+          if (!CONSTRAINT_DIMENSIONS.has(dimension) || !['preserve', 'change'].includes(mode)) fail('CANVAS_ACTION_SET_INVALID', '保留/修改约束无效。')
+          return { dimension, mode }
+        }) : []
+        if (new Set(constraints.map((item) => item.dimension)).size !== constraints.length) fail('CANVAS_ACTION_SET_INVALID', '同一维度不能重复声明约束。')
+        if (constraints.length) result.constraints = constraints
       }
     } else if (kind === 'connect_reference') {
       result.sourceNodeId = text(operation.sourceNodeId, '参考来源节点')
@@ -154,7 +174,7 @@ function assertPreconditions(document, actionSet) {
 }
 
 /** 全部操作只作用于内存副本；任一操作失败时调用者不会得到部分文档。 */
-export function applyCanvasActionSet(document, raw, models, now = Date.now()) {
+export function applyCanvasActionSet(document, raw, models, now = Date.now(), artifacts = new Map()) {
   const actionSet = normalizeCanvasActionSet(raw)
   assertPreconditions(document, actionSet)
   let current = structuredClone(document)
@@ -164,13 +184,22 @@ export function applyCanvasActionSet(document, raw, models, now = Date.now()) {
   const updatedNodeIds = []
   const removedNodeIds = []
   for (const operation of actionSet.operations) {
-    if (operation.kind === 'create_text' || operation.kind === 'create_generate') {
-      const id = deterministicId(actionSet.actionId, operation.temporaryId, operation.kind === 'create_text' ? 'text' : 'generate')
+    if (operation.kind === 'create_text' || operation.kind === 'create_generate' || operation.kind === 'project_artifact') {
+      const prefix = operation.kind === 'create_text' ? 'text' : operation.kind === 'create_generate' ? 'generate' : 'result'
+      const id = deterministicId(actionSet.actionId, operation.temporaryId, prefix)
       if (node(current, id)) fail('CANVAS_ACTION_SET_CONFLICT', '确定性节点标识已被占用。', 409)
-      const data = operation.kind === 'create_text'
-        ? { kind: 'text', label: operation.label ?? '文字', content: operation.content }
-        : { kind: 'generate', label: operation.label ?? '生成', prompt: operation.prompt, batchCount: operation.batchCount, settings: operation.settings, status: 'idle' }
-      current = { ...current, nodes: [...(current.nodes ?? []), { id, type: operation.kind === 'create_text' ? 'text' : 'generate', position: operation.position, draggable: true, selected: false, data }], updatedAt: now }
+      let created
+      if (operation.kind === 'project_artifact') {
+        const artifact = artifacts.get(operation.artifactId)
+        if (!artifact || canvasAgentArtifactHash(artifact) !== operation.artifactHash) fail('CANVAS_ARTIFACT_CONFLICT', '历史 Artifact 已变化，请重新确认：' + operation.artifactId + '。', 409)
+        created = projectCanvasResultFromArtifact(artifact, { id, position: operation.position, label: operation.label })
+      } else {
+        const data = operation.kind === 'create_text'
+          ? { kind: 'text', label: operation.label ?? '文字', content: operation.content }
+          : { kind: 'generate', label: operation.label ?? '生成', prompt: governedPrompt(operation.prompt, operation.constraints), batchCount: operation.batchCount, settings: operation.settings, status: 'idle', ...(operation.constraints ? { constraints: operation.constraints } : {}) }
+        created = { id, type: operation.kind === 'create_text' ? 'text' : 'generate', position: operation.position, draggable: true, selected: false, data }
+      }
+      current = { ...current, nodes: [...(current.nodes ?? []), created], updatedAt: now }
       if (operation.kind === 'create_generate') current = applyBotanicAgentGenerateSettingsUpdate(current, { nodeId: id, settings: operation.settings, batchCount: operation.batchCount }, models, now).document
       ids.set(operation.temporaryId, id)
       createdNodeIds.push(id)
@@ -215,15 +244,21 @@ function previewNode(node) {
 }
 
 /** 服务端在提案时重建前置条件并预演；返回值可直接冻结到 Proposal。 */
-export function prepareCanvasActionSetProposal(document, raw, models, actionId) {
+export function prepareCanvasActionSetProposal(document, raw, models, actionId, artifacts = new Map()) {
   const normalized = normalizeCanvasActionSet({ ...raw, actionId, preconditions: [] })
-  const preconditions = [...touchedExistingNodeIds(normalized.operations)].sort().map((nodeId) => {
+  const operations = normalized.operations.map((operation) => {
+    if (operation.kind !== 'project_artifact') return operation
+    const artifact = artifacts.get(operation.artifactId)
+    if (!artifact) fail('CANVAS_ARTIFACT_NOT_FOUND', '未找到历史 Artifact：' + operation.artifactId + '。', 404)
+    return { ...operation, artifactHash: canvasAgentArtifactHash(artifact) }
+  })
+  const preconditions = [...touchedExistingNodeIds(operations)].sort().map((nodeId) => {
     const hash = canvasAgentEntityHash(document, nodeId)
     if (!hash) fail('CANVAS_NODE_NOT_FOUND', '未找到画布节点：' + nodeId + '。', 404)
     return { nodeId, hash }
   })
-  const argumentsValue = { operations: normalized.operations, preconditions }
-  const applied = applyCanvasActionSet(document, { ...argumentsValue, actionId }, models)
+  const argumentsValue = { operations, preconditions }
+  const applied = applyCanvasActionSet(document, { ...argumentsValue, actionId }, models, Date.now(), artifacts)
   const before = new Map((document.nodes ?? []).map((node) => [node.id, node]))
   const after = new Map((applied.document.nodes ?? []).map((node) => [node.id, node]))
   const created = applied.createdNodeIds.map((id) => previewNode(after.get(id)))

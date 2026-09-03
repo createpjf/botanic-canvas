@@ -4,6 +4,7 @@ import { applyCanvasActionSet, prepareCanvasActionSetProposal } from './canvasAg
 import { canvasAgentEntityHash } from './canvasAgentEntityHash.mjs'
 
 const models = [{ id: 'image-model', aspectRatios: ['1:1'], resolutions: ['1K'] }]
+const artifact = { id: 'generation:job-history:output-1', kind: 'image', label: '已批准主图', url: '/api/media/history-1', origin: { type: 'generation_output', jobId: 'job-history', outputId: 'output-1' }, metadata: { status: 'succeeded', settings: { model: 'image-model', aspectRatio: '1:1', resolution: '1K' } }, createdAt: 10, updatedAt: 10 }
 function document() {
   return {
     id: 'project-action-set', updatedAt: 1,
@@ -27,23 +28,30 @@ test('Action Set 以确定性 ID 创建领域节点、连接参考并与文字�
     preconditions: [precondition(base, 'asset-1'), precondition(base, 'text-1')],
     operations: [
       { kind: 'create_text', temporaryId: 'prompt', position: { x: 200, y: 0 }, label: '新文案', content: '夏日新品' },
-      { kind: 'create_generate', temporaryId: 'generator', position: { x: 400, y: 0 }, label: '主图生成', prompt: '夏日新品', batchCount: 2, settings: { model: 'image-model', aspectRatio: '1:1', resolution: '1K' } },
+      { kind: 'project_artifact', temporaryId: 'approved', artifactId: artifact.id, position: { x: 200, y: 300 } },
+      { kind: 'create_generate', temporaryId: 'generator', position: { x: 400, y: 0 }, label: '主图生成', prompt: '改成海边', batchCount: 2, settings: { model: 'image-model', aspectRatio: '1:1', resolution: '1K' }, constraints: [{ dimension: 'person', mode: 'preserve' }, { dimension: 'scene', mode: 'change' }] },
       { kind: 'connect_reference', sourceNodeId: 'asset-1', targetNodeId: 'generator' },
+      { kind: 'connect_reference', sourceNodeId: 'approved', targetNodeId: 'generator' },
       { kind: 'update_text', nodeId: 'text-1', content: '已更新' },
     ],
   }
-  const prepared = prepareCanvasActionSetProposal(base, { operations: input.operations }, models, input.actionId)
-  assert.deepEqual(prepared.preview.summary, { created: 2, updated: 1, removed: 0, connected: 1 })
+  const artifacts = new Map([[artifact.id, artifact]])
+  const prepared = prepareCanvasActionSetProposal(base, { operations: input.operations }, models, input.actionId, artifacts)
+  assert.deepEqual(prepared.preview.summary, { created: 3, updated: 1, removed: 0, connected: 2 })
   assert.equal(typeof prepared.previewHash, 'string')
   assert.deepEqual(prepared.arguments.preconditions.map((item) => item.nodeId), ['asset-1', 'text-1'])
   const frozen = { actionId: input.actionId, ...prepared.arguments }
-  const first = applyCanvasActionSet(base, frozen, models, 20)
-  const replay = applyCanvasActionSet(base, frozen, models, 20)
+  const first = applyCanvasActionSet(base, frozen, models, 20, artifacts)
+  const replay = applyCanvasActionSet(base, frozen, models, 20, artifacts)
   assert.deepEqual(first.createdNodeIds, replay.createdNodeIds)
   assert.equal(first.document.nodes.find((node) => node.id === 'text-1').data.content, '已更新')
-  assert.equal(first.document.nodes.find((node) => node.id === first.createdNodeIds[1]).data.status, 'idle')
+  const projected = first.document.nodes.find((node) => node.id === first.createdNodeIds[1])
+  const generate = first.document.nodes.find((node) => node.id === first.createdNodeIds[2])
+  assert.equal(projected.data.image, artifact.url)
+  assert.match(generate.data.prompt, /PRESERVE person; CHANGE scene/u)
+  assert.deepEqual(generate.data.constraints, [{ dimension: 'person', mode: 'preserve' }, { dimension: 'scene', mode: 'change' }])
   assert.deepEqual(first.document.edges.map((edge) => [edge.source, edge.target, edge.data]), [
-    ['asset-1', first.createdNodeIds[1], { role: 'reference' }],
+    ['asset-1', generate.id, { role: 'reference' }], [projected.id, generate.id, { role: 'reference' }],
   ])
   assert.equal(JSON.stringify(first.document).includes('system'), false)
 })
@@ -67,5 +75,10 @@ test('Action Set 缺触达 hash 或末项触碰活跃节点时整组失败且不
   changed.nodes.find((node) => node.id === 'text-1').data.content = '协作者已修改'
   assert.throws(() => applyCanvasActionSet(changed, { actionId: 'action-frozen', ...prepared.arguments }, models),
     (error) => error.code === 'CANVAS_ACTION_SET_CONFLICT')
+  const artifacts = new Map([[artifact.id, artifact]])
+  const reuse = prepareCanvasActionSetProposal(base, { operations: [{ kind: 'project_artifact', temporaryId: 'old', artifactId: artifact.id, position: { x: 1, y: 1 } }] }, models, 'action-artifact', artifacts)
+  const driftedArtifacts = new Map([[artifact.id, { ...artifact, updatedAt: 11 }]])
+  assert.throws(() => applyCanvasActionSet(base, { actionId: 'action-artifact', ...reuse.arguments }, models, 20, driftedArtifacts),
+    (error) => error.code === 'CANVAS_ARTIFACT_CONFLICT')
   assert.deepEqual(base, before)
 })
