@@ -226,12 +226,12 @@ export function createBotanicAgentOperationalToolDefinitions(operations = {}) {
     {
       name: 'canvas_query',
       label: '查询画布图谱',
-      description: '用同一入口查询当前项目画布：nodes 分页读取安全节点，aggregate 按类型/状态/阶段计数，keyword 对安全文本投影做确定性关键词检索。结果不含媒体地址或完整 Generate Prompt；page.hasMore 为 true 时必须续查。',
+      description: '用同一入口查询当前项目画布：nodes 分页读取安全节点，aggregate 按类型/状态/阶段计数，keyword 检索安全文本；semantic/hybrid 使用默认关闭的可配置语义服务，禁用或失败会显式降级 keyword。结果不含媒体地址或完整 Generate Prompt；page.hasMore/searchTruncated 为 true 时不能声称已查全。',
       risk: 'read',
       parameters: {
         type: 'object', additionalProperties: false,
         properties: {
-          mode: { type: 'string', enum: ['nodes', 'aggregate', 'keyword'] },
+          mode: { type: 'string', enum: ['nodes', 'aggregate', 'keyword', 'semantic', 'hybrid'] },
           query: { type: 'string', maxLength: 120 },
           nodeIds: { type: 'array', maxItems: 50, items: { type: 'string', maxLength: 160 } },
           types: { type: 'array', maxItems: 7, items: { type: 'string', enum: ['asset', 'prompt', 'reference', 'result', 'text', 'generate', 'frame'] } },

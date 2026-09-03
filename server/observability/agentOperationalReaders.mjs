@@ -2,6 +2,7 @@
 import { publicAgentRun } from '../agent/semantic/botanicAgentRun.mjs'
 import { publicAgentReviewTask } from '../agent/review/agentReviewTask.mjs'
 import { queryCanvasForAgent } from '../canvas/canvasAgentQuery.mjs'
+import { queryCanvasWithSemanticSearch } from '../canvas/canvasAgentSemanticSearch.mjs'
 import { normalizeCanvasActionSet, prepareCanvasActionSetProposal } from '../canvas/canvasAgentActionSet.mjs'
 import { resolveCanvasAgentArtifacts } from '../canvas/canvasAgentArtifactProjection.mjs'
 import { AGENT_SEMANTIC_EVENT_NAMES, writeAgentSemanticEvent } from './agentSemanticEvent.mjs'
@@ -10,17 +11,19 @@ import { AGENT_SEMANTIC_EVENT_NAMES, writeAgentSemanticEvent } from './agentSema
  * Agent 运维只读工具的单一数据源。API 首次执行与 Worker 恢复必须复用同一实现，
  * 否则断点恢复后可用工具会漂移；所有读取都重新校验项目归属且不返回受控媒体地址。
  */
-export function createAgentOperationalReaders({ productStore, userId, projectId, document, models = [] }) {
+export function createAgentOperationalReaders({ productStore, userId, projectId, document, models = [], semanticSearch }) {
   return {
     queryCanvas: async (query) => {
       const startedAt = Date.now()
       try {
         const project = await productStore.readProject(userId, projectId)
         if (!project?.document) return undefined
-        const result = queryCanvasForAgent(project.document, query)
+        const result = await queryCanvasWithSemanticSearch(project.document, query, semanticSearch)
+        /** @type {any} */
+        const page = result.page ?? {}
         writeAgentSemanticEvent(AGENT_SEMANTIC_EVENT_NAMES.CANVAS_LIFECYCLE, {
           kind: 'query', outcome: 'completed', mode: query?.mode ?? 'nodes',
-          completeness: result.page?.hasMore || result.page?.edgesTruncated ? 'truncated' : 'complete',
+          completeness: page.hasMore || page.edgesTruncated || page.searchTruncated ? 'truncated' : 'complete',
           durationMs: Date.now() - startedAt, returnedCount: result.page?.returned ?? result.nodes?.length ?? 0,
         })
         return result

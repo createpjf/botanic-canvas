@@ -69,6 +69,7 @@ export async function createAgentSubagentProjectRegistry({
     userId,
     projectId,
     document: project.document,
+    semanticSearch: config?.semanticSearch,
   })
   const webResearch = config?.webSearch
     ? {

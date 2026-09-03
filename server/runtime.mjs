@@ -156,6 +156,13 @@ export function runtimeConfig(rootDir = process.cwd()) {
     // Turn 业务时限（H3A）：单次 Provider call 之外的整轮寿命；写入 Turn 顶层 deadlineAt。
     agentTurnLifetimeMs: boundedInteger(process.env.AGENT_TURN_LIFETIME_MS, 600_000, 60_000, 900_000),
     agentMcpTools: parseMcpToolConfigurations(process.env.BOTANIC_MCP_TOOLS_JSON),
+    semanticSearch: {
+      enabled: (process.env.CANVAS_SEMANTIC_SEARCH_ENABLED ?? '').trim().toLowerCase() === 'true',
+      apiBaseUrl: (process.env.CANVAS_EMBEDDINGS_BASE_URL ?? 'https://api.openai.com/v1').replace(/\/$/, ''),
+      apiKey: (process.env.CANVAS_EMBEDDINGS_API_KEY ?? '').trim(),
+      model: (process.env.CANVAS_EMBEDDINGS_MODEL ?? '').trim(),
+      timeoutMs: boundedInteger(process.env.CANVAS_EMBEDDINGS_TIMEOUT_MS, 5000, 500, 15000),
+    },
     webSearch: {
       apiKey: (process.env.BOTANIC_WEB_SEARCH_API_KEY ?? '').trim(),
       searchUrl: resolveTavilySearchUrl(process.env.BOTANIC_WEB_SEARCH_URL),

@@ -1151,7 +1151,7 @@ export function createAgentRouteHandler({
               productStore,
               userId: user.id,
               projectId: validatedInput.projectId,
-              document: project.document, models: config?.modelOptions ?? [],
+              document: project.document, models: config?.modelOptions ?? [], semanticSearch: config?.semanticSearch,
             }),
             resolveVisionMedia: visionMediaResolver(user.id, validatedInput.projectId),
             consumeWebResearchQuota: authorizedWebResearchQuota(user.id, validatedInput.projectId),
