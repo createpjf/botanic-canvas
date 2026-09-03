@@ -436,27 +436,33 @@ test('Runtime 默认只呈现当前阶段与下一步，展开后仍保留完整
   assert.equal(draftReady.nextAction, '检查并生成')
 })
 
-test('对话流式进行时不展示底部运行卡，生成规划与等待确认仍可展示', () => {
-  assert.equal(shouldShowBotanicAgentRuntimeFeed({
-    runtimePhase: 'planning',
-    hasRuntimeSteps: true,
-    hasLiveConversation: true,
-  }), false)
+test('底部状态条只在等待用户动作时展示；运行过程归对话时间线', () => {
+  // 运行过程阶段（reading/planning/executing/failed）一律不展示：时间线是唯一过程状态源。
   assert.equal(shouldShowBotanicAgentRuntimeFeed({
     runtimePhase: 'planning',
     hasRuntimeSteps: true,
     hasLiveConversation: false,
-  }), true)
+  }), false)
+  assert.equal(shouldShowBotanicAgentRuntimeFeed({
+    runtimePhase: 'failed',
+    hasRuntimeSteps: true,
+    hasLiveConversation: false,
+  }), false)
   assert.equal(shouldShowBotanicAgentRuntimeFeed({
     runtimePhase: 'waiting_confirmation',
     hasRuntimeSteps: true,
     hasLiveConversation: false,
   }), true)
   assert.equal(shouldShowBotanicAgentRuntimeFeed({
-    runtimePhase: 'executing',
+    runtimePhase: 'waiting_clarification',
     hasRuntimeSteps: true,
     hasLiveConversation: false,
-    runBranchCount: 2,
+  }), true)
+  // 对话流式时等待动作条也不叠加。
+  assert.equal(shouldShowBotanicAgentRuntimeFeed({
+    runtimePhase: 'waiting_confirmation',
+    hasRuntimeSteps: true,
+    hasLiveConversation: true,
   }), false)
   assert.equal(shouldShowBotanicAgentRuntimeFeed({
     runtimePhase: 'completed',
@@ -464,7 +470,7 @@ test('对话流式进行时不展示底部运行卡，生成规划与等待确�
     hasLiveConversation: false,
   }), false)
   assert.equal(shouldShowBotanicAgentRuntimeFeed({
-    runtimePhase: 'planning',
+    runtimePhase: 'waiting_confirmation',
     hasRuntimeSteps: false,
     hasLiveConversation: false,
   }), false)

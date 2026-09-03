@@ -424,14 +424,15 @@ export function summarizeBotanicAgentRuntime(input: {
   }
 }
 
+// 底部条只保留「等待用户动作」阶段：reading/planning/executing/failed 的过程展示
+// 由消息内时间线（durable Turn Event 水合）唯一负责，避免两处状态源互相矛盾。
 const botanicAgentRuntimeFeedPhases = new Set<BotanicAgentRuntimePhase>([
-  'reading', 'planning', 'waiting_clarification', 'waiting_confirmation',
-  'waiting_reference', 'draft_ready', 'executing', 'failed',
+  'waiting_clarification', 'waiting_confirmation', 'waiting_reference', 'draft_ready',
 ])
 
 /**
- * 底部运行卡只描述“这一轮还没收束”的规划/生成过程。
- * 对话流式时同一段回答已经在气泡里出现，不再另开一张“组织回答”卡。
+ * 底部状态条只描述「下一步等你做什么」。运行过程（读取/规划/生成/失败）在
+ * 对话时间线里展示；对话流式时同一段回答已经在气泡里出现，更不另开卡。
  */
 export function shouldShowBotanicAgentRuntimeFeed(input: {
   runtimePhase: BotanicAgentRuntimePhase
