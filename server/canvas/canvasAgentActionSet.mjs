@@ -4,6 +4,7 @@ import { canonicalHash } from '../canonicalHash.mjs'
 import { canvasAgentEntityHash } from './canvasAgentEntityHash.mjs'
 import { canvasAgentArtifactHash, projectCanvasResultFromArtifact } from './canvasAgentArtifactProjection.mjs'
 import { AgentToolRuntimeError } from '../agent/tools/agentToolRuntime.mjs'
+import { CANVAS_LAYOUT_MODES, layoutCanvasAgentNodes } from './canvasAgentLayout.mjs'
 import {
   applyBotanicAgentCanvasNodeDeletion,
   applyBotanicAgentCanvasOrganization,
@@ -14,7 +15,7 @@ import {
 } from './canvasAgentEditRules.mjs'
 
 const MAX_OPERATIONS = 20
-const OPERATION_KINDS = new Set(['create_text', 'create_generate', 'project_artifact', 'connect_reference', 'update_text', 'update_generate_settings', 'organize_nodes', 'delete_nodes'])
+const OPERATION_KINDS = new Set(['create_text', 'create_generate', 'project_artifact', 'connect_reference', 'update_text', 'update_generate_settings', 'organize_nodes', 'layout_nodes', 'delete_nodes'])
 const CONSTRAINT_DIMENSIONS = new Set(['person', 'garment', 'product', 'scene', 'style', 'pose', 'composition', 'lighting', 'aspect_ratio', 'copy_space'])
 
 const nodeId = { type: 'string', maxLength: 160 }
@@ -25,7 +26,9 @@ export const CANVAS_ACTION_SET_PARAMETERS = Object.freeze({
       type: 'object', additionalProperties: false,
       properties: {
         kind: { type: 'string', enum: [...OPERATION_KINDS] }, temporaryId: { type: 'string', maxLength: 80 },
-        nodeId, nodeIds: { type: 'array', maxItems: 12, items: nodeId }, sourceNodeId: nodeId, targetNodeId: nodeId,
+        nodeId, nodeIds: { type: 'array', maxItems: 20, items: nodeId }, sourceNodeId: nodeId, targetNodeId: nodeId,
+        mode: { type: 'string', enum: [...CANVAS_LAYOUT_MODES] }, gap: { type: 'number' }, columns: { type: 'number' },
+        anchor: { type: 'object', additionalProperties: false, properties: { x: { type: 'number' }, y: { type: 'number' } }, required: ['x', 'y'] },
         position: { type: 'object', additionalProperties: false, properties: { x: { type: 'number' }, y: { type: 'number' } }, required: ['x', 'y'] },
         label: { type: 'string', maxLength: CANVAS_NODE_LABEL_LIMIT }, content: { type: 'string', maxLength: CANVAS_TEXT_CONTENT_LIMIT },
         prompt: { type: 'string', maxLength: CANVAS_TEXT_CONTENT_LIMIT }, batchCount: { type: 'number' }, settings: { type: 'object' },
@@ -132,6 +135,22 @@ export function normalizeCanvasActionSet(raw) {
         return { nodeId: text(placement.nodeId, '节点标识'), position: position(placement.position), label: optionalText(placement.label, '节点名称', CANVAS_NODE_LABEL_LIMIT) }
       })
       if (new Set(result.placements.map((item) => item.nodeId)).size !== result.placements.length) fail('CANVAS_ACTION_SET_INVALID', '同一节点不能重复组织。')
+    } else if (kind === 'layout_nodes') {
+      if (!Array.isArray(operation.nodeIds) || !operation.nodeIds.length || operation.nodeIds.length > 20) fail('CANVAS_ACTION_SET_INVALID', '布局必须包含 1–20 个节点。')
+      result.nodeIds = operation.nodeIds.map((id) => text(id, '布局节点标识'))
+      if (new Set(result.nodeIds).size !== result.nodeIds.length) fail('CANVAS_ACTION_SET_INVALID', '布局节点不能重复。')
+      result.mode = text(operation.mode, '布局模式', 40)
+      if (!CANVAS_LAYOUT_MODES.includes(result.mode)) fail('CANVAS_ACTION_SET_INVALID', '布局模式无效。')
+      if (operation.anchor !== undefined) result.anchor = position(operation.anchor)
+      if (operation.gap !== undefined) {
+        result.gap = Number(operation.gap)
+        if (!Number.isFinite(result.gap) || result.gap < 16 || result.gap > 400) fail('CANVAS_ACTION_SET_INVALID', '布局间距必须在 16–400 之间。')
+      }
+      if (operation.columns !== undefined) {
+        result.columns = Number(operation.columns)
+        if (!Number.isInteger(result.columns) || result.columns < 1 || result.columns > 10 || result.mode !== 'grid') fail('CANVAS_ACTION_SET_INVALID', '网格列数必须是 1–10 的整数且仅用于 grid。')
+      }
+      if (result.mode.startsWith('distribute_') && result.nodeIds.length < 3) fail('CANVAS_ACTION_SET_INVALID', '分布布局至少需要 3 个节点。')
     } else if (kind === 'delete_nodes') {
       if (!Array.isArray(operation.nodeIds) || !operation.nodeIds.length || operation.nodeIds.length > 12) fail('CANVAS_ACTION_SET_INVALID', '删除节点必须包含 1–12 个标识。')
       result.nodeIds = [...new Set(operation.nodeIds.map((id) => text(id, '删除节点标识')))]
@@ -254,6 +273,11 @@ export function applyCanvasActionSet(document, raw, models, now = Date.now(), ar
       current = applied.document; updatedNodeIds.push(id)
     } else if (operation.kind === 'organize_nodes') {
       const placements = operation.placements.map((item) => ({ ...item, nodeId: resolvedId(item.nodeId, ids) }))
+      const applied = applyBotanicAgentCanvasOrganization(current, { placements }, now)
+      current = applied.document; updatedNodeIds.push(...applied.updatedNodeIds)
+    } else if (operation.kind === 'layout_nodes') {
+      const nodeIds = operation.nodeIds.map((id) => resolvedId(id, ids))
+      const placements = layoutCanvasAgentNodes(current, { ...operation, nodeIds })
       const applied = applyBotanicAgentCanvasOrganization(current, { placements }, now)
       current = applied.document; updatedNodeIds.push(...applied.updatedNodeIds)
     } else {

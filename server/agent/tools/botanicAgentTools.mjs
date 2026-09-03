@@ -607,7 +607,7 @@ export function createBotanicAgentPlanningToolRegistry({ input, finalizePlan, fi
     {
       name: 'canvas_edit_propose',
       label: '提议画布修改',
-      description: '提议需要用户确认的画布修改；优先用 action_set 把多项创建、更新、参考连接和删除合成一次原子行动。结果图片、任务绑定与系统连线永不可改。',
+      description: '提议需要用户确认的画布修改；优先用 action_set 把多项创建、更新、参考连接和删除合成一次原子行动，并用 layout_nodes 声明布局意图而不是手算像素。结果图片、任务绑定与系统连线永不可改。',
       risk: 'read',
       parameters: {
         type: 'object', additionalProperties: false,

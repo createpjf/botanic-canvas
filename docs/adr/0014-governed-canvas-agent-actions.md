@@ -23,7 +23,7 @@ TapNow 公开工作流中的“明确上下文→确认→计划→执行→定�
 - 删除画布投影不删除历史 Artifact。
 - 历史 Artifact 复用只投影生成图片/视频；服务端在提案和执行时有界解析并校验 Artifact hash，模型不能提供 Result 内部字段。
 - preserve/change 使用固定创意维度，编译进新 Generate 的执行契约；复用不创建 Job 或 system/output 血缘边。
-- organize_nodes 只修改显式节点的位置与可选名称，继续受 touched hash、活动节点规则、冻结 Preview 和单次提交约束；工作流提升复用现有 workflow_create/workflow_publish 审批链。
+- organize_nodes 只用于精确位置与可选名称；声明式 layout_nodes 接收 row/column/grid/workflow/align/distribute 意图，由服务端纯布局 kernel 按稳定顺序和节点视觉尺寸计算绝对坐标。两者都受 touched hash、活动节点规则、冻结 Preview 和单次提交约束；工作流提升复用现有 workflow_create/workflow_publish 审批链。
 
 ### 3. 查询实时读取当前项目权威文档
 
