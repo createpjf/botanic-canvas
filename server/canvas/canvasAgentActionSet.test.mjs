@@ -34,21 +34,24 @@ test('Action Set 以确定性 ID 创建领域节点、连接参考并与文字�
       { kind: 'connect_reference', sourceNodeId: 'approved', targetNodeId: 'generator' },
       { kind: 'organize_nodes', placements: [{ nodeId: 'text-1', position: { x: 80, y: 420 }, label: '确认文案' }] },
       { kind: 'update_text', nodeId: 'text-1', content: '已更新' },
+      { kind: 'layout_nodes', nodeIds: ['text-1', 'prompt', 'generator'], mode: 'row', anchor: { x: 40, y: 500 }, gap: 32 },
     ],
   }
   const artifacts = new Map([[artifact.id, artifact]])
   const prepared = prepareCanvasActionSetProposal(base, { operations: input.operations }, models, input.actionId, artifacts)
   assert.deepEqual(prepared.preview.summary, { created: 3, updated: 1, removed: 0, connected: 2 })
+  assert.deepEqual(prepared.preview.context.map((node) => node.id), ['asset-1'])
   assert.equal(typeof prepared.previewHash, 'string')
   assert.deepEqual(prepared.arguments.preconditions.map((item) => item.nodeId), ['asset-1', 'text-1'])
   const frozen = { actionId: input.actionId, ...prepared.arguments }
   const first = applyCanvasActionSet(base, frozen, models, 20, artifacts)
   const replay = applyCanvasActionSet(base, frozen, models, 20, artifacts)
   assert.deepEqual(first.createdNodeIds, replay.createdNodeIds)
+  assert.deepEqual(first.movedNodeIds, ['text-1', first.createdNodeIds[0], first.createdNodeIds[2]])
   const organized = first.document.nodes.find((node) => node.id === 'text-1')
   assert.equal(organized.data.content, '已更新')
   assert.equal(organized.data.label, '确认文案')
-  assert.deepEqual(organized.position, { x: 80, y: 420 })
+  assert.deepEqual(organized.position, { x: 700, y: 500 })
   const projected = first.document.nodes.find((node) => node.id === first.createdNodeIds[1])
   const generate = first.document.nodes.find((node) => node.id === first.createdNodeIds[2])
   assert.equal(projected.data.image, artifact.url)

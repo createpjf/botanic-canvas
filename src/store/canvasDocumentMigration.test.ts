@@ -11,6 +11,8 @@ test('画布文档规范化统一版本、清理旧演示文案并保护系统�
     nodes: [
       { id: 'generate-a', type: 'generate', position: { x: 0, y: 0 }, data: { kind: 'generate', label: '首图生成', prompt: '', batchCount: 1, settings: { model: 'gpt-image-2', aspectRatio: '1:1', resolution: '1K' } } },
       { id: 'result-a', type: 'result', position: { x: 400, y: 0 }, data: { kind: 'result', label: '结果', status: 'ready', image: '/result.webp' } },
+      { id: 'frame-bad', type: 'frame', position: { x: 0, y: 300 }, data: { kind: 'frame', label: '', stage: 'future', width: 10, height: 9999, frameId: 'frame-other' } as any },
+      { id: 'text-orphan', type: 'text', position: { x: 10, y: 320 }, data: { kind: 'text', label: '说明', content: '', frameId: 'missing-frame' } },
     ],
     edges: [{ id: 'output-a', source: 'generate-a', target: 'result-a' }],
     viewport: { x: 0, y: 0, zoom: 1 },
@@ -27,6 +29,9 @@ test('画布文档规范化统一版本、清理旧演示文案并保护系统�
   assert.equal((normalized.nodes[0].data as { label?: string }).label, '图像生成')
   assert.equal(outputEdge?.reconnectable, false)
   assert.deepEqual(outputEdge?.data, { system: true, role: 'output' })
+  const frame = normalized.nodes.find((node) => node.id === 'frame-bad')!
+  assert.deepEqual(frame.data, { kind: 'frame', label: '未命名 Frame', stage: 'custom', width: 320, height: 4000 })
+  assert.equal((normalized.nodes.find((node) => node.id === 'text-orphan')!.data as { frameId?: string }).frameId, undefined)
 })
 
 test('画布文档规范化兼容缺少参考的首次生成 Run', () => {

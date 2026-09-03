@@ -22,6 +22,7 @@ export const AGENT_SEMANTIC_EVENT_NAMES = Object.freeze({
   CONTEXT_OVERFLOW_RESULT: 'botanic.agent.context.overflow.result',
   CONTEXT_USAGE_ANCHOR_RESULT: 'botanic.agent.context.usage_anchor.result',
   HARNESS_LIFECYCLE: 'botanic.agent.harness.lifecycle',
+  CANVAS_LIFECYCLE: 'botanic.agent.canvas.lifecycle',
 })
 
 // Telemetry 自身也必须能灰度；在 featureFlags 的同一 Flag 正式声明前保持显式枚举，
@@ -50,6 +51,10 @@ const overflowOutcomes = new Set(['recovered', 'failed', 'not_retried'])
 const usageAnchorOutcomes = new Set(['persisted', 'reused', 'cas_conflict', 'not_found', 'failed'])
 /** Harness 控制面事件（H7）。label 只有低基数枚举与安全 code,不含用户文本/URL/Skill ID/参数。 */
 const harnessKinds = new Set(['tool', 'skill', 'cancel', 'recovery', 'provider', 'preview', 'loop'])
+const canvasKinds = new Set(['query', 'proposal', 'approval', 'execution', 'semantic_index'])
+const canvasOutcomes = new Set(['completed', 'rejected', 'conflict', 'failed', 'fallback'])
+const canvasModes = new Set(['nodes', 'aggregate', 'keyword', 'semantic', 'hybrid'])
+const canvasCompleteness = new Set(['complete', 'truncated'])
 const harnessOutcomes = new Set([
   'started', 'succeeded', 'failed', 'aborted', 'unknown',
   'repair', 'loop_stop', 'final_synthesis',
@@ -267,6 +272,22 @@ function harnessLifecycleEvent(target, source) {
   addError(target, source)
 }
 
+function canvasLifecycleEvent(target, source) {
+  target.kind = enumValue(source.kind, canvasKinds, 'Agent semantic canvas kind')
+  target.outcome = enumValue(source.outcome, canvasOutcomes, 'Agent semantic canvas outcome')
+  const mode = optionalEnum(source.mode, canvasModes, 'Agent semantic canvas mode')
+  const completeness = optionalEnum(source.completeness, canvasCompleteness, 'Agent semantic canvas completeness')
+  if (mode !== undefined) target.mode = mode
+  if (completeness !== undefined) target.completeness = completeness
+  if (source.reason !== undefined) {
+    if (typeof source.reason !== 'string' || !SAFE_ERROR_CODE.test(source.reason) || source.reason.length > ERROR_CODE_LIMIT) invalid('Agent semantic canvas reason')
+    target.reason = source.reason
+  }
+  for (const name of ['durationMs', 'returnedCount', 'operationCount', 'changeCount', 'artifactCount']) {
+    addOptionalInteger(target, source, name, name === 'durationMs' ? MAX_DURATION_MS : MAX_COUNT)
+  }
+}
+
 function contextUsageAnchorEvent(target, source) {
   target.outcome = enumValue(source.outcome, usageAnchorOutcomes, 'Agent semantic usage anchor outcome')
   addContextIdentity(target, source)
@@ -321,6 +342,9 @@ export function createAgentSemanticEvent(name, input, timestamp) {
       break
     case AGENT_SEMANTIC_EVENT_NAMES.HARNESS_LIFECYCLE:
       harnessLifecycleEvent(target, source)
+      break
+    case AGENT_SEMANTIC_EVENT_NAMES.CANVAS_LIFECYCLE:
+      canvasLifecycleEvent(target, source)
       break
     default:
       invalid('Agent semantic event name')

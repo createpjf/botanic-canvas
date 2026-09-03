@@ -355,7 +355,7 @@ export function createAgentTurnResumer({
           productStore,
           userId: turn.ownerId,
           projectId: turn.projectId,
-          document: project.document, models: config?.modelOptions ?? [],
+          document: project.document, models: config?.modelOptions ?? [], semanticSearch: config?.semanticSearch,
         }),
         ...(immutableThreadSummary ? { threadSummary: immutableThreadSummary } : {}),
         signal: controller.signal,

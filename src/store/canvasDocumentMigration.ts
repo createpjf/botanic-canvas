@@ -12,6 +12,7 @@ import type {
   AssetNodeData,
   CanvasDocument,
   CanvasNode,
+  FrameNodeData,
   CanvasSnapshot,
   GenerationJob,
   GenerationReference,
@@ -56,12 +57,33 @@ function cleanPromptNodeLabel(value: string | undefined, fallback: string) {
   return label === '视觉目标' ? '描述' : label
 }
 
+const frameStages = new Set(['brief', 'references', 'generation', 'review', 'approved', 'delivery', 'archive', 'custom'])
+function boundedFrameDimension(value: unknown, fallback: number, minimum: number) {
+  const number = Number(value)
+  return Number.isFinite(number) ? Math.min(4000, Math.max(minimum, number)) : fallback
+}
+function normalizeFrameNodes(nodes: CanvasNode[]): CanvasNode[] {
+  const frameIds = new Set(nodes.filter((node) => node.type === 'frame').map((node) => node.id))
+  return nodes.map((node) => {
+    if (node.type === 'frame') {
+      const data = node.data as FrameNodeData & { frameId?: string }
+      const { frameId: _frameId, ...safeData } = data
+      return { ...node, data: { ...safeData, kind: 'frame', label: cleanDisplayName(data.label, '未命名 Frame'), stage: frameStages.has(data.stage) ? data.stage : 'custom', width: boundedFrameDimension(data.width, 320, 320), height: boundedFrameDimension(data.height, 240, 240) } } as CanvasNode
+    }
+    const data = node.data as CanvasNode['data'] & { frameId?: string }
+    if (!data.frameId || frameIds.has(data.frameId)) return node
+    const { frameId: _frameId, ...safeData } = data
+    return { ...node, data: safeData } as CanvasNode
+  })
+}
+
 export function canvasNodeDisplayName(node: CanvasNode) {
   if (node.type === 'asset') return (node.data as AssetNodeData).name
   if (node.type === 'text') return (node.data as TextNodeData).label
   if (node.type === 'generate') return (node.data as GenerateNodeData).label
   if (node.type === 'prompt') return (node.data as PromptNodeData).label
   if (node.type === 'reference') return (node.data as ReferenceGroupNodeData).label
+  if (node.type === 'frame') return (node.data as FrameNodeData).label
   return (node.data as ResultNodeData).label ?? '输出图片'
 }
 
@@ -109,6 +131,7 @@ function normalizeLegacyCopyNodes(nodes: CanvasNode[]): CanvasNode[] {
         },
       }
     }
+    if (node.type === 'frame') return node
     if (node.type === 'reference') {
       const data = node.data as ReferenceGroupNodeData
       return {
@@ -597,7 +620,7 @@ function migrateGenerationJobs(jobs: GenerationJob[]) {
 }
 
 function normalizeCanvasSnapshot(snapshotValue: CanvasSnapshot, layoutTaskNodes = false, migrateWorkflow = false): CanvasSnapshot {
-  const normalizedNodes = normalizeLegacyCopyNodes(normalizeAssetReferenceNodes(snapshotValue.nodes))
+  const normalizedNodes = normalizeLegacyCopyNodes(normalizeFrameNodes(normalizeAssetReferenceNodes(snapshotValue.nodes)))
   const normalized = {
     ...snapshotValue,
     name: cleanDisplayName(snapshotValue.name, '未命名画布'),
@@ -606,7 +629,7 @@ function normalizeCanvasSnapshot(snapshotValue: CanvasSnapshot, layoutTaskNodes 
     viewport: { ...snapshotValue.viewport },
   }
   const migrated = migrateWorkflow ? migrateLegacyWorkflowSnapshot(normalized) : normalized
-  const nodes = normalizeGenerateNodeInputs(normalizeLegacyCopyNodes(migrated.nodes), migrated.edges)
+  const nodes = normalizeGenerateNodeInputs(normalizeLegacyCopyNodes(normalizeFrameNodes(migrated.nodes)), migrated.edges)
   return {
     ...migrated,
     nodes,

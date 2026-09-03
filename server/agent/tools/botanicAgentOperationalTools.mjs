@@ -226,13 +226,16 @@ export function createBotanicAgentOperationalToolDefinitions(operations = {}) {
     {
       name: 'canvas_query',
       label: '查询画布图谱',
-      description: '按节点类型、状态、标签、关系或权威实体标识分页查询当前项目画布。结果不含媒体地址；page.hasMore 为 true 时必须用 page.afterId 续查，不能声称已查全。',
+      description: '用同一入口查询当前项目画布：nodes 分页读取安全节点，aggregate 按类型/状态/阶段计数，keyword 检索安全文本；semantic/hybrid 使用默认关闭的可配置语义服务，禁用或失败会显式降级 keyword。结果不含媒体地址或完整 Generate Prompt；page.hasMore/searchTruncated 为 true 时不能声称已查全。',
       risk: 'read',
       parameters: {
         type: 'object', additionalProperties: false,
         properties: {
+          mode: { type: 'string', enum: ['nodes', 'aggregate', 'keyword', 'semantic', 'hybrid'] },
+          query: { type: 'string', maxLength: 120 },
           nodeIds: { type: 'array', maxItems: 50, items: { type: 'string', maxLength: 160 } },
-          types: { type: 'array', maxItems: 6, items: { type: 'string', enum: ['asset', 'prompt', 'reference', 'result', 'text', 'generate'] } },
+          types: { type: 'array', maxItems: 7, items: { type: 'string', enum: ['asset', 'prompt', 'reference', 'result', 'text', 'generate', 'frame'] } },
+          stages: { type: 'array', maxItems: 8, items: { type: 'string', enum: ['brief', 'references', 'generation', 'review', 'approved', 'delivery', 'archive', 'custom'] } },
           statuses: { type: 'array', maxItems: 20, items: { type: 'string', maxLength: 40 } },
           label: { type: 'string', maxLength: 120 },
           jobId: { type: 'string', maxLength: 160 },
@@ -424,7 +427,7 @@ export function createBotanicAgentOperationalActionDefinitions({ role, ...execut
     {
       name: 'canvas_action_set',
       label: '原子修改画布',
-      description: '一次确认后原子执行整组领域化画布操作；任一操作非法则整组零写入。不能创建 Result、修改系统连线或伪造任务血缘。',
+      description: '一次确认后原子执行整组领域化画布操作；布局优先使用 layout_nodes 声明意图，由服务端计算坐标；可用 Frame/Stage 组织生产泳道，成员仍使用绝对坐标。任一操作非法则整组零写入；不能创建 Result、修改系统连线或伪造任务血缘。',
       risk: 'write', requiresConfirmation: true, terminal: true,
       parameters: CANVAS_ACTION_SET_PARAMETERS,
       validate: (raw) => {

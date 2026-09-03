@@ -92,9 +92,11 @@ test('画布编辑执行器：改文字回增量 patch，调参校验模型目�
 
   const artifactAction = await executors.executeCanvasActionSet({
     actionId: 'artifact-action', preconditions: [], operations: [{ kind: 'project_artifact', temporaryId: 'old-result',
-      artifactId: store.state.historicalArtifact.id, artifactHash: canvasAgentArtifactHash(store.state.historicalArtifact), position: { x: 700, y: 0 } }],
+      artifactId: store.state.historicalArtifact.id, artifactHash: canvasAgentArtifactHash(store.state.historicalArtifact), position: { x: 700, y: 0 } },
+      { kind: 'organize_nodes', placements: [{ nodeId: 'old-result', position: { x: 750, y: 40 } }] }],
   })
   assert.equal(artifactAction.canvasPatch.nodes[0].data.image, '/api/media/old')
+  assert.deepEqual(artifactAction.canvasPatch.positionNodeIds, [artifactAction.canvasPatch.nodes[0].id])
 
   const removal = await executors.deleteCanvasNodes({ nodeIds: ['text-1'] })
   assert.deepEqual(removal.canvasRemovedNodeIds, ['text-1'])

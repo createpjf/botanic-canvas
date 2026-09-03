@@ -61,6 +61,21 @@ test('固定 semantic schema 只投影 allowlist，不接收任意 attributes �
   assert.doesNotMatch(JSON.stringify(event), /私密|思维链|Provider|private\.example|Bearer|secret|attributes|message/u)
 })
 
+test('Canvas 生命周期只投影低基数状态和有界计数', () => {
+  const event = createAgentSemanticEvent(AGENT_SEMANTIC_EVENT_NAMES.CANVAS_LIFECYCLE, {
+    kind: 'proposal', outcome: 'completed', mode: 'nodes', completeness: 'truncated',
+    durationMs: 12, returnedCount: 4, operationCount: 3, changeCount: 5, artifactCount: 1,
+    projectId: 'project-secret', prompt: '私密提示词', mediaUrl: 'https://private.example/image.png',
+  }, occurredAt)
+  assert.deepEqual(event, {
+    schema: AGENT_SEMANTIC_EVENT_SCHEMA, schemaVersion: AGENT_SEMANTIC_EVENT_SCHEMA_VERSION,
+    event: AGENT_SEMANTIC_EVENT_NAMES.CANVAS_LIFECYCLE, occurredAt,
+    kind: 'proposal', outcome: 'completed', mode: 'nodes', completeness: 'truncated',
+    durationMs: 12, returnedCount: 4, operationCount: 3, changeCount: 5, artifactCount: 1,
+  })
+  assert.doesNotMatch(JSON.stringify(event), /secret|私密|private.example/u)
+})
+
 test('error 只保留 code 与 retryable，message/stack/cause 不会落日志', () => {
   const event = createAgentSemanticEvent(AGENT_SEMANTIC_EVENT_NAMES.CONTEXT_OVERFLOW_RESULT, {
     outcome: 'failed',

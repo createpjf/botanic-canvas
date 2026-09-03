@@ -137,6 +137,7 @@ export type BotanicAgentActionResult = {
   canvasPatch?: {
     nodes: CanvasNode[]
     edges: CanvasDocument['edges']
+    positionNodeIds?: string[]
     updatedAt: number
     baseRevision: number
     revision: number
@@ -157,15 +158,13 @@ function canvasEdgeIdentity(edge: CanvasDocument['edges'][number]) {
   return `${edge.source}\u0000${edge.sourceHandle ?? ''}\u0000${edge.target}\u0000${edge.targetHandle ?? ''}`
 }
 
-/**
- * 合并服务端已落盘的 Agent 工作流。已有节点保留用户布局与选择态，节点数据和
- * 新连线来自服务端权威增量；按语义去重连线，兼容旧版本不同的 edge id。
- */
+/** 合并已落盘工作流：显式移动采用服务端位置、保留本地选择态，节点数据与新连线按语义合并。 */
 export function mergeBotanicAgentCanvasPatch(
   document: CanvasDocument,
   patch: NonNullable<BotanicAgentActionResult['canvasPatch']>,
 ): CanvasDocument {
   const nodes = [...document.nodes]
+  const positionNodeIds = new Set(patch.positionNodeIds ?? [])
   for (const incoming of patch.nodes) {
     const index = nodes.findIndex((node) => node.id === incoming.id)
     if (index < 0) {
@@ -176,7 +175,7 @@ export function mergeBotanicAgentCanvasPatch(
     nodes[index] = {
       ...current,
       ...incoming,
-      position: current.position,
+      position: positionNodeIds.has(incoming.id) ? incoming.position : current.position,
       selected: current.selected,
       data: { ...current.data, ...incoming.data },
     } as CanvasNode

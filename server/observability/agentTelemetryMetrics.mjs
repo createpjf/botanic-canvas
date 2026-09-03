@@ -14,7 +14,7 @@ import { metrics as otelMetrics } from '@opentelemetry/api'
 const METER_NAME = 'botanic-agent'
 
 /** 允许进入 metrics 标签的低基数字段;其余字段(含所有 *Id)一律丢弃。 */
-const SAFE_ATTRIBUTE_KEYS = Object.freeze(['kind', 'outcome', 'reason', 'decision', 'cohort', 'mode', 'feature', 'phase', 'status'])
+const SAFE_ATTRIBUTE_KEYS = Object.freeze(['kind', 'outcome', 'reason', 'decision', 'cohort', 'mode', 'feature', 'phase', 'status', 'completeness'])
 
 function safeAttributes(event) {
   const attributes = {}
@@ -61,6 +61,10 @@ export function initializeAgentTelemetryMetrics(input) {
     const previewNonEmptyHistogram = meter.createHistogram('botanic.agent.preview.nonempty', {
       description: '取消终态是否存在非空OutputPreview(0/1)。', unit: '{boolean}',
     })
+    const canvasReturnedHistogram = meter.createHistogram('botanic.agent.canvas.returned_count', { unit: '{entity}' })
+    const canvasOperationHistogram = meter.createHistogram('botanic.agent.canvas.operation_count', { unit: '{operation}' })
+    const canvasChangeHistogram = meter.createHistogram('botanic.agent.canvas.change_count', { unit: '{change}' })
+    const canvasArtifactHistogram = meter.createHistogram('botanic.agent.canvas.artifact_count', { unit: '{artifact}' })
     activeRecorder = Object.freeze({
       enabled: true,
       /** @param {Record<string, any>} event 已通过 agentSemanticEvent schema 的事件 */
@@ -79,6 +83,10 @@ export function initializeAgentTelemetryMetrics(input) {
           if (Number.isSafeInteger(event.writeCount)) previewWriteHistogram.record(event.writeCount, attributes)
           if (Number.isSafeInteger(event.maxCharCount)) previewSizeHistogram.record(event.maxCharCount, attributes)
           if (Number.isSafeInteger(event.nonEmptyCount)) previewNonEmptyHistogram.record(event.nonEmptyCount, attributes)
+          if (Number.isSafeInteger(event.returnedCount)) canvasReturnedHistogram.record(event.returnedCount, attributes)
+          if (Number.isSafeInteger(event.operationCount)) canvasOperationHistogram.record(event.operationCount, attributes)
+          if (Number.isSafeInteger(event.changeCount)) canvasChangeHistogram.record(event.changeCount, attributes)
+          if (Number.isSafeInteger(event.artifactCount)) canvasArtifactHistogram.record(event.artifactCount, attributes)
         } catch { /* metrics 旁路 fail-open。 */ }
       },
     })

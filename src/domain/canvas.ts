@@ -190,6 +190,8 @@ export type UploadedAssetInput = {
 
 export type AssetNodeData = {
   kind: 'asset'
+  /** 可选 Canvas Frame 归属；坐标始终为画布绝对坐标。 */
+  frameId?: string
   assetId: string
   role: AssetRole
   name: string
@@ -208,6 +210,8 @@ export type AssetNodeData = {
 
 export type PromptNodeData = {
   kind: 'prompt'
+  /** 可选 Canvas Frame 归属；坐标始终为画布绝对坐标。 */
+  frameId?: string
   jobId?: string
   status: CanvasGenerationTaskStatus
   generationKind: GenerationKind
@@ -220,6 +224,8 @@ export type PromptNodeData = {
 
 export type ReferenceGroupNodeData = {
   kind: 'reference'
+  /** 可选 Canvas Frame 归属；坐标始终为画布绝对坐标。 */
+  frameId?: string
   jobId?: string
   status: CanvasGenerationTaskStatus
   recipe: GenerationRecipe
@@ -229,12 +235,16 @@ export type ReferenceGroupNodeData = {
 
 export type TextNodeData = {
   kind: 'text'
+  /** 可选 Canvas Frame 归属；坐标始终为画布绝对坐标。 */
+  frameId?: string
   label: string
   content: string
 }
 
 export type GenerateNodeData = {
   kind: 'generate'
+  /** 可选 Canvas Frame 归属；坐标始终为画布绝对坐标。 */
+  frameId?: string
   label: string
   prompt: string
   batchCount: number
@@ -263,6 +273,8 @@ export type GenerateNodeData = {
 
 export type ResultNodeData = {
   kind: 'result'
+  /** 可选 Canvas Frame 归属；坐标始终为画布绝对坐标。 */
+  frameId?: string
   /** 自动写入这张输出图片的生成节点；仅用于溯源与展示。 */
   outputOf?: string
   image?: string
@@ -298,9 +310,19 @@ export type ResultNodeData = {
   variant?: number
 }
 
+export type CanvasFrameStage = 'brief' | 'references' | 'generation' | 'review' | 'approved' | 'delivery' | 'archive' | 'custom'
+
+export type FrameNodeData = {
+  kind: 'frame'
+  label: string
+  stage: CanvasFrameStage
+  width: number
+  height: number
+}
+
 export type CanvasNode = Node<
-  AssetNodeData | PromptNodeData | ReferenceGroupNodeData | ResultNodeData | TextNodeData | GenerateNodeData,
-  'asset' | 'prompt' | 'reference' | 'result' | 'text' | 'generate'
+  AssetNodeData | PromptNodeData | ReferenceGroupNodeData | ResultNodeData | TextNodeData | GenerateNodeData | FrameNodeData,
+  'asset' | 'prompt' | 'reference' | 'result' | 'text' | 'generate' | 'frame'
 >
 
 export type CanvasSnapshot = {

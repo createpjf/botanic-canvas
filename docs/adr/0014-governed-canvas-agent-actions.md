@@ -23,15 +23,15 @@ TapNow 公开工作流中的“明确上下文→确认→计划→执行→定�
 - 删除画布投影不删除历史 Artifact。
 - 历史 Artifact 复用只投影生成图片/视频；服务端在提案和执行时有界解析并校验 Artifact hash，模型不能提供 Result 内部字段。
 - preserve/change 使用固定创意维度，编译进新 Generate 的执行契约；复用不创建 Job 或 system/output 血缘边。
-- organize_nodes 只修改显式节点的位置与可选名称，继续受 touched hash、活动节点规则、冻结 Preview 和单次提交约束；工作流提升复用现有 workflow_create/workflow_publish 审批链。
+- organize_nodes 只用于精确位置、可选名称与 Frame 归属；声明式 layout_nodes 接收 row/column/grid/workflow/align/distribute 意图，由服务端纯布局 kernel 按稳定顺序和节点视觉尺寸计算绝对坐标。create_frame / update_frame 管理可命名 Stage 泳道；成员坐标始终是画布绝对坐标，不持久化 React Flow parentId/extent/runtime width/height，不允许 Frame 嵌套，删除 Frame 只解除归属。全部操作都受 touched hash、活动节点规则、冻结 Preview 和单次提交约束；工作流提升复用现有 workflow_create/workflow_publish 审批链。
 
 ### 3. 查询实时读取当前项目权威文档
 
-canvas_query 每次经 ProductStore 的当前用户和项目授权读取项目，不信任客户端上传全图。它只返回安全有界投影，不含媒体 URL、字节、完整 Prompt、凭据或 Provider 原始响应。查询使用稳定 ID cursor；hasMore 或 edgesTruncated 必须显式返回，模型不得把截断页描述为全量结果。
+canvas_query 每次经 ProductStore 的当前用户和项目授权读取项目，不信任客户端上传全图。nodes 模式返回安全有界投影；aggregate 对完整过滤集按 type/status/stage 确定性计数且不返回节点正文；keyword 只索引 ID、类型、短名称、Text/Prompt 有界正文、状态与 Stage，以全部词命中、score 后稳定 ID 排序并用同一 cursor 分页。媒体 URL、字节、Generate Prompt、凭据或 Provider 原始响应永不进入投影或检索语料。semantic/hybrid 由默认关闭的 OpenAI-compatible /embeddings Adapter 按稳定 ID 内部分页、对最多 500 个安全候选分批（每批 50 个）派生向量；相同 Provider 模型与安全文本的向量在进程内有界 LRU 复用，正文变化自然失效，不持久化索引。Provider 禁用、未配置或失败时显式降级 keyword，并保留当前节点 cursor，避免分页返回重复首屏；派生分数不成为 Canvas authority。hasMore 或 edgesTruncated 必须显式返回，模型不得把截断页描述为全量结果。
 
 ### 4. Action Set 先预演、后冻结、再原子提交
 
-后续 Canvas Action Set 在确认前完成规范化、权限/风险判定、结构化 diff 和触达实体前置条件计算。批准 token、intent hash 与 Action Receipt 覆盖完整冻结操作；确认后模型无权追加或改变动作。
+后续 Canvas Action Set 在确认前完成规范化、权限/风险判定、结构化 diff 和触达实体前置条件计算。Preview 同时冻结变更节点、连线和未变化端点的安全 context 投影；确认卡的 display-only SVG 只由该 DTO 确定性生成，并保留语义列表，不读取实时 Canvas。批准 token、intent hash 与 Action Receipt 覆盖完整冻结操作；Preview/SVG 不是授权凭据，确认后模型无权追加或改变动作。
 
 执行时重新读取权威项目并验证触达实体。无关协作变更不阻塞；触达节点或边变化返回明确冲突，要求重新查询和提案。全部操作一次性通过 commitCanvasProjectMutation 提交，任一操作失败则整组零写入。
 

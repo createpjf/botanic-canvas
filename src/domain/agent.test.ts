@@ -78,6 +78,7 @@ import {
   shouldShowBotanicAgentRuntimeFeed,
   buildBotanicAgentPromptDiff,
   mergeBotanicAgentArtifactIndex,
+  mergeBotanicAgentCanvasPatch,
   expandBotanicAgentContextNodeIds,
   resolveBotanicAgentWorkflowReferenceNodeIds,
   buildBotanicAgentRunTimeline,
@@ -90,6 +91,13 @@ import {
   pendingBotanicAgentAutoSubmission,
   shouldRetryBotanicAgentAutoSubmission,
 } from './agent.ts'
+
+test('Agent 回执采用服务端权威位置并保留本地选择态', () => {
+  const current = { id: 'p', name: 'P', nodes: [{ id: 'n', type: 'text', position: { x: 1, y: 2 }, selected: true, data: { kind: 'text', label: '旧', content: '旧' } }], edges: [], viewport: { x: 0, y: 0, zoom: 1 }, assets: [], assetGroups: [], templates: [], history: [], deliveries: [], generationJobs: [], batchVariationRuns: [], agentSessions: [], agentMemory: [], agentRuns: [], updatedAt: 1 } as any
+  const merged = mergeBotanicAgentCanvasPatch(current, { nodes: [{ id: 'n', type: 'text', position: { x: 300, y: 400 }, data: { kind: 'text', label: '新', content: '新' } }], edges: [], positionNodeIds: ['n'], updatedAt: 2, baseRevision: 1, revision: 2, baseGraphRevision: 1, graphRevision: 2 })
+  assert.deepEqual(merged.nodes[0].position, { x: 300, y: 400 })
+  assert.equal(merged.nodes[0].selected, true)
+})
 
 const rootRecipe: GenerationRecipe = {
   primaryReferenceNodeId: 'asset-product',
