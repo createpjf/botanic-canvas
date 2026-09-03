@@ -92,12 +92,12 @@ test('截图粘进对话框，成为上下文 chip 且名称不是空的', async
   await expect(composer).toBeVisible()
   await pasteInto(page, 'aside.agent-workspace textarea', screenshotPaste)
 
-  // chip 不渲染名字文本（内容只有 <img> 与 ×），名字只进 aria-label，所以只能读无障碍名。
-  // 断言时间戳形状，同时守住 pastedAssetName 的回落语义 —— 截图的 name 是 image.png，
-  // 直接用会得到一列无法区分的「image」。
-  const chip = page.locator('.agent-composer__chip.is-media')
+  // 附件 chip 不渲染名字文本（36px 缩略图 + 嵌套移除按钮），名字只进移除按钮的
+  // aria-label，所以只能读无障碍名。断言时间戳形状，同时守住 pastedAssetName 的
+  // 回落语义 —— 截图的 name 是 image.png，直接用会得到一列无法区分的「image」。
+  const chip = page.locator('.agent-composer__attach-chips .agent-attachment.is-image')
   await expect(chip).toHaveCount(1)
-  await expect(chip).toHaveAttribute('aria-label', /^移除 粘贴的图片 \d{2}:\d{2}$/)
+  await expect(chip.getByRole('button')).toHaveAttribute('aria-label', /^移除 粘贴的图片 \d{2}:\d{2}$/)
 })
 
 test('在节点标题输入框里粘贴文字，文字照常粘贴且不产生素材', async ({ page }) => {
