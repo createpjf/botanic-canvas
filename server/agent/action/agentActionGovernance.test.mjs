@@ -6,6 +6,7 @@ test('Agent 行动按生成、工作流与外部工具映射到服务端权限',
   assert.equal(agentToolPermission('generation_submit'), 'create-generation')
   assert.equal(agentToolPermission('workflow_create'), 'modify-workflow')
   assert.equal(agentToolPermission('skill_apply'), 'modify-workflow')
+  assert.equal(agentToolPermission('skill_publish'), 'modify-workflow')
   assert.equal(agentToolPermission('mcp_call'), 'execute-external-tool')
 })
 

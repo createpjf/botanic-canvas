@@ -808,7 +808,7 @@ export function publicAgentSkill(skill) {
     ...(skill.manifest ? { manifest: skill.manifest } : {}),
     // 治理状态只在真的批准过时才出现；缺省即「尚未批准」，不再默认成已批准。
     ...(skill.governance ? { governance: skill.governance } : {}),
-    ...(skill.publishedBy ? { publishedBy: skill.publishedBy, publishedAt: skill.publishedAt } : {}),
+    ...(skill.reviewSubmittedBy ? { reviewSubmittedBy: skill.reviewSubmittedBy, reviewSubmittedAt: skill.reviewSubmittedAt } : {}), ...(skill.publishedBy ? { publishedBy: skill.publishedBy, publishedAt: skill.publishedAt } : {}),
     ...(skill.deprecatedBy ? { deprecatedBy: skill.deprecatedBy, deprecatedAt: skill.deprecatedAt } : {}),
     // 历史版本清单随读模型暴露：内容按需用 agentSkillVersion 取回，列表只给身份。
     versions: (Array.isArray(skill.versions) ? skill.versions : []).map((entry) => ({

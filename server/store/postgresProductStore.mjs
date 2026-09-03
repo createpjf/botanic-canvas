@@ -1736,14 +1736,13 @@ export async function createPostgresProductStore({ databaseUrl, bootstrapAccessT
       })
     },
 
-    async listAgentSkills(userId, projectId) {
+    async listAgentSkills(userId, projectId, options = {}) {
       if (!await memberRole(projectId, userId)) return undefined
       const rows = await sql`
         select s.payload from agent_skills s join project_members m on m.project_id = s.project_id
-        where s.project_id = ${projectId} and s.status = 'active' and m.user_id = ${userId}
-        order by s.updated_at desc
+        where s.project_id = ${projectId} and m.user_id = ${userId} order by s.updated_at desc
       `
-      return rows.map(asPayload)
+      return rows.map(asPayload).filter((skill) => options.includeAll === true || skill.status !== 'archived')
     },
 
     async readAgentSkillVersion(userId, projectId, skillId, version) {

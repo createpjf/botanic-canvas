@@ -28,7 +28,7 @@ import { readAgentTurnTimelineEvents } from './agentTurnTimelineEventReader'
 import { captureSentryMessage } from './sentry.ts'
 
 const agentActionsRequiringApproval = new Set([
-  'canvas_action_set', 'generation_submit', 'mcp_call', 'agent_branch_retry', 'review_retry', 'workflow_run_retry_failed',
+  'canvas_action_set', 'generation_submit', 'mcp_call', 'agent_branch_retry', 'review_retry', 'workflow_run_retry_failed', 'skill_publish', 'skill_deprecate', 'skill_restore',
 ])
 
 export type AgentRunCreationBranch = {
@@ -1119,10 +1119,7 @@ export async function submitBotanicAgentReviewDecision(input: {
   return response.review
 }
 
-export async function listProjectAgentSkills(projectId: string) {
-  const response = await productRequest<{ skills: BotanicAgentSkill[] }>(`/api/projects/${encodeURIComponent(projectId)}/agent-skills`)
-  return response.skills
-}
+export { listProjectAgentSkills } from './agentSkillApi'
 
 export async function listBotanicAgentSystemSkills() {
   const response = await productRequest<{ skills: BotanicAgentSkillCatalogItem[] }>('/api/agent-skill-catalog')
@@ -1139,15 +1136,8 @@ export async function createProjectAgentSkill(input: {
   const submissionKey = input.submissionKey ?? idempotencyKey('agent-skill')
   const toolCallId = input.toolCallId ?? `call-skill-create-${crypto.randomUUID()}`
   const response = await productRequest<{ output: { skill: BotanicAgentSkill }; toolCall: AgentToolCallTrace }>('/api/agent-actions', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Idempotency-Key': submissionKey },
-    body: JSON.stringify({
-      projectId: input.projectId,
-      name: 'skill_create',
-      toolCallId,
-      confirmed: true,
-      arguments: { name: input.name, instructions: input.instructions },
-    }),
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': submissionKey },
+    body: JSON.stringify({ projectId: input.projectId, name: 'skill_create', toolCallId, confirmed: true, arguments: { name: input.name, instructions: input.instructions } }),
   })
   return response
 }

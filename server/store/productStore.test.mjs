@@ -124,6 +124,7 @@ test('项目 Skill 版本由领域快照权威生成，幂等重放不造新版�
   store.putAgentSkill(owner.id, deprecateAgentSkill(storedRevision, { actorId: owner.id, now: 300 }))
 
   assert.deepEqual(store.listAgentSkills(owner.id, 'project-skill-a'), [], '弃用 Skill 不再进入活动目录')
+  assert.deepEqual(store.listAgentSkills(owner.id, 'project-skill-a', { includeAll: true }).map((skill) => skill.lifecycle), ['deprecated'])
   assert.equal(store.readAgentSkillVersion(owner.id, 'project-skill-a', created.id, 1)?.instructions, created.instructions)
   assert.equal(store.readAgentSkillVersion(owner.id, 'project-skill-a', created.id, 2)?.instructions, revised.instructions)
   assert.equal(store.readAgentSkillVersion(owner.id, 'project-skill-a', created.id, 3), undefined)

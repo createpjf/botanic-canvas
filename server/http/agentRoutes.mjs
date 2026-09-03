@@ -49,6 +49,7 @@ import { AgentDelegationFenceError, assertTurnAllowsDelegation, createAgentCance
 import { matchingIdempotencyRequestBinding } from '../idempotencyRequestBinding.mjs'
 import { createAgentMessageRouteHandler } from './agentMessageRoutes.mjs'
 import { createAgentActionRouteHandler } from './agentActionRoutes.mjs'
+import { createAgentSkillRouteHandler } from './agentSkillRoutes.mjs'
 import { agentCompatibilityIdempotencyKey } from '../agentRuntimeRequest.mjs'
 import { createAgentOperationalReaders } from '../observability/agentOperationalReaders.mjs'
 import { AgentSubagentServiceError } from '../agent/subagent/agentSubagentService.mjs'
@@ -675,6 +676,9 @@ export function createAgentRouteHandler({
       },
     }
   }
+  const agentSkillRoutes = createAgentSkillRouteHandler({
+    productStore, json, error, readJson, requireUser, methodNotAllowed,
+  })
   let agentActionRouteHandler
   const agentActionRoutes = () => {
     agentActionRouteHandler ??= createAgentActionRouteHandler({
@@ -708,6 +712,8 @@ export function createAgentRouteHandler({
   return async function handleAgentRoute(request, response, url, routeMatches, requestId) {
     const turnHandled = await turnHttpAdapter()({ request, response, url, routeMatches, requestId })
     if (turnHandled !== false) return turnHandled
+    const skillHandled = await agentSkillRoutes({ request, response, url, routeMatches })
+    if (skillHandled !== false) return skillHandled
     const {
       projectAgentRuns: projectAgentRunsMatch,
       projectAgentSkills: projectAgentSkillsMatch,
@@ -1264,14 +1270,6 @@ export function createAgentRouteHandler({
           ...(version.publishedAt ? { publishedAt: version.publishedAt } : {}),
         },
       })
-    }
-    if (projectAgentSkillsMatch) {
-      if (request.method !== 'GET') return methodNotAllowed(response, '项目 Skill 资源只支持读取。', 'GET')
-      const user = await requireUser(request)
-      const projectId = decodeURIComponent(projectAgentSkillsMatch[1])
-      await requireProjectPermission(productStore, user.id, projectId, 'read')
-      const skills = await productStore.listAgentSkills(user.id, projectId) ?? []
-      return json(response, 200, { skills: skills.map(publicAgentSkill) })
     }
     if (projectAgentSessionsMatch) {
       if (request.method !== 'GET') return methodNotAllowed(response, 'Agent 会话列表只支持读取。', 'GET')

@@ -197,7 +197,7 @@ export function mergeBotanicAgentCanvasPatch(
 export type BotanicAgentActionProposal = {
   id: string
   kind: 'skill' | 'mcp' | 'canvas'
-  toolName: 'skill_apply' | 'skill_create' | 'mcp_call' | 'canvas_action_set' | 'canvas_update_text' | 'canvas_update_generate_settings' | 'canvas_delete_nodes'
+  toolName: 'skill_apply' | 'skill_create' | 'skill_publish' | 'skill_deprecate' | 'skill_restore' | 'mcp_call' | 'canvas_action_set' | 'canvas_update_text' | 'canvas_update_generate_settings' | 'canvas_delete_nodes'
   label: string
   summary: string
   risk: 'write' | 'external'
@@ -883,6 +883,8 @@ export type BotanicAgentSkill = {
   version?: number
   contentHash?: string
   capabilities?: string[]
+  reviewSubmittedBy?: string
+  reviewSubmittedAt?: number
   /**
    * Skill Manifest。`toolAllowlist` 让 `capabilities` 从**自称**变成可核对的：
    * 实际风险取「自称」与「白名单里工具的真实风险」两者较高者，少报能力不再能换来
@@ -893,7 +895,6 @@ export type BotanicAgentSkill = {
     toolAllowlist: string[]
     dependencies: Array<{ skillId: string; version?: number }>
   }
-  /** 只在真的批准过时出现；缺省即「尚未批准」，不再默认成已批准。 */
   governance?: 'project-approved' | 'system'
   publishedBy?: string
   publishedAt?: number

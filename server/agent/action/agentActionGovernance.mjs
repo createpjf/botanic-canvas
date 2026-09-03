@@ -8,6 +8,7 @@ const permissions = Object.freeze({
   workflow_create: 'modify-workflow',
   skill_apply: 'modify-workflow',
   skill_create: 'modify-workflow',
+  skill_publish: 'modify-workflow', skill_deprecate: 'modify-workflow', skill_restore: 'modify-workflow',
   mcp_call: 'execute-external-tool',
   // 运维写工具（Epic 4）。权限与 botanicAgentOperationalTools 的暴露判定同源：
   // 那边决定模型看不看得到，这边决定服务端放不放行 —— 两处必须一致，否则会出现
