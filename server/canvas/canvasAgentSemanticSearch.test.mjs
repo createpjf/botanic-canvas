@@ -43,3 +43,15 @@ test('语义 Provider 失败时降级关键词检索并延续当前游标', asyn
   assert.deepEqual(result.nodes.map((node) => node.id), ['b'])
   assert.deepEqual(result.search, { requestedMode: 'semantic', effectiveMode: 'keyword', degraded: true, reason: 'SEMANTIC_PROVIDER_FAILED' })
 })
+
+test('语义游标对 keyword 排序无效时重置游标重来，不谎报已完整', async () => {
+  const fallbackDocument = { nodes: [
+    { id: 'a', type: 'text', position: { x: 0, y: 0 }, data: { label: '冬日 A', content: '雪景' } },
+    { id: 'b', type: 'text', position: { x: 1, y: 0 }, data: { label: '冬日 B', content: '雪景' } },
+  ], edges: [] }
+  // afterId 'zz' 是语义排序里的游标，keyword 结果集中不存在。
+  const result = await queryCanvasWithSemanticSearch(fallbackDocument, { mode: 'semantic', query: '冬日', limit: 1, afterId: 'zz' }, { ...config, model: 'offline-model' }, async () => { throw new Error('offline') })
+  assert.equal(result.nodes.length, 1, '重置后返回 keyword 第一页，而不是空终页')
+  assert.equal(result.search.cursorReset, true)
+  assert.equal(result.search.degraded, true)
+})

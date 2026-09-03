@@ -24,10 +24,11 @@ const approvalRequired = new Set([
 ])
 // 这些动作有稳定自有身份且重放无新增副作用；其余（MCP、创建 Skill、
 // 发布 Workflow、提交/重试计费任务）出现未知结果时一律停下，不自动再执行。
+// skill_publish/deprecate/restore 不在此列：生命周期迁移写成功后即不幂等
+// （published 不能再 publish），重放会把已生效的变更误报为失败。
 const safelyReplayableAgentActions = new Set([
   'workflow_create', 'skill_apply', 'agent_run_cancel', 'artifact_promote',
   'review_decide', 'review_retry', 'workflow_run_retry_failed',
-  'skill_publish', 'skill_deprecate', 'skill_restore',
 ])
 // 这三条路径在存量客户端中本来就不属于 Message Proposal：
 // Run 确认的工作流/生成提交，以及 Skill Registry 直接创建。

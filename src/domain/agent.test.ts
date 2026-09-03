@@ -99,6 +99,16 @@ test('Agent 回执采用服务端权威位置并保留本地选择态', () => {
   assert.equal(merged.nodes[0].selected, true)
 })
 
+test('Agent 回执节点省略 frameId 时本地同步解组', () => {
+  const current = { id: 'p', name: 'P', nodes: [{ id: 'n', type: 'text', position: { x: 1, y: 2 }, selected: false, data: { kind: 'text', label: '旧', content: '旧', frameId: 'frame-1' } }], edges: [], viewport: { x: 0, y: 0, zoom: 1 }, assets: [], assetGroups: [], templates: [], history: [], deliveries: [], generationJobs: [], batchVariationRuns: [], agentSessions: [], agentMemory: [], agentRuns: [], updatedAt: 1 } as any
+  // 服务端解组 delete data.frameId：patch 节点是保存后的完整权威节点，省略即删除。
+  const ungrouped = mergeBotanicAgentCanvasPatch(current, { nodes: [{ id: 'n', type: 'text', position: { x: 1, y: 2 }, data: { kind: 'text', label: '旧', content: '旧' } }], edges: [], updatedAt: 2, baseRevision: 1, revision: 2, baseGraphRevision: 1, graphRevision: 2 })
+  assert.equal('frameId' in (ungrouped.nodes[0].data as Record<string, unknown>), false)
+  // 携带 frameId 时照常保留。
+  const regrouped = mergeBotanicAgentCanvasPatch(current, { nodes: [{ id: 'n', type: 'text', position: { x: 1, y: 2 }, data: { kind: 'text', label: '旧', content: '旧', frameId: 'frame-2' } }], edges: [], updatedAt: 3, baseRevision: 2, revision: 3, baseGraphRevision: 2, graphRevision: 3 })
+  assert.equal((regrouped.nodes[0].data as Record<string, unknown>).frameId, 'frame-2')
+})
+
 const rootRecipe: GenerationRecipe = {
   primaryReferenceNodeId: 'asset-product',
   references: [

@@ -172,13 +172,11 @@ export function mergeBotanicAgentCanvasPatch(
       continue
     }
     const current = nodes[index]
-    nodes[index] = {
-      ...current,
-      ...incoming,
-      position: positionNodeIds.has(incoming.id) ? incoming.position : current.position,
-      selected: current.selected,
-      data: { ...current.data, ...incoming.data },
-    } as CanvasNode
+    // patch 节点是服务端保存后的完整权威节点，但 spread 无法表达「字段被删除」：
+    // Frame 解组在服务端 delete data.frameId，省略即解除本地编组。
+    const mergedData: Record<string, unknown> = { ...current.data, ...incoming.data }
+    if (incoming.data && !('frameId' in incoming.data)) delete mergedData.frameId
+    nodes[index] = { ...current, ...incoming, position: positionNodeIds.has(incoming.id) ? incoming.position : current.position, selected: current.selected, data: mergedData } as CanvasNode
   }
 
   const nodeIds = new Set(nodes.map((node) => node.id))

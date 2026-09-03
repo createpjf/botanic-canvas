@@ -37,7 +37,12 @@ function fallback(document, raw, reason) {
     return { ...queryCanvasForAgent(document, { ...raw, mode: 'keyword', edgeAfterId: undefined }), search }
   } catch (error) {
     if (!(error instanceof CanvasAgentQueryError) || error.code !== 'CANVAS_QUERY_CURSOR_INVALID' || !raw.afterId) throw error
-    return { nodes: [], edges: [], page: { returned: 0, hasMore: false, edgesTruncated: false }, search }
+    // 语义游标对 keyword 排序无效。空终页会谎报「已完整」而静默截断剩余结果；
+    // 显式重置游标、从 keyword 第一页重来，并在元数据里声明重置。
+    return {
+      ...queryCanvasForAgent(document, { ...raw, mode: 'keyword', afterId: undefined, edgeAfterId: undefined }),
+      search: { ...search, cursorReset: true },
+    }
   }
 }
 
