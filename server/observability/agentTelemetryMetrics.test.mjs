@@ -35,6 +35,11 @@ test('语义事件旁路成低基数指标:标识字段被丢弃,duration/genera
       event: 'botanic.agent.harness.lifecycle', kind: 'preview', outcome: 'preview_cancelled',
       writeCount: 3, maxCharCount: 800, nonEmptyCount: 1,
     })
+    recordAgentSemanticMetric({
+      event: 'botanic.agent.canvas.lifecycle', kind: 'proposal', outcome: 'completed', mode: 'nodes', completeness: 'truncated',
+      returnedCount: 4, operationCount: 3, changeCount: 5, artifactCount: 1,
+      projectId: 'project-secret', prompt: 'secret prompt',
+    })
     const counter = records.find((entry) => entry.instrument === 'counter')
     assert.equal(counter.attributes.kind, 'cancel')
     assert.equal(counter.attributes.outcome, 'cancel_observed')
@@ -47,6 +52,10 @@ test('语义事件旁路成低基数指标:标识字段被丢弃,duration/genera
     assert.ok(records.some((entry) => entry.instrument === 'botanic.agent.preview.write_count' && entry.value === 3))
     assert.ok(records.some((entry) => entry.instrument === 'botanic.agent.preview.max_char_count' && entry.value === 800))
     assert.ok(records.some((entry) => entry.instrument === 'botanic.agent.preview.nonempty' && entry.value === 1))
+    assert.ok(records.some((entry) => entry.instrument === 'botanic.agent.canvas.returned_count' && entry.value === 4))
+    assert.ok(records.some((entry) => entry.instrument === 'botanic.agent.canvas.operation_count' && entry.value === 3))
+    assert.ok(records.some((entry) => entry.instrument === 'botanic.agent.canvas.change_count' && entry.value === 5))
+    assert.ok(records.some((entry) => entry.instrument === 'botanic.agent.canvas.artifact_count' && entry.value === 1))
   } finally {
     resetAgentTelemetryMetrics()
   }

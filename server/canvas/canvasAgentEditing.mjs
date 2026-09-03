@@ -3,6 +3,7 @@
 import { AgentToolRuntimeError } from '../agent/tools/agentToolRuntime.mjs'
 import { applyCanvasActionSet, normalizeCanvasActionSet } from './canvasAgentActionSet.mjs'
 import { resolveCanvasAgentArtifacts } from './canvasAgentArtifactProjection.mjs'
+import { AGENT_SEMANTIC_EVENT_NAMES, writeAgentSemanticEvent } from '../observability/agentSemanticEvent.mjs'
 import {
   applyBotanicAgentCanvasNodeDeletion,
   applyBotanicAgentCanvasTextUpdate,
@@ -96,21 +97,37 @@ export function createCanvasAgentEditExecutors({ productStore, publishProjectUpd
   })
   return {
     executeCanvasActionSet: async (input) => {
+      const startedAt = Date.now()
       const normalized = normalizeCanvasActionSet(input)
       const artifactIds = [...new Set(normalized.operations.filter((item) => item.kind === 'project_artifact').map((item) => item.artifactId))]
-      const artifacts = artifactIds.length ? await resolveCanvasAgentArtifacts(productStore, userId, projectId, artifactIds) : new Map()
-      const { saved, edited, baseRevision, revision, baseGraphRevision, graphRevision } = await editDocument((document) => (
-        applyCanvasActionSet(document, normalized, models, Date.now(), artifacts)
-      ))
-      return {
-        message: `已原子执行 ${edited.actionSet.operations.length} 项画布操作。`,
-        canvasNodeIds: [...edited.createdNodeIds, ...edited.updatedNodeIds],
-        canvasRemovedNodeIds: edited.removedNodeIds,
-        canvasPatch: {
-          nodes: saved.document.nodes.filter((node) => [...edited.createdNodeIds, ...edited.updatedNodeIds].includes(node.id)),
-          edges: saved.document.edges.filter((edge) => edited.createdEdgeIds.includes(edge.id)),
-          updatedAt: saved.document.updatedAt, baseRevision, revision, baseGraphRevision, graphRevision,
-        },
+      try {
+        const artifacts = artifactIds.length ? await resolveCanvasAgentArtifacts(productStore, userId, projectId, artifactIds) : new Map()
+        const { saved, edited, baseRevision, revision, baseGraphRevision, graphRevision } = await editDocument((document) => (
+          applyCanvasActionSet(document, normalized, models, Date.now(), artifacts)
+        ))
+        writeAgentSemanticEvent(AGENT_SEMANTIC_EVENT_NAMES.CANVAS_LIFECYCLE, {
+          kind: 'execution', outcome: 'completed', durationMs: Date.now() - startedAt,
+          operationCount: normalized.operations.length, artifactCount: artifactIds.length,
+          changeCount: edited.createdNodeIds.length + edited.updatedNodeIds.length + edited.removedNodeIds.length + edited.createdEdgeIds.length,
+        })
+        return {
+          message: `已原子执行 ${edited.actionSet.operations.length} 项画布操作。`,
+          canvasNodeIds: [...edited.createdNodeIds, ...edited.updatedNodeIds],
+          canvasRemovedNodeIds: edited.removedNodeIds,
+          canvasPatch: {
+            nodes: saved.document.nodes.filter((node) => [...edited.createdNodeIds, ...edited.updatedNodeIds].includes(node.id)),
+            edges: saved.document.edges.filter((edge) => edited.createdEdgeIds.includes(edge.id)),
+            updatedAt: saved.document.updatedAt, baseRevision, revision, baseGraphRevision, graphRevision,
+          },
+        }
+      } catch (caught) {
+        const code = /** @type {any} */ (caught)?.code
+        writeAgentSemanticEvent(AGENT_SEMANTIC_EVENT_NAMES.CANVAS_LIFECYCLE, {
+          kind: 'execution', outcome: code === 'CANVAS_EDIT_CONFLICT' ? 'conflict' : 'failed',
+          reason: code === 'CANVAS_EDIT_CONFLICT' ? 'CANVAS_EDIT_CONFLICT' : 'CANVAS_EXECUTION_FAILED',
+          durationMs: Date.now() - startedAt, operationCount: normalized.operations.length, artifactCount: artifactIds.length,
+        })
+        throw caught
       }
     },
     updateCanvasText: async ({ nodeId, content, label }) => {

@@ -14,6 +14,7 @@ import {
   agentActionReconciliationStoreError,
 } from '../agent/action/agentActionReconciliation.mjs'
 import { requireProjectPermission } from '../auth/projectAuthorization.mjs'
+import { AGENT_SEMANTIC_EVENT_NAMES, writeAgentSemanticEvent } from '../observability/agentSemanticEvent.mjs'
 
 // 需要短期审批 Token 的行动：会修改权威画布、花钱或触达外部系统。运维写工具里
 // 重试分支与重试工作流失败项都会真的调用 Provider，因此同样进这个集合。
@@ -130,11 +131,16 @@ export function createAgentActionRouteHandler({
       const actionName = text(body?.name, '工具名称', 80)
       const toolCallId = text(body?.toolCallId, '工具调用标识', 160)
       if (!approvalRequired.has(actionName)) return error(response, 400, 'ACTION_APPROVAL_NOT_REQUIRED', '该行动不需要审批凭据。')
-      await requireProjectPermission(productStore, user.id, projectId, agentToolPermission(actionName))
-      await requireActionProposal({ user, projectId, actionName, toolCallId, argumentsValue: body?.arguments, body })
-      if (!config.agentActionApprovalSecret) return error(response, 503, 'ACTION_APPROVAL_UNAVAILABLE', '当前行动审批服务尚未配置，请稍后重试。')
-      return json(response, 200, {
-        approval: createActionApprovalToken({
+      try {
+        await requireProjectPermission(productStore, user.id, projectId, agentToolPermission(actionName))
+        await requireActionProposal({ user, projectId, actionName, toolCallId, argumentsValue: body?.arguments, body })
+        if (!config.agentActionApprovalSecret) {
+          if (actionName === 'canvas_action_set') writeAgentSemanticEvent(AGENT_SEMANTIC_EVENT_NAMES.CANVAS_LIFECYCLE, {
+            kind: 'approval', outcome: 'failed', reason: 'CANVAS_APPROVAL_UNAVAILABLE',
+          })
+          return error(response, 503, 'ACTION_APPROVAL_UNAVAILABLE', '当前行动审批服务尚未配置，请稍后重试。')
+        }
+        const approval = createActionApprovalToken({
           secret: config.agentActionApprovalSecret,
           userId: user.id,
           projectId,
@@ -142,8 +148,17 @@ export function createAgentActionRouteHandler({
           toolCallId,
           argumentsValue: body?.arguments,
           idempotencyKey,
-        }),
-      })
+        })
+        if (actionName === 'canvas_action_set') writeAgentSemanticEvent(AGENT_SEMANTIC_EVENT_NAMES.CANVAS_LIFECYCLE, {
+          kind: 'approval', outcome: 'completed',
+        })
+        return json(response, 200, { approval })
+      } catch (caught) {
+        if (actionName === 'canvas_action_set') writeAgentSemanticEvent(AGENT_SEMANTIC_EVENT_NAMES.CANVAS_LIFECYCLE, {
+          kind: 'approval', outcome: 'rejected', reason: 'CANVAS_APPROVAL_REJECTED',
+        })
+        throw caught
+      }
     }
 
     if (url.pathname === '/api/agent-actions') {
@@ -185,15 +200,22 @@ export function createAgentActionRouteHandler({
         )
       }
       if (approvalRequired.has(actionName)) {
-        assertFreshActionApproval(body, {
-          secret: config.agentActionApprovalSecret,
-          userId: user.id,
-          projectId,
-          actionName,
-          toolCallId,
-          argumentsValue: executionArguments,
-          idempotencyKey,
-        })
+        try {
+          assertFreshActionApproval(body, {
+            secret: config.agentActionApprovalSecret,
+            userId: user.id,
+            projectId,
+            actionName,
+            toolCallId,
+            argumentsValue: executionArguments,
+            idempotencyKey,
+          })
+        } catch (caught) {
+          if (actionName === 'canvas_action_set') writeAgentSemanticEvent(AGENT_SEMANTIC_EVENT_NAMES.CANVAS_LIFECYCLE, {
+            kind: 'approval', outcome: 'rejected', reason: 'CANVAS_APPROVAL_REJECTED',
+          })
+          throw caught
+        }
       }
       const receiptId = attemptIdentity?.receiptId
         ?? `agent_action_${generationJobIdForIdempotency(user.id, `${projectId}:${idempotencyKey}`).slice(4)}`

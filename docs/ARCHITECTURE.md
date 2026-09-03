@@ -272,6 +272,8 @@ Handler 前剥离 carrier。`baggage` 首版不注册、不传播，外部 Provi
 `executionTelemetry.mjs` 是 Span 的唯一入口；属性先经过固定 allowlist，错误只记录类型码，不记录异常正文。
 OTLP exporter 故障必须 fail-open，不能改变 Turn、Tool、Queue 或 Provider 的状态。
 
+Canvas Agent 的 query / proposal / approval / execution 生命周期复用同一安全 semantic event → OTel metrics 管线；只记录固定 kind/outcome/mode/completeness、规范化 reason 与有界计数/耗时，project/user/node ID、Prompt、URL 和原始错误均不进入 metrics 标签。查询与提案在 `agentOperationalReaders.mjs` 记录，审批在 `agentActionRoutes.mjs` 记录，原子执行与冲突在 `canvasAgentEditing.mjs` 记录；任何日志或 exporter 故障继续 fail-open。运维告警优先观察审批拒绝率、Action Set 冲突/失败率、查询截断率和执行延迟。
+
 `agentSemanticEvent.mjs` 定义版本化安全 schema，Context rollout/shadow/compaction/overflow/usage anchor
 与 Run lifecycle 只记录受控身份、计数、耗时、cohort 和错误码。Legacy `agent.run.*` 在迁移期双写，旧消费者
 不变；运维指标由 `agentOperationalMetrics.mjs` 聚合，零样本继续为 `null`。OTel trace ID 与既有
