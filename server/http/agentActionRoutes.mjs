@@ -15,10 +15,10 @@ import {
 } from '../agent/action/agentActionReconciliation.mjs'
 import { requireProjectPermission } from '../auth/projectAuthorization.mjs'
 
-// 需要短期审批 Token 的行动：会花钱或触达外部系统的那些。运维写工具里
+// 需要短期审批 Token 的行动：会修改权威画布、花钱或触达外部系统。运维写工具里
 // 重试分支与重试工作流失败项都会真的调用 Provider，因此同样进这个集合。
 const approvalRequired = new Set([
-  'generation_submit', 'mcp_call', 'agent_branch_retry', 'review_retry', 'workflow_run_retry_failed',
+  'canvas_action_set', 'generation_submit', 'mcp_call', 'agent_branch_retry', 'review_retry', 'workflow_run_retry_failed',
 ])
 // 这些动作有稳定自有身份且重放无新增副作用；其余（MCP、创建 Skill、
 // 发布 Workflow、提交/重试计费任务）出现未知结果时一律停下，不自动再执行。

@@ -51,6 +51,7 @@ const reviewTask = {
 
 function tools(overrides = {}) {
   const definitions = createBotanicAgentOperationalToolDefinitions({
+    queryCanvas: async () => ({ nodes: [], edges: [], page: { returned: 0, hasMore: false, edgesTruncated: false } }),
     readRun: async () => run,
     readJob: async () => job,
     searchArtifacts: async () => [artifact],
@@ -68,7 +69,7 @@ function tools(overrides = {}) {
   return new Map(definitions.map((definition) => [definition.name, definition]))
 }
 
-test('六个只读运维工具都声明 read 风险', () => {
+test('七个只读运维工具都声明 read 风险', () => {
   const registry = tools()
   assert.deepEqual([...registry.keys()], [...OPERATIONAL_READ_TOOLS])
   assert.ok([...registry.values()].every((tool) => tool.risk === 'read'))
@@ -203,6 +204,7 @@ test('工具来源标签只认已声明的运维工具', () => {
 })
 
 const executors = {
+  executeCanvasActionSet: async (args) => ({ executed: args }),
   retryBranch: async (args) => ({ retried: args }),
   cancelRun: async (args) => ({ cancelled: args }),
   promoteArtifact: async (args) => ({ promoted: args }),
@@ -212,7 +214,7 @@ const executors = {
   retryWorkflowFailed: async (args) => ({ retried: args }),
 }
 
-test('Viewer 看不到任何写工具，Editor 与 Owner 按权限看到全部七个', () => {
+test('Viewer 看不到任何写工具，Editor 与 Owner 按权限看到全部八个', () => {
   // 不是「点了会失败」，而是根本看不到：模型看不到的工具不会被它拿去向用户承诺。
   assert.deepEqual(operationalActionToolsForRole('viewer'), [])
   assert.deepEqual(createBotanicAgentOperationalActionDefinitions({ role: 'viewer', ...executors }), [])
@@ -223,7 +225,7 @@ test('Viewer 看不到任何写工具，Editor 与 Owner 按权限看到全部�
 
 test('写工具全部需要确认，并按真实代价声明风险', () => {
   const definitions = createBotanicAgentOperationalActionDefinitions({ role: 'editor', ...executors })
-  assert.equal(definitions.length, 7)
+  assert.equal(definitions.length, 8)
   assert.ok(definitions.every((tool) => tool.requiresConfirmation === true))
   const byName = new Map(definitions.map((tool) => [tool.name, tool]))
   // 会调用 Provider 的两个声明 costly，其余是 write。
@@ -231,6 +233,7 @@ test('写工具全部需要确认，并按真实代价声明风险', () => {
   assert.equal(byName.get('workflow_run_retry_failed').risk, 'costly')
   assert.equal(byName.get('review_retry').risk, 'costly')
   assert.equal(byName.get('agent_run_cancel').risk, 'write')
+  assert.equal(byName.get('canvas_action_set').risk, 'write')
   assert.equal(byName.get('review_decide').risk, 'write')
 })
 

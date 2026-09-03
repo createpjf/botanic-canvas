@@ -51,6 +51,7 @@ import { BotanicSelect } from '../../components/BotanicSelect'
 import { AgentClarificationCard, AgentPromptDiff } from './AgentWorkspaceParts'
 import { AgentMarkdownSources } from './AgentMarkdown'
 import { AgentPromptResponse } from './AgentPromptResponse'
+import { AgentCanvasActionPreview } from './AgentCanvasActionPreview'
 import { AgentMessageRichContent, AgentRichText } from './AgentMentionText'
 import { agentMessageNeedsCollapse, splitAgentMessageSources } from '../../domain/agentMarkdown'
 import type { BotanicAgentMentionCatalog } from '../../domain/agentMentions'
@@ -71,12 +72,10 @@ import type { ProductLocale } from '../../i18n/core'
 import type { BotanicAgentRunReview } from '../../domain/agentReviewContract'
 import { agentTimelineOrbState, agentTimelineStepToolName, timelineStepShowsWebSources, timelineWebSourceHref, type AgentTimelineState, type TimelineBlock, type TimelineStepKind, type TimelineWebSource } from '../../domain/agentTimeline'
 import { agentMcpServerBrandLogoSrc, agentMcpServerIdFromLabel, agentTimelineHasRenderableContent, agentToolAccordionElapsedLabel, agentToolIconKey, conversationTimelineStepTitle, presentAgentTimelineConversation, presentAgentToolAccordion, presentAgentToolAccordionFromCalls, type AgentToolAccordionGroup, type AgentToolAccordionRow, type AgentToolAccordionView } from '../../domain/agentToolAccordion'
-
 /** 单条任务消息内联展示的结果上限；更多结果去结果面板看，避免对话被结果流冲垮。 */
 const inlineRunResultLimit = 4
 const justFinishedRevealMs = 1200
 const copiedStatusMs = 1200
-
 function tryParseJsonValue(text: string): unknown {
   const trimmed = text.trim()
   if (!trimmed || (trimmed[0] !== '{' && trimmed[0] !== '[')) return undefined
@@ -1334,6 +1333,7 @@ export function AgentConversationMessage({
               // 已执行或已跳过的行动卡收成一行，只有仍需处理的卡片保持展开。
               const settled = action.status === 'succeeded' || action.status === 'dismissed'
               const body = <>
+                {action.toolName === 'canvas_action_set' && action.preview ? <AgentCanvasActionPreview preview={action.preview} locale={locale} /> : null}
                 <div className="agent-action-card__impact"><span>{t('输入', 'Input')}</span><b>{action.toolName === 'mcp_call' ? `${String(action.arguments.server)}.${String(action.arguments.tool)}` : t('新项目 Skill', 'New project Skill')}</b><span>{t('输出', 'Output')}</span><b>{action.toolName === 'mcp_call' ? t('文件 / 结果面板', 'Files / results panel') : t('可复用 Skill', 'Reusable Skill')}</b></div>
                 <details className="agent-action-card__details"><summary>{t('查看参数', 'View parameters')}</summary><pre>{JSON.stringify(action.arguments, null, 2)}</pre></details>
                 {action.error ? <small className="agent-action-card__error">{action.error}</small> : null}

@@ -1,13 +1,31 @@
 // @ts-check
 import { publicAgentRun } from '../agent/semantic/botanicAgentRun.mjs'
 import { publicAgentReviewTask } from '../agent/review/agentReviewTask.mjs'
+import { queryCanvasForAgent } from '../canvas/canvasAgentQuery.mjs'
+import { normalizeCanvasActionSet, prepareCanvasActionSetProposal } from '../canvas/canvasAgentActionSet.mjs'
+import { resolveCanvasAgentArtifacts } from '../canvas/canvasAgentArtifactProjection.mjs'
 
 /**
  * Agent 运维只读工具的单一数据源。API 首次执行与 Worker 恢复必须复用同一实现，
  * 否则断点恢复后可用工具会漂移；所有读取都重新校验项目归属且不返回受控媒体地址。
  */
-export function createAgentOperationalReaders({ productStore, userId, projectId, document }) {
+export function createAgentOperationalReaders({ productStore, userId, projectId, document, models = [] }) {
   return {
+    queryCanvas: async (query) => {
+      const project = await productStore.readProject(userId, projectId)
+      if (!project?.document) return undefined
+      return queryCanvasForAgent(project.document, query)
+    },
+    prepareCanvasActionSet: async (actionId, input) => {
+      const normalized = normalizeCanvasActionSet({ ...input, actionId })
+      const artifactIds = [...new Set(normalized.operations.filter((item) => item.kind === 'project_artifact').map((item) => item.artifactId))]
+      const [project, artifacts] = await Promise.all([
+        productStore.readProject(userId, projectId),
+        artifactIds.length ? resolveCanvasAgentArtifacts(productStore, userId, projectId, artifactIds) : new Map(),
+      ])
+      if (!project?.document) return undefined
+      return prepareCanvasActionSetProposal(project.document, normalized, models, actionId, artifacts)
+    },
     readRun: async (runId) => {
       const run = await productStore.readAgentRun(userId, runId)
       return run && run.projectId === projectId ? publicAgentRun(run) : undefined

@@ -581,6 +581,16 @@ test('Editor 不能越权执行外部工具，过期审批也不能绕过服务�
     ),
     (caught) => caught?.code === 'ACTION_APPROVAL_REQUIRED',
   )
+  requestBody.name = 'canvas_action_set'
+  requestBody.toolCallId = 'call-canvas-action-set-1'
+  requestBody.arguments = { operations: [{ kind: 'update_text', nodeId: 'text-1', content: '必须签名' }] }
+  await assert.rejects(
+    () => ownerHandler(
+      { method: 'POST', headers: { 'idempotency-key': 'agent-action-call-canvas-action-set-1-canvas_action_set' } }, {},
+      new URL('http://botanic.test/api/agent-actions'), {}, 'request-canvas-action-set',
+    ),
+    (caught) => caught?.code === 'ACTION_APPROVAL_REQUIRED',
+  )
 })
 
 test('Agent 阅读位置增量更新写入当前成员回执，不修改共享会话', async () => {
@@ -2802,13 +2812,13 @@ test('服务端权限表与工具暴露判定同源，不会出现看不到却�
   }
 })
 
-test('七个运维写工具现在全部有执行器，Editor 能拿到完整一套', async () => {
+test('八个运维写工具现在全部有执行器，Editor 能拿到完整一套', async () => {
   // agent_branch_retry 与 workflow_publish 此前因为逻辑埋在路由闭包里而不暴露；
   // 抽成共享服务后补齐，避免「声明了但永远调不到」。
   const { createBotanicAgentActionToolRegistry } = await import('../agent/tools/botanicAgentTools.mjs')
   const { OPERATIONAL_ACTION_TOOLS } = await import('../agent/tools/botanicAgentOperationalTools.mjs')
   const registry = createBotanicAgentActionToolRegistry({
-    role: 'editor',
+    role: 'editor', executeCanvasActionSet: async () => ({}),
     retryBranch: async () => ({}), cancelRun: async () => ({}), promoteArtifact: async () => ({}),
     decideReview: async () => ({}), retryReview: async () => ({}),
     publishWorkflow: async () => ({}), retryWorkflowFailed: async () => ({}),

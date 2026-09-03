@@ -28,7 +28,7 @@ import { readAgentTurnTimelineEvents } from './agentTurnTimelineEventReader'
 import { captureSentryMessage } from './sentry.ts'
 
 const agentActionsRequiringApproval = new Set([
-  'generation_submit', 'mcp_call', 'agent_branch_retry', 'review_retry', 'workflow_run_retry_failed',
+  'canvas_action_set', 'generation_submit', 'mcp_call', 'agent_branch_retry', 'review_retry', 'workflow_run_retry_failed',
 ])
 
 export type AgentRunCreationBranch = {

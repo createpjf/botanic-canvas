@@ -3,7 +3,7 @@ import { createAgentSubtask } from '../../agentSubtask.mjs'
 import { runAgentSubtaskFanout, subtaskFanoutSummary } from '../../agentSubtaskScheduler.mjs'
 import { projectAgentStructuredObject } from '../../agentStructuredContract.mjs'
 import { AgentToolRuntimeError, createAgentToolRegistry } from './agentToolRuntime.mjs'
-import { createBotanicAgentOperationalActionDefinitions } from './botanicAgentOperationalTools.mjs'
+import { createBotanicAgentOperationalActionDefinitions, createBotanicAgentOperationalToolDefinitions } from './botanicAgentOperationalTools.mjs'
 import { botanicCreativeBriefFieldIds } from '../semantic/botanicCreativeBrief.mjs'
 import { botanicAgentVariationClarificationFieldIds } from '../semantic/botanicAgentVariations.mjs'
 import { createBotanicAgentWebResearchTools } from './botanicAgentWebTools.mjs'
@@ -421,7 +421,7 @@ const SUBAGENT_RESEARCH_SCHEMA = Object.freeze({
   },
 })
 
-export function createBotanicAgentPlanningToolRegistry({ input, finalizePlan, finalizeClarification, onProposeAction, webResearch, subagentRunner }) {
+export function createBotanicAgentPlanningToolRegistry({ input, finalizePlan, finalizeClarification, onProposeAction, webResearch, subagentRunner, operations }) {
   if (!input || typeof finalizePlan !== 'function' || typeof finalizeClarification !== 'function') throw new TypeError('Agent 规划工具缺少可信上下文。')
   const availableSkills = resolveBotanicAgentAvailableSkills(input.projectSkills)
   const mountedSkillLabels = resolveBotanicAgentMountedSkills(input.mountedSkillIds, input.projectSkills)
@@ -439,6 +439,7 @@ export function createBotanicAgentPlanningToolRegistry({ input, finalizePlan, fi
   const propose = typeof onProposeAction === 'function' ? onProposeAction : () => {}
   const planningRegistryRef = { current: undefined }
   const tools = [
+    ...createBotanicAgentOperationalToolDefinitions(operations).filter((tool) => tool.name === 'canvas_query'),
     {
       name: 'canvas_read',
       label: '读取画布上下文',
@@ -446,12 +447,11 @@ export function createBotanicAgentPlanningToolRegistry({ input, finalizePlan, fi
       risk: 'read',
       parameters: { type: 'object', additionalProperties: false, properties: {} },
       validate: (raw) => object(raw, '画布读取'),
-      execute: async () => safeClone({
-        projectId: input.projectId,
-        selectedResult: input.selectedResult,
-        settings: input.settings,
-        references: input.references,
-      }),
+      execute: async () => {
+        const nodeIds = [...new Set([input.selectedResult?.nodeId, ...(input.contextSnapshot ?? []).map((item) => item?.nodeId)].filter(Boolean))]
+        const graph = nodeIds.length ? await operations?.queryCanvas?.({ nodeIds, limit: 50 }) : undefined
+        return safeClone({ projectId: input.projectId, selectedResult: input.selectedResult, settings: input.settings, references: input.references, ...(graph ? { graph } : {}) })
+      },
     },
     {
       name: 'asset_search',
@@ -607,12 +607,12 @@ export function createBotanicAgentPlanningToolRegistry({ input, finalizePlan, fi
     {
       name: 'canvas_edit_propose',
       label: '提议画布修改',
-      description: '提议一次需要用户确认的画布修改（update_text 改文字/重命名；update_generate_settings 调生成参数；delete_nodes 删节点），不在规划阶段执行。结果图片、任务绑定与系统连线永不可改。',
+      description: '提议需要用户确认的画布修改；优先用 action_set 把多项创建、更新、参考连接和删除合成一次原子行动。结果图片、任务绑定与系统连线永不可改。',
       risk: 'read',
       parameters: {
         type: 'object', additionalProperties: false,
         properties: {
-          operation: { type: 'string', enum: ['update_text', 'update_generate_settings', 'delete_nodes'] },
+          operation: { type: 'string', enum: ['action_set', 'update_text', 'update_generate_settings', 'delete_nodes'] },
           arguments: { type: 'object' },
           reason: { type: 'string', maxLength: 240 },
         },
@@ -620,7 +620,7 @@ export function createBotanicAgentPlanningToolRegistry({ input, finalizePlan, fi
       },
       validate: (raw) => {
         const value = object(raw, '画布修改提议')
-        const toolName = {
+        const toolName = { action_set: 'canvas_action_set',
           update_text: 'canvas_update_text',
           update_generate_settings: 'canvas_update_generate_settings',
           delete_nodes: 'canvas_delete_nodes',
@@ -633,16 +633,15 @@ export function createBotanicAgentPlanningToolRegistry({ input, finalizePlan, fi
         }
       },
       execute: async ({ toolName, arguments: argumentsValue, reason }, context) => {
-        const labels = {
-          canvas_update_text: '修改画布文字',
-          canvas_update_generate_settings: '调整生成参数',
-          canvas_delete_nodes: '删除画布节点',
-        }
+        const actionId = context?.toolCallId ?? `canvas-${toolName}`
+        const prepared = toolName === 'canvas_action_set' ? await operations?.prepareCanvasActionSet?.(actionId, argumentsValue) : undefined
+        if (toolName === 'canvas_action_set' && !prepared) throw new AgentToolRuntimeError('CANVAS_PREVIEW_UNAVAILABLE', '暂时无法预演画布修改，请重新查询后再试。', 503)
+        const labels = { canvas_action_set: '原子修改画布', canvas_update_text: '修改画布文字',
+          canvas_update_generate_settings: '调整生成参数', canvas_delete_nodes: '删除画布节点' }
         const proposal = {
-          id: context?.toolCallId ?? `canvas-${toolName}`,
-          kind: 'canvas', toolName, label: labels[toolName],
-          summary: reason, risk: 'write',
-          arguments: argumentsValue,
+          id: actionId, kind: 'canvas', toolName, label: labels[toolName],
+          summary: reason, risk: 'write', arguments: prepared?.arguments ?? argumentsValue,
+          ...(prepared ? { preview: prepared.preview, previewHash: prepared.previewHash } : {}),
           status: 'awaiting_confirmation',
         }
         propose(proposal)

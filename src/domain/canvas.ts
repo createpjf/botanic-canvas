@@ -239,6 +239,8 @@ export type GenerateNodeData = {
   prompt: string
   batchCount: number
   settings: GenerationSettings
+  /** Agent 明示的复用约束；prompt 不能隐式覆盖 preserve 项。 */
+  constraints?: Array<{ dimension: 'person' | 'garment' | 'product' | 'scene' | 'style' | 'pose' | 'composition' | 'lighting' | 'aspect_ratio' | 'copy_space'; mode: 'preserve' | 'change' }>
   /** 输入连线的展示与提交顺序；生成节点是唯一的配方拥有者。 */
   inputOrder?: string[]
   /** 当前生成节点中被锁定为主体的商品素材节点。 */

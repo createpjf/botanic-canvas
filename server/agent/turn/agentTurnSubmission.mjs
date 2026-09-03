@@ -357,7 +357,7 @@ export function createAgentTurnSubmission({
             productStore,
             userId,
             projectId: validatedInput.projectId,
-            document: project.document,
+            document: project.document, models: config?.modelOptions ?? [],
           }),
           resolveVisionMedia: mediaResolver,
           consumeWebResearchQuota: async () => {
