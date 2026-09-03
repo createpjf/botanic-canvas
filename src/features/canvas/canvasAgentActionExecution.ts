@@ -9,21 +9,40 @@ export function preserveCanvasAgentActionError(error: unknown, message: string):
   return new Error(message)
 }
 
+/** 本次回退路径创建的一次生成尝试：分支节点，以及为它一并恢复的素材节点。 */
+export type UnstartedGenerateBranch = { nodeId: string; companionNodeIds?: string[] }
+
 /**
  * 客户端回退执行失败时清理本次创建、且从未进入提交流程的分支节点：
  * status/jobId/submissionKey 只在 createTaskFlow 提交时写入，任一存在即已提交，
  * 留给恢复器。否则孤儿「新图 · 图像 01」空节点会永远留在画布上。
+ *
+ * `redo_from_root` 还会为缺失的参考补建素材节点：分支节点被清理时它们一起清理，
+ * 否则同样留下孤儿；画布上原有的素材不在 companion 列表里，不受影响。
  */
 export function removeUnstartedGenerateBranches(
-  nodeIds: string[],
+  branches: UnstartedGenerateBranch[],
   document: Pick<CanvasDocument, 'nodes'>,
   removeNodeFromCanvas: (nodeId: string) => void,
 ) {
-  for (const nodeId of nodeIds) {
-    const node = document.nodes.find((item) => item.id === nodeId && item.type === 'generate')
+  for (const branch of branches) {
+    const node = document.nodes.find((item) => item.id === branch.nodeId && item.type === 'generate')
     const data = node?.data as GenerateNodeData | undefined
-    if (data && !data.status && !data.jobId && !data.submissionKey) removeNodeFromCanvas(nodeId)
+    if (!data || data.status || data.jobId || data.submissionKey) continue
+    removeNodeFromCanvas(branch.nodeId)
+    for (const companionNodeId of branch.companionNodeIds ?? []) {
+      if (document.nodes.some((item) => item.id === companionNodeId)) removeNodeFromCanvas(companionNodeId)
+    }
   }
+}
+
+/** 分支创建前后的节点集差集即这次一并补建的素材节点。 */
+export function trackCreatedGenerateBranch(
+  nodeId: string,
+  beforeNodeIds: Set<string>,
+  nodes: readonly { id: string }[],
+): UnstartedGenerateBranch {
+  return { nodeId, companionNodeIds: nodes.map((node) => node.id).filter((id) => id !== nodeId && !beforeNodeIds.has(id)) }
 }
 
 /**

@@ -38,7 +38,7 @@ import { useCanvasStore } from '../../store/canvasStore'
 import { recordSentryBreadcrumb } from '../../lib/sentry'
 import { useAgentSessionMessages } from '../agent/useAgentSessionMessages'
 import type { AgentArtifactIndexState, AgentContextItem, AgentDockTarget } from '../agent/agentWorkspace.types'
-import { projectAcceptedAgentRunBestEffort, preserveCanvasAgentActionError, removeUnstartedGenerateBranches } from './canvasAgentActionExecution'
+import { projectAcceptedAgentRunBestEffort, preserveCanvasAgentActionError, removeUnstartedGenerateBranches, trackCreatedGenerateBranch, type UnstartedGenerateBranch } from './canvasAgentActionExecution'
 import { canvasSystemLabel } from './canvasI18n'
 
 const canvasAgentExecutionCopy = {
@@ -103,9 +103,9 @@ function canvasAgentDockTarget(
 }
 
 /** 清理孤儿分支节点（判定在 canvasAgentActionExecution，注入实时 store）。 */
-function cleanupUnstartedBranches(nodeIds: string[]) {
+function cleanupUnstartedBranches(branches: UnstartedGenerateBranch[]) {
   const { document, removeNodeFromCanvas } = useCanvasStore.getState()
-  removeUnstartedGenerateBranches(nodeIds, document, removeNodeFromCanvas)
+  removeUnstartedGenerateBranches(branches, document, removeNodeFromCanvas)
 }
 
 export function useCanvasAgentExecutionBridge({
@@ -690,7 +690,7 @@ export function useCanvasAgentExecutionBridge({
     let started = false
     // 本次回退路径新建的分支节点。执行失败时清理其中从未进入提交流程的
     // （无 status/jobId/submissionKey），否则孤儿「新图 · 图像 01」空节点会永远留在画布上。
-    const createdBranchIds: string[] = []
+    const createdBranches: UnstartedGenerateBranch[] = []
     try {
       if (plan.output.mode === 'batch_by_asset' && plan.assetGroupId) {
         started = await runBatchVariation({
@@ -709,28 +709,30 @@ export function useCanvasAgentExecutionBridge({
           })
           return nodeId ? [nodeId] : []
         })
-        createdBranchIds.push(...nodeIds)
+        createdBranches.push(...nodeIds.map((nodeId) => ({ nodeId })))
         const results = await Promise.all(nodeIds.map((nodeId) => runGraphGeneration(nodeId)))
         started = results.some(Boolean)
       } else {
+        // redo_from_root 还会为缺失的原始参考补建素材节点，清理时不能把它们留成孤儿。
+        const beforeNodeIds = new Set(useCanvasStore.getState().document.nodes.map((node) => node.id))
         const branchId = plan.intent === 'redo_from_root'
           ? createGenerateFromResultRecipe(selectedResultNodeId)
           : createGenerateBranchFromResult(selectedResultNodeId, {
               prompt: plan.prompt, batchCount: plan.output.count, settings: plan.settings, refinementMode: 'faithful',
             })
         if (branchId) {
-          createdBranchIds.push(branchId)
+          createdBranches.push(trackCreatedGenerateBranch(branchId, beforeNodeIds, useCanvasStore.getState().document.nodes))
           if (plan.intent === 'redo_from_root') updateGenerateNode(branchId, { prompt: plan.prompt, settings: plan.settings })
           started = await runGraphGeneration(branchId)
         }
       }
     } catch (caught) {
       // 取消/deadline 等异常路径同样不能留孤儿节点；清理后原样上抛，Run 语义不变。
-      cleanupUnstartedBranches(createdBranchIds)
+      cleanupUnstartedBranches(createdBranches)
       throw caught
     }
     if (!started) {
-      cleanupUnstartedBranches(createdBranchIds)
+      cleanupUnstartedBranches(createdBranches)
       updateAgentRunStatus(runId, 'failed', copy.generationNotStarted)
       return { started: false, runId }
     }

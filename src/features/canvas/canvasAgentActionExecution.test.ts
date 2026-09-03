@@ -62,13 +62,23 @@ test('回退执行失败只清理本次创建且未进入提交流程的分支�
     generateNode('branch-running', { status: 'uploading' }),
     generateNode('branch-with-job', { jobId: 'job-1' }),
     { id: 'result-1', type: 'result' as const, position: { x: 0, y: 0 }, data: { kind: 'result', image: '/image.png' } },
+    { id: 'asset-restored', type: 'asset' as const, position: { x: 0, y: 0 }, data: { kind: 'asset', assetId: 'a-1', name: '参考 01' } },
+    { id: 'asset-existing', type: 'asset' as const, position: { x: 0, y: 0 }, data: { kind: 'asset', assetId: 'a-2', name: '参考 02' } },
   ] }
   const removed: string[] = []
   removeUnstartedGenerateBranches(
-    ['branch-clean', 'branch-submitted', 'branch-running', 'branch-with-job', 'result-1', 'missing-node'],
+    [
+      { nodeId: 'branch-clean', companionNodeIds: ['asset-restored', 'missing-companion'] },
+      { nodeId: 'branch-submitted', companionNodeIds: ['asset-existing'] },
+      { nodeId: 'branch-running' },
+      { nodeId: 'branch-with-job' },
+      { nodeId: 'result-1' },
+      { nodeId: 'missing-node' },
+    ],
     document as never,
     (nodeId) => removed.push(nodeId),
   )
-  // 只删干净的孤儿节点；已提交/运行中/带任务的留给恢复器，非 generate 节点与不存在的 id 忽略。
-  assert.deepEqual(removed, ['branch-clean'])
+  // 只删干净的孤儿节点及它本次补建的素材；已提交/运行中/带任务的连同素材留给恢复器，
+  // 非 generate 节点与不存在的 id 忽略。
+  assert.deepEqual(removed, ['branch-clean', 'asset-restored'])
 })
