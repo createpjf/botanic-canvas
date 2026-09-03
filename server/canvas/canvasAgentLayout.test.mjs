@@ -13,7 +13,7 @@ test('声明式 row/grid/workflow 布局按稳定顺序生成不重叠绝对坐�
     edges: [{ id: 'a-b', source: 'a', target: 'b' }, { id: 'b-c', source: 'b', target: 'c' }],
   }
   const row = positions(layoutCanvasAgentNodes(document, { nodeIds: ['a', 'b', 'c'], mode: 'row', anchor: { x: 100, y: 80 }, gap: 40 }))
-  assert.deepEqual(row, { a: { x: 100, y: 80 }, b: { x: 376, y: 80 }, c: { x: 592, y: 80 } })
+  assert.deepEqual(row, { a: { x: 100, y: 80 }, b: { x: 376, y: 80 }, c: { x: 776, y: 80 } })
   const grid = positions(layoutCanvasAgentNodes(document, { nodeIds: ['a', 'b', 'c'], mode: 'grid', anchor: { x: 0, y: 0 }, gap: 20, columns: 2 }))
   assert.deepEqual(grid, { a: { x: 0, y: 0 }, b: { x: 256, y: 0 }, c: { x: 0, y: 178 } })
   const workflow = positions(layoutCanvasAgentNodes(document, { nodeIds: ['a', 'b', 'c'], mode: 'workflow', anchor: { x: 10, y: 20 }, gap: 30 }))

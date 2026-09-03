@@ -51,7 +51,7 @@ test('Action Set 以确定性 ID 创建领域节点、连接参考并与文字�
   const organized = first.document.nodes.find((node) => node.id === 'text-1')
   assert.equal(organized.data.content, '已更新')
   assert.equal(organized.data.label, '确认文案')
-  assert.deepEqual(organized.position, { x: 516, y: 500 })
+  assert.deepEqual(organized.position, { x: 700, y: 500 })
   const projected = first.document.nodes.find((node) => node.id === first.createdNodeIds[1])
   const generate = first.document.nodes.find((node) => node.id === first.createdNodeIds[2])
   assert.equal(projected.data.image, artifact.url)

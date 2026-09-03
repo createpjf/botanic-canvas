@@ -50,7 +50,8 @@ function nodeStatus(node) {
 function normalizedKeyword(value) { return String(value ?? '').normalize('NFKC').toLocaleLowerCase('zh-CN').replace(/\s+/gu, ' ').trim() }
 function keywordDocument(node) {
   const label = normalizedKeyword(nodeLabel(node)).slice(0, 160)
-  const content = ['text', 'prompt'].includes(node.type) ? normalizedKeyword(node.data?.content).slice(0, MAX_TEXT_LENGTH) : ''
+  const content = node.type === 'text' ? normalizedKeyword(node.data?.content).slice(0, MAX_TEXT_LENGTH)
+    : node.type === 'prompt' ? normalizedKeyword(node.data?.prompt).slice(0, MAX_TEXT_LENGTH) : ''
   const metadata = normalizedKeyword([node.id, node.type, nodeStatus(node), node.type === 'frame' ? node.data?.stage : ''].filter(Boolean).join(' '))
   return { label, content, metadata, combined: [label, content, metadata].filter(Boolean).join(' ') }
 }
@@ -111,8 +112,8 @@ function publicNode(node) {
     ...(nodeStatus(node) ? { status: nodeStatus(node) } : {}),
     ...(typeof data.frameId === 'string' ? { frameId: data.frameId } : {}),
     ...(node.type === 'frame' ? { stage: data.stage, bounds: { x: Number(node.position?.x) || 0, y: Number(node.position?.y) || 0, width: Number(data.width) || 0, height: Number(data.height) || 0 } } : {}),
-    ...(['text', 'prompt'].includes(node.type) && typeof data.content === 'string'
-      ? { content: data.content.slice(0, MAX_TEXT_LENGTH) } : {}),
+    ...(node.type === 'text' && typeof data.content === 'string' ? { content: data.content.slice(0, MAX_TEXT_LENGTH) } : {}),
+    ...(node.type === 'prompt' && typeof data.prompt === 'string' ? { content: data.prompt.slice(0, MAX_TEXT_LENGTH) } : {}),
     ...(node.type === 'generate' ? {
       settings: {
         model: data.settings?.model,

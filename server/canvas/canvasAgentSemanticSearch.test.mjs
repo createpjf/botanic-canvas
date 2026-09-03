@@ -25,15 +25,21 @@ test('混合检索只发送安全文本并融合关键词与语义稳定排序',
   const beyondFirstPage = await queryCanvasWithSemanticSearch(large, { mode: 'semantic', query: '目标', limit: 1 }, config, async (_url, init) => {
     const input = JSON.parse(init.body).input
     batchSizes.push(input.length)
-    return { ok: true, json: async () => ({ data: input.map((_, index) => ({ embedding: index === 0 || (input.length === 3 && index === 2) ? [1, 0] : [0, 1] })) }) }
+    return { ok: true, json: async () => ({ data: input.map((text) => ({ embedding: text === '目标' || text.includes('节点 51') ? [1, 0] : [0, 1] })) }) }
   })
-  assert.deepEqual(batchSizes, [51, 3])
+  assert.deepEqual(batchSizes, [50, 3])
   assert.equal(beyondFirstPage.nodes[0].id, 'n-51')
   assert.equal(beyondFirstPage.page.searchTruncated, false)
+  const cached = await queryCanvasWithSemanticSearch(large, { mode: 'semantic', query: '目标', limit: 1 }, config, async () => { throw new Error('unchanged candidates must not be re-embedded') })
+  assert.equal(cached.nodes[0].id, 'n-51')
 })
 
-test('语义 Provider 失败时确定性降级关键词检索', async () => {
-  const result = await queryCanvasWithSemanticSearch(document, { mode: 'semantic', query: '冬日' }, config, async () => { throw new Error('offline') })
+test('语义 Provider 失败时降级关键词检索并延续当前游标', async () => {
+  const fallbackDocument = { nodes: [
+    { id: 'a', type: 'text', position: { x: 0, y: 0 }, data: { label: '冬日 A', content: '雪景' } },
+    { id: 'b', type: 'text', position: { x: 1, y: 0 }, data: { label: '冬日 B', content: '雪景' } },
+  ], edges: [] }
+  const result = await queryCanvasWithSemanticSearch(fallbackDocument, { mode: 'semantic', query: '冬日', limit: 1, afterId: 'a' }, { ...config, model: 'offline-model' }, async () => { throw new Error('offline') })
   assert.deepEqual(result.nodes.map((node) => node.id), ['b'])
   assert.deepEqual(result.search, { requestedMode: 'semantic', effectiveMode: 'keyword', degraded: true, reason: 'SEMANTIC_PROVIDER_FAILED' })
 })

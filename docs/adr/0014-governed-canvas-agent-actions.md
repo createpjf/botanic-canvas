@@ -27,7 +27,7 @@ TapNow 公开工作流中的“明确上下文→确认→计划→执行→定�
 
 ### 3. 查询实时读取当前项目权威文档
 
-canvas_query 每次经 ProductStore 的当前用户和项目授权读取项目，不信任客户端上传全图。nodes 模式返回安全有界投影；aggregate 对完整过滤集按 type/status/stage 确定性计数且不返回节点正文；keyword 只索引 ID、类型、短名称、Text/Prompt 有界正文、状态与 Stage，以全部词命中、score 后稳定 ID 排序并用同一 cursor 分页。媒体 URL、字节、Generate Prompt、凭据或 Provider 原始响应永不进入投影或检索语料。semantic/hybrid 由默认关闭的 OpenAI-compatible /embeddings Adapter 按稳定 ID 内部分页、对最多 500 个安全候选分批（每批 50 个）即时派生向量；不持久化索引，Provider 禁用、未配置或失败时显式降级 keyword；派生分数不成为 Canvas authority。hasMore 或 edgesTruncated 必须显式返回，模型不得把截断页描述为全量结果。
+canvas_query 每次经 ProductStore 的当前用户和项目授权读取项目，不信任客户端上传全图。nodes 模式返回安全有界投影；aggregate 对完整过滤集按 type/status/stage 确定性计数且不返回节点正文；keyword 只索引 ID、类型、短名称、Text/Prompt 有界正文、状态与 Stage，以全部词命中、score 后稳定 ID 排序并用同一 cursor 分页。媒体 URL、字节、Generate Prompt、凭据或 Provider 原始响应永不进入投影或检索语料。semantic/hybrid 由默认关闭的 OpenAI-compatible /embeddings Adapter 按稳定 ID 内部分页、对最多 500 个安全候选分批（每批 50 个）派生向量；相同 Provider 模型与安全文本的向量在进程内有界 LRU 复用，正文变化自然失效，不持久化索引。Provider 禁用、未配置或失败时显式降级 keyword，并保留当前节点 cursor，避免分页返回重复首屏；派生分数不成为 Canvas authority。hasMore 或 edgesTruncated 必须显式返回，模型不得把截断页描述为全量结果。
 
 ### 4. Action Set 先预演、后冻结、再原子提交
 

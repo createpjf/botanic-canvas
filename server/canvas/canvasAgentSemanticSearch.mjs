@@ -4,6 +4,8 @@ import { CanvasAgentQueryError, queryCanvasForAgent } from './canvasAgentQuery.m
 
 const MAX_SEMANTIC_CANDIDATES = 500
 const EMBEDDING_BATCH_SIZE = 50
+const MAX_EMBEDDING_CACHE_ENTRIES = 5_000
+const embeddingCache = new Map()
 
 function safeSearchText(node) {
   return [node.id, node.type, node.label, node.content, node.status, node.stage].filter(Boolean).join(' ').slice(0, 1400)
@@ -18,9 +20,27 @@ function cosine(left, right) {
   }
   return leftNorm && rightNorm ? dot / Math.sqrt(leftNorm * rightNorm) : undefined
 }
-function fallback(document, raw, reason) {
-  return { ...queryCanvasForAgent(document, { ...raw, mode: 'keyword', afterId: undefined, edgeAfterId: undefined }), search: { requestedMode: raw.mode, effectiveMode: 'keyword', degraded: true, reason, ...(raw.afterId ? { cursorReset: true } : {}) } }
+function cacheKey(config, text) { return JSON.stringify([config.apiBaseUrl, config.model, text]) }
+function cachedVector(config, text) {
+  const key = cacheKey(config, text), vector = embeddingCache.get(key)
+  if (vector !== undefined) { embeddingCache.delete(key); embeddingCache.set(key, vector) }
+  return vector
 }
+function cacheVector(config, text, vector) {
+  const key = cacheKey(config, text)
+  embeddingCache.delete(key); embeddingCache.set(key, vector)
+  while (embeddingCache.size > MAX_EMBEDDING_CACHE_ENTRIES) embeddingCache.delete(embeddingCache.keys().next().value)
+}
+function fallback(document, raw, reason) {
+  const search = { requestedMode: raw.mode, effectiveMode: 'keyword', degraded: true, reason }
+  try {
+    return { ...queryCanvasForAgent(document, { ...raw, mode: 'keyword', edgeAfterId: undefined }), search }
+  } catch (error) {
+    if (!(error instanceof CanvasAgentQueryError) || error.code !== 'CANVAS_QUERY_CURSOR_INVALID' || !raw.afterId) throw error
+    return { nodes: [], edges: [], page: { returned: 0, hasMore: false, edgesTruncated: false }, search }
+  }
+}
+
 
 export async function queryCanvasWithSemanticSearch(document, raw, config = {}, fetchImpl = globalThis.fetch) {
   if (!['semantic', 'hybrid'].includes(raw?.mode)) return queryCanvasForAgent(document, raw)
@@ -39,19 +59,19 @@ export async function queryCanvasWithSemanticSearch(document, raw, config = {}, 
   } while (sourceHasMore && candidates.length < MAX_SEMANTIC_CANDIDATES)
   const base = { nodes: candidates.slice(0, MAX_SEMANTIC_CANDIDATES), truncated: sourceHasMore }
   try {
-    let queryVector
-    const candidateVectors = []
-    for (let start = 0; start < base.nodes.length; start += EMBEDDING_BATCH_SIZE) {
-      const batch = base.nodes.slice(start, start + EMBEDDING_BATCH_SIZE)
-      const response = await fetchImpl(`${config.apiBaseUrl}/embeddings`, { method: 'POST', headers: { authorization: `Bearer ${config.apiKey}`, 'content-type': 'application/json' }, body: JSON.stringify({ model: config.model, input: [raw.query.slice(0, 120), ...batch.map(safeSearchText)] }), signal: AbortSignal.timeout(Math.min(Number(config.timeoutMs) || 5000, 15000)) })
+    const queryText = raw.query.slice(0, 120), candidateTexts = base.nodes.map(safeSearchText)
+    const missingTexts = [...new Set([queryText, ...candidateTexts].filter((text) => cachedVector(config, text) === undefined))]
+    for (let start = 0; start < missingTexts.length; start += EMBEDDING_BATCH_SIZE) {
+      const input = missingTexts.slice(start, start + EMBEDDING_BATCH_SIZE)
+      const response = await fetchImpl(`${config.apiBaseUrl}/embeddings`, { method: 'POST', headers: { authorization: `Bearer ${config.apiKey}`, 'content-type': 'application/json' }, body: JSON.stringify({ model: config.model, input }), signal: AbortSignal.timeout(Math.min(Number(config.timeoutMs) || 5000, 15000)) })
       if (!response.ok) return fallback(document, raw, 'SEMANTIC_PROVIDER_FAILED')
       /** @type {any} */
       const payload = await response.json()
       const vectors = payload?.data?.map((item) => item?.embedding)
-      if (!Array.isArray(vectors) || vectors.length !== batch.length + 1) return fallback(document, raw, 'SEMANTIC_RESPONSE_INVALID')
-      queryVector ??= vectors[0]
-      candidateVectors.push(...vectors.slice(1))
+      if (!Array.isArray(vectors) || vectors.length !== input.length || vectors.some((vector) => !Array.isArray(vector))) return fallback(document, raw, 'SEMANTIC_RESPONSE_INVALID')
+      input.forEach((text, index) => cacheVector(config, text, vectors[index]))
     }
+    const queryVector = cachedVector(config, queryText), candidateVectors = candidateTexts.map((text) => cachedVector(config, text))
     const keywordNodes = []
     let keywordAfterId
     let keywordHasMore = raw.mode === 'hybrid'
