@@ -330,7 +330,11 @@ export const useCanvasStore = create<CanvasStore>((set, get) => {
     const removed = document.nodes.find((node) => node.id === nodeId)
     if (!removed) return
 
-    const nodes = document.nodes.filter((node) => node.id !== nodeId)
+    const nodes = document.nodes.filter((node) => node.id !== nodeId).map((node) => {
+      if (!('frameId' in node.data) || node.data.frameId !== nodeId) return node
+      const data = { ...node.data }; delete data.frameId
+      return { ...node, data } as CanvasNode
+    })
     const edges = document.edges.filter((edge) => edge.source !== nodeId && edge.target !== nodeId)
     const removedResult = removed.type === 'result' ? removed.data as ResultNodeData : undefined
     const generationJobs = generationJobsAfterNodeRemoval(document, removed)

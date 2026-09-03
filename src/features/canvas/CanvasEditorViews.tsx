@@ -19,6 +19,7 @@ import { GenerationDotsField } from '../../components/GenerationDotsField'
 import { BotanicSelect } from '../../components/BotanicSelect'
 import { modelDisplayLabel, modelProviderLogo } from '../../components/generationModelPresentation'
 import type { AssetNodeData, AssetRole, AssetSource, CanvasNode, GenerateNodeData, GenerationMediaKind, GenerationModelOption, GenerationSettings, PromptNodeData, ReferenceGroupNodeData, RefinementMode, ResultNodeData, TextNodeData, VideoInputMode } from '../../domain/canvas'
+import { CanvasFrameNode } from './CanvasFrameNode'
 import { downloadMedia } from '../../lib/mediaDownload'
 import { refinePrompt } from '../../lib/promptRefinementApi'
 import { refreshProductMediaSession } from '../../lib/productSession'
@@ -27,7 +28,6 @@ import { ArrowUpIcon, ArrowUpRightIcon, ChevronDownIcon, CloseIcon, DeleteIcon, 
 import { localizeProductError } from '../../i18n/core'
 import { useProductI18n, useProductMessages } from '../../i18n/react'
 import { canvasAssetRoleLabel, canvasDurationLabel, canvasSystemLabel } from './canvasI18n'
-
 const editorMessages = {
   'zh-CN': {
     options: (label: string) => `${label}选项`, imageName: '图片名称', rename: '点击重命名', removeFromCanvas: (name: string) => `从画布移除 ${name}`,
@@ -1733,7 +1733,6 @@ function ResultNode({ data, id, selected }: NodeProps) {
     </div>
   )
 }
-
 export const canvasNodeTypes = {
   asset: AssetNode,
   text: TextNode,
@@ -1741,4 +1740,5 @@ export const canvasNodeTypes = {
   prompt: PromptNode,
   reference: ReferenceGroupNode,
   result: ResultNode,
+  frame: CanvasFrameNode,
 }

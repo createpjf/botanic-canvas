@@ -2,7 +2,8 @@
 
 import { canvasAgentEntityHash } from './canvasAgentEntityHash.mjs'
 
-const NODE_TYPES = new Set(['asset', 'prompt', 'reference', 'result', 'text', 'generate'])
+const NODE_TYPES = new Set(['asset', 'prompt', 'reference', 'result', 'text', 'generate', 'frame'])
+const FRAME_STAGES = new Set(['brief', 'references', 'generation', 'review', 'approved', 'delivery', 'archive', 'custom'])
 const DIRECTIONS = new Set(['incoming', 'outgoing', 'either'])
 const MAX_NODE_LIMIT = 50
 const MAX_EDGE_LIMIT = 100
@@ -87,6 +88,8 @@ function publicNode(node) {
     position: { x: Number(node.position?.x) || 0, y: Number(node.position?.y) || 0 },
     ...(nodeLabel(node) ? { label: String(nodeLabel(node)).slice(0, 160) } : {}),
     ...(nodeStatus(node) ? { status: nodeStatus(node) } : {}),
+    ...(typeof data.frameId === 'string' ? { frameId: data.frameId } : {}),
+    ...(node.type === 'frame' ? { stage: data.stage, bounds: { x: Number(node.position?.x) || 0, y: Number(node.position?.y) || 0, width: Number(data.width) || 0, height: Number(data.height) || 0 } } : {}),
     ...(['text', 'prompt'].includes(node.type) && typeof data.content === 'string'
       ? { content: data.content.slice(0, MAX_TEXT_LENGTH) } : {}),
     ...(node.type === 'generate' ? {
@@ -138,6 +141,7 @@ export function normalizeCanvasAgentQuery(raw = {}) {
     nodeIds: textList(raw.nodeIds, '节点标识'),
     types: textList(raw.types, '节点类型', NODE_TYPES),
     statuses: textList(raw.statuses, '节点状态'),
+    stages: textList(raw.stages, 'Frame 阶段', FRAME_STAGES),
     label: text(raw.label, '节点标签', 120),
     jobId: text(raw.jobId, '任务标识'),
     runId: text(raw.runId, 'Run 标识'),
@@ -164,6 +168,7 @@ export function queryCanvasForAgent(document, raw = {}) {
   const nodeIds = new Set(query.nodeIds)
   const types = new Set(query.types)
   const statuses = new Set(query.statuses)
+  const stages = new Set(query.stages)
   const needle = query.label?.toLocaleLowerCase('zh-CN')
   const missingRole = normalizeRole(query.missingIncomingReferenceRole)
   const artifactParts = query.artifactId?.startsWith('generation:') ? query.artifactId.split(':') : []
@@ -172,6 +177,7 @@ export function queryCanvasForAgent(document, raw = {}) {
     if (nodeIds.size && !nodeIds.has(node.id)) return false
     if (types.size && !types.has(node.type)) return false
     if (statuses.size && !statuses.has(String(nodeStatus(node) ?? ''))) return false
+    if (stages.size && (node.type !== 'frame' || !stages.has(node.data?.stage))) return false
     if (needle && !String(nodeLabel(node)).toLocaleLowerCase('zh-CN').includes(needle)) return false
     if (query.jobId && node.data?.jobId !== query.jobId) return false
     if (query.runId && node.data?.agentRun?.runId !== query.runId) return false

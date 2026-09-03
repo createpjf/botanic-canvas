@@ -3199,6 +3199,23 @@ button.project-tab__main { border: 0; cursor: pointer; }
   gap: 6px;
   margin-top: 2px;
 }
+.react-flow__node-frame { z-index: 0 !important; }
+.react-flow__node:not(.react-flow__node-frame) { z-index: 1; }
+.canvas-frame-node {
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  padding: 14px 16px;
+  border: 1px solid rgba(82, 119, 91, 0.35);
+  border-radius: var(--radius-panel);
+  background: rgba(237, 244, 238, 0.5);
+  color: #314738;
+}
+.canvas-frame-node.is-selected { border-color: #52775b; box-shadow: inset 0 0 0 1px #52775b; }
+.canvas-frame-node > header { display: flex; align-items: center; gap: 8px; }
+.canvas-frame-node > header strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.canvas-frame-node__stage { padding: 3px 7px; border-radius: 999px; background: #dbe9dd; color: #45634c; font-size: 9px; font-weight: 750; letter-spacing: 0.04em; }
+
 .generate-node__chips {
   display: flex;
   min-width: 0;

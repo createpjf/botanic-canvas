@@ -96,10 +96,16 @@ export function applyBotanicAgentCanvasNodeDeletion(document, { nodeIds }, now =
     if (nodeIsBusy(document, node)) throw editError('CANVAS_NODE_BUSY', `节点「${node.data?.label ?? node.id}」的任务正在进行，不能删除。`, 409)
     removedNodes.push(node)
   }
+  const ungroupedNodeIds = document.nodes.filter((node) => !ids.has(node.id) && ids.has(node.data?.frameId)).map((node) => node.id)
   return {
-    document: { ...document, nodes: document.nodes.filter((node) => !ids.has(node.id)),
+    document: { ...document, nodes: document.nodes.filter((node) => !ids.has(node.id)).map((node) => {
+        if (!ids.has(node.data?.frameId)) return node
+        const data = { ...node.data }; delete data.frameId
+        return { ...node, data }
+      }),
       edges: (document.edges ?? []).filter((edge) => !ids.has(edge.source) && !ids.has(edge.target)),
       generationJobs: generationJobsAfterNodeDeletion(document, removedNodes, now), updatedAt: now },
     removedNodeIds: [...ids],
+    updatedNodeIds: ungroupedNodeIds,
   }
 }

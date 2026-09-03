@@ -232,7 +232,8 @@ export function createBotanicAgentOperationalToolDefinitions(operations = {}) {
         type: 'object', additionalProperties: false,
         properties: {
           nodeIds: { type: 'array', maxItems: 50, items: { type: 'string', maxLength: 160 } },
-          types: { type: 'array', maxItems: 6, items: { type: 'string', enum: ['asset', 'prompt', 'reference', 'result', 'text', 'generate'] } },
+          types: { type: 'array', maxItems: 7, items: { type: 'string', enum: ['asset', 'prompt', 'reference', 'result', 'text', 'generate', 'frame'] } },
+          stages: { type: 'array', maxItems: 8, items: { type: 'string', enum: ['brief', 'references', 'generation', 'review', 'approved', 'delivery', 'archive', 'custom'] } },
           statuses: { type: 'array', maxItems: 20, items: { type: 'string', maxLength: 40 } },
           label: { type: 'string', maxLength: 120 },
           jobId: { type: 'string', maxLength: 160 },
@@ -424,7 +425,7 @@ export function createBotanicAgentOperationalActionDefinitions({ role, ...execut
     {
       name: 'canvas_action_set',
       label: '原子修改画布',
-      description: '一次确认后原子执行整组领域化画布操作；布局优先使用 layout_nodes 声明 row/column/grid/workflow/align/distribute 意图，由服务端计算坐标。任一操作非法则整组零写入；不能创建 Result、修改系统连线或伪造任务血缘。',
+      description: '一次确认后原子执行整组领域化画布操作；布局优先使用 layout_nodes 声明意图，由服务端计算坐标；可用 Frame/Stage 组织生产泳道，成员仍使用绝对坐标。任一操作非法则整组零写入；不能创建 Result、修改系统连线或伪造任务血缘。',
       risk: 'write', requiresConfirmation: true, terminal: true,
       parameters: CANVAS_ACTION_SET_PARAMETERS,
       validate: (raw) => {

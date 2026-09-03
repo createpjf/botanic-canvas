@@ -12,6 +12,7 @@ import type {
   AssetNodeData,
   CanvasDocument,
   CanvasNode,
+  FrameNodeData,
   CanvasSnapshot,
   GenerationJob,
   GenerationReference,
@@ -62,6 +63,7 @@ export function canvasNodeDisplayName(node: CanvasNode) {
   if (node.type === 'generate') return (node.data as GenerateNodeData).label
   if (node.type === 'prompt') return (node.data as PromptNodeData).label
   if (node.type === 'reference') return (node.data as ReferenceGroupNodeData).label
+  if (node.type === 'frame') return (node.data as FrameNodeData).label
   return (node.data as ResultNodeData).label ?? '输出图片'
 }
 
