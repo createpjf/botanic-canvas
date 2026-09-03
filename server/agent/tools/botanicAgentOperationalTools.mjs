@@ -16,6 +16,7 @@ import { projectPermissionDecision } from '../../auth/authorization.mjs'
 
 /** 每个工具需要哪个读取器；缺读取器就不暴露该工具。 */
 const OPERATIONAL_READERS = Object.freeze({
+  canvas_query: 'queryCanvas',
   agent_run_read: 'readRun',
   generation_job_read: 'readJob',
   artifact_search: 'searchArtifacts',
@@ -27,6 +28,7 @@ const OPERATIONAL_READERS = Object.freeze({
 export const OPERATIONAL_READ_TOOLS = Object.freeze(Object.keys(OPERATIONAL_READERS))
 
 const SOURCE_LABELS = new Map([
+  ['canvas_query', '画布图谱'],
   ['agent_run_read', 'Agent 任务状态'],
   ['generation_job_read', '生成任务状态'],
   ['artifact_search', '历史结果'],
@@ -208,6 +210,7 @@ function deliverySummary(delivery) {
  * 构建只读运维工具。
  *
  * @param {{
+ *   queryCanvas?: (input: any) => Promise<any>,
  *   readRun?: (runId: string) => Promise<any>,
  *   readJob?: (jobId: string) => Promise<any>,
  *   searchArtifacts?: (input: { query: string, kind: string, limit: number }) => Promise<any[]>,
@@ -219,6 +222,41 @@ function deliverySummary(delivery) {
 export function createBotanicAgentOperationalToolDefinitions(operations = {}) {
   const has = (name) => typeof operations?.[OPERATIONAL_READERS[name]] === 'function'
   const definitions = [
+    {
+      name: 'canvas_query',
+      label: '查询画布图谱',
+      description: '按节点类型、状态、标签、关系或权威实体标识分页查询当前项目画布。结果不含媒体地址；page.hasMore 为 true 时必须用 page.afterId 续查，不能声称已查全。',
+      risk: 'read',
+      parameters: {
+        type: 'object', additionalProperties: false,
+        properties: {
+          nodeIds: { type: 'array', maxItems: 50, items: { type: 'string', maxLength: 160 } },
+          types: { type: 'array', maxItems: 6, items: { type: 'string', enum: ['asset', 'prompt', 'reference', 'result', 'text', 'generate'] } },
+          statuses: { type: 'array', maxItems: 20, items: { type: 'string', maxLength: 40 } },
+          label: { type: 'string', maxLength: 120 },
+          jobId: { type: 'string', maxLength: 160 },
+          runId: { type: 'string', maxLength: 160 },
+          artifactId: { type: 'string', maxLength: 240 },
+          missingIncomingReferenceRole: { type: 'string', maxLength: 80 },
+          relation: {
+            type: 'object', additionalProperties: false,
+            properties: {
+              direction: { type: 'string', enum: ['incoming', 'outgoing', 'either'] },
+              role: { type: 'string', maxLength: 80 },
+              nodeId: { type: 'string', maxLength: 160 },
+            },
+          },
+          afterId: { type: 'string', maxLength: 160 },
+          edgeAfterId: { type: 'string', maxLength: 160 },
+          limit: { type: 'number' },
+        },
+      },
+      validate: (raw) => toolObject(raw, '画布图谱查询'),
+      execute: async (input) => {
+        const result = await required(operations.queryCanvas)(input)
+        return result ?? { nodes: [], edges: [], page: { returned: 0, hasMore: false, edgesTruncated: false } }
+      },
+    },
     {
       name: 'agent_run_read',
       label: '读取 Agent 任务状态',

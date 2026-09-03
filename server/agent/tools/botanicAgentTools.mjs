@@ -3,7 +3,7 @@ import { createAgentSubtask } from '../../agentSubtask.mjs'
 import { runAgentSubtaskFanout, subtaskFanoutSummary } from '../../agentSubtaskScheduler.mjs'
 import { projectAgentStructuredObject } from '../../agentStructuredContract.mjs'
 import { AgentToolRuntimeError, createAgentToolRegistry } from './agentToolRuntime.mjs'
-import { createBotanicAgentOperationalActionDefinitions } from './botanicAgentOperationalTools.mjs'
+import { createBotanicAgentOperationalActionDefinitions, createBotanicAgentOperationalToolDefinitions } from './botanicAgentOperationalTools.mjs'
 import { botanicCreativeBriefFieldIds } from '../semantic/botanicCreativeBrief.mjs'
 import { botanicAgentVariationClarificationFieldIds } from '../semantic/botanicAgentVariations.mjs'
 import { createBotanicAgentWebResearchTools } from './botanicAgentWebTools.mjs'
@@ -421,7 +421,7 @@ const SUBAGENT_RESEARCH_SCHEMA = Object.freeze({
   },
 })
 
-export function createBotanicAgentPlanningToolRegistry({ input, finalizePlan, finalizeClarification, onProposeAction, webResearch, subagentRunner }) {
+export function createBotanicAgentPlanningToolRegistry({ input, finalizePlan, finalizeClarification, onProposeAction, webResearch, subagentRunner, operations }) {
   if (!input || typeof finalizePlan !== 'function' || typeof finalizeClarification !== 'function') throw new TypeError('Agent 规划工具缺少可信上下文。')
   const availableSkills = resolveBotanicAgentAvailableSkills(input.projectSkills)
   const mountedSkillLabels = resolveBotanicAgentMountedSkills(input.mountedSkillIds, input.projectSkills)
@@ -439,6 +439,7 @@ export function createBotanicAgentPlanningToolRegistry({ input, finalizePlan, fi
   const propose = typeof onProposeAction === 'function' ? onProposeAction : () => {}
   const planningRegistryRef = { current: undefined }
   const tools = [
+    ...createBotanicAgentOperationalToolDefinitions(operations).filter((tool) => tool.name === 'canvas_query'),
     {
       name: 'canvas_read',
       label: '读取画布上下文',
@@ -446,12 +447,11 @@ export function createBotanicAgentPlanningToolRegistry({ input, finalizePlan, fi
       risk: 'read',
       parameters: { type: 'object', additionalProperties: false, properties: {} },
       validate: (raw) => object(raw, '画布读取'),
-      execute: async () => safeClone({
-        projectId: input.projectId,
-        selectedResult: input.selectedResult,
-        settings: input.settings,
-        references: input.references,
-      }),
+      execute: async () => {
+        const graph = await operations?.queryCanvas?.({ nodeIds: (input.contextSnapshot ?? []).map((item) => item?.nodeId).filter(Boolean), limit: 50 })
+        return safeClone({ projectId: input.projectId, selectedResult: input.selectedResult,
+          settings: input.settings, references: input.references, ...(graph ? { graph } : {}) })
+      },
     },
     {
       name: 'asset_search',

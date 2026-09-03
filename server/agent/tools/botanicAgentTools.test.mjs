@@ -107,10 +107,11 @@ test('Agent 规划工具可以读取画布上下文、搜索素材并调用白�
     input,
     finalizePlan: (raw) => ({ ...raw, trusted: true }),
     finalizeClarification: (raw) => raw,
+    operations: { queryCanvas: async (query) => ({ nodes: query.types ? [{ id: query.types[0] }] : [], edges: [], page: { returned: query.types ? 1 : 0, hasMore: false, edgesTruncated: false } }) },
   })
 
   assert.deepEqual(registry.openAITools().map((item) => item.function.name), [
-    'canvas_read', 'asset_search', 'skill_run', 'skill_create_propose', 'canvas_edit_propose', 'generation_ask_clarification', 'generation_create_plan',
+    'canvas_query', 'canvas_read', 'asset_search', 'skill_run', 'skill_create_propose', 'canvas_edit_propose', 'generation_ask_clarification', 'generation_create_plan',
   ])
   const canvas = await registry.execute('canvas_read', {}, {})
   assert.deepEqual(canvas, {
@@ -118,7 +119,10 @@ test('Agent 规划工具可以读取画布上下文、搜索素材并调用白�
     selectedResult: input.selectedResult,
     settings: input.settings,
     references: input.references,
+    graph: { nodes: [], edges: [], page: { returned: 0, hasMore: false, edgesTruncated: false } },
   })
+  const query = await registry.execute('canvas_query', { types: ['generate'], limit: 1 }, {})
+  assert.deepEqual(query.nodes, [{ id: 'generate' }])
   const search = await registry.execute('asset_search', { role: '场景', query: '海边' }, {})
   assert.deepEqual(search, { groups: [input.assetGroup], total: 1 })
   const skill = await registry.execute('skill_run', { skillId: 'controlled_edit' }, {})

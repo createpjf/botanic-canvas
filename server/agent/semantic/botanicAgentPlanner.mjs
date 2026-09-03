@@ -747,7 +747,7 @@ export async function planBotanicGeneration(input, runtimeConfig, options = {}) 
     onProposeAction: (proposal) => {
       if (!proposedActions.some((item) => item.id === proposal.id)) proposedActions.push(proposal)
     },
-    webResearch,
+    webResearch, operations: options.operations,
     // 未注入 Durable Runner 且未配置 AGENT_SUBAGENT_MODEL 时为 undefined，派发工具
     // 整个不注册；模型看不到的工具不会被它拿去向用户承诺（Epic 11）。
     subagentRunner,

@@ -1,6 +1,7 @@
 // @ts-check
 import { publicAgentRun } from '../agent/semantic/botanicAgentRun.mjs'
 import { publicAgentReviewTask } from '../agent/review/agentReviewTask.mjs'
+import { queryCanvasForAgent } from '../canvas/canvasAgentQuery.mjs'
 
 /**
  * Agent 运维只读工具的单一数据源。API 首次执行与 Worker 恢复必须复用同一实现，
@@ -8,6 +9,11 @@ import { publicAgentReviewTask } from '../agent/review/agentReviewTask.mjs'
  */
 export function createAgentOperationalReaders({ productStore, userId, projectId, document }) {
   return {
+    queryCanvas: async (query) => {
+      const project = await productStore.readProject(userId, projectId)
+      if (!project?.document) return undefined
+      return queryCanvasForAgent(project.document, query)
+    },
     readRun: async (runId) => {
       const run = await productStore.readAgentRun(userId, runId)
       return run && run.projectId === projectId ? publicAgentRun(run) : undefined

@@ -51,6 +51,7 @@ const reviewTask = {
 
 function tools(overrides = {}) {
   const definitions = createBotanicAgentOperationalToolDefinitions({
+    queryCanvas: async () => ({ nodes: [], edges: [], page: { returned: 0, hasMore: false, edgesTruncated: false } }),
     readRun: async () => run,
     readJob: async () => job,
     searchArtifacts: async () => [artifact],
@@ -68,7 +69,7 @@ function tools(overrides = {}) {
   return new Map(definitions.map((definition) => [definition.name, definition]))
 }
 
-test('六个只读运维工具都声明 read 风险', () => {
+test('七个只读运维工具都声明 read 风险', () => {
   const registry = tools()
   assert.deepEqual([...registry.keys()], [...OPERATIONAL_READ_TOOLS])
   assert.ok([...registry.values()].every((tool) => tool.risk === 'read'))

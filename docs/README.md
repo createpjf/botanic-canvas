@@ -23,6 +23,7 @@
 - [ADR 0011：Agent Connector 与凭据边界(Gate,未采纳)](adr/0011-agent-connector-credential-gate.md)
 - [ADR 0012：Agent Turn 运行中输出预览持久化](adr/0012-agent-turn-output-preview.md)
 - [ADR 0013：Cancel Partial / interrupted Message 进入门槛（未采纳）](adr/0013-cancel-partial-interrupted-message-gate.md)
+- [ADR 0014：受治理的 Canvas Agent 查询与行动集](adr/0014-governed-canvas-agent-actions.md)
 
 ## 功能规格
 
