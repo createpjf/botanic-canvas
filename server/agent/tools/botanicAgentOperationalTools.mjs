@@ -1,6 +1,7 @@
 // @ts-check
 import { AgentToolRuntimeError, agentToolObject as toolObject, agentToolText as toolText } from './agentToolRuntime.mjs'
 import { projectPermissionDecision } from '../../auth/authorization.mjs'
+import { CANVAS_ACTION_SET_PARAMETERS, normalizeCanvasActionSet } from '../../canvas/canvasAgentActionSet.mjs'
 
 /**
  * 运维只读工具：让 Agent 用**真实实体状态**回答「任务为什么失败、上次结果在哪、
@@ -392,6 +393,7 @@ export function createBotanicAgentOperationalToolDefinitions(operations = {}) {
  * 而是**根本看不到**：模型看不到的工具不会被它拿去向用户承诺。
  */
 const OPERATIONAL_ACTIONS = Object.freeze({
+  canvas_action_set: { permission: 'edit', executor: 'executeCanvasActionSet', risk: 'write' },
   agent_branch_retry: { permission: 'create-generation', executor: 'retryBranch', risk: 'costly' },
   agent_run_cancel: { permission: 'create-generation', executor: 'cancelRun', risk: 'write' },
   artifact_promote: { permission: 'edit', executor: 'promoteArtifact', risk: 'write' },
@@ -419,6 +421,22 @@ export function operationalActionToolsForRole(role) {
 export function createBotanicAgentOperationalActionDefinitions({ role, ...executors } = {}) {
   const allowed = new Set(operationalActionToolsForRole(role))
   const definitions = [
+    {
+      name: 'canvas_action_set',
+      label: '原子修改画布',
+      description: '一次确认后原子执行整组领域化画布操作；任一操作非法则整组零写入。不能创建 Result、修改系统连线或伪造任务血缘。',
+      risk: 'write', requiresConfirmation: true, terminal: true,
+      parameters: CANVAS_ACTION_SET_PARAMETERS,
+      validate: (raw) => {
+        const value = toolObject(raw, '画布行动集')
+        normalizeCanvasActionSet({ ...value, actionId: 'validation-only' })
+        return value
+      },
+      execute: (args, context) => {
+        if (!context?.toolCallId) throw new AgentToolRuntimeError('CANVAS_ACTION_ID_REQUIRED', '画布行动缺少服务端工具调用标识。', 409)
+        return executors.executeCanvasActionSet({ ...args, actionId: context.toolCallId }, context)
+      },
+    },
     {
       name: 'agent_branch_retry',
       label: '重试失败分支',

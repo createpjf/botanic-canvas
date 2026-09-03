@@ -607,12 +607,12 @@ export function createBotanicAgentPlanningToolRegistry({ input, finalizePlan, fi
     {
       name: 'canvas_edit_propose',
       label: '提议画布修改',
-      description: '提议一次需要用户确认的画布修改（update_text 改文字/重命名；update_generate_settings 调生成参数；delete_nodes 删节点），不在规划阶段执行。结果图片、任务绑定与系统连线永不可改。',
+      description: '提议需要用户确认的画布修改；优先用 action_set 把多项创建、更新、参考连接和删除合成一次原子行动。结果图片、任务绑定与系统连线永不可改。',
       risk: 'read',
       parameters: {
         type: 'object', additionalProperties: false,
         properties: {
-          operation: { type: 'string', enum: ['update_text', 'update_generate_settings', 'delete_nodes'] },
+          operation: { type: 'string', enum: ['action_set', 'update_text', 'update_generate_settings', 'delete_nodes'] },
           arguments: { type: 'object' },
           reason: { type: 'string', maxLength: 240 },
         },
@@ -620,7 +620,7 @@ export function createBotanicAgentPlanningToolRegistry({ input, finalizePlan, fi
       },
       validate: (raw) => {
         const value = object(raw, '画布修改提议')
-        const toolName = {
+        const toolName = { action_set: 'canvas_action_set',
           update_text: 'canvas_update_text',
           update_generate_settings: 'canvas_update_generate_settings',
           delete_nodes: 'canvas_delete_nodes',
@@ -633,7 +633,7 @@ export function createBotanicAgentPlanningToolRegistry({ input, finalizePlan, fi
         }
       },
       execute: async ({ toolName, arguments: argumentsValue, reason }, context) => {
-        const labels = {
+        const labels = { canvas_action_set: '原子修改画布',
           canvas_update_text: '修改画布文字',
           canvas_update_generate_settings: '调整生成参数',
           canvas_delete_nodes: '删除画布节点',

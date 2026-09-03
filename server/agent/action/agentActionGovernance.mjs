@@ -3,6 +3,7 @@ import { AgentToolRuntimeError } from '../tools/agentToolRuntime.mjs'
 import { canonicalHash } from '../../canonicalHash.mjs'
 
 const permissions = Object.freeze({
+  canvas_action_set: 'edit',
   generation_submit: 'create-generation',
   workflow_create: 'modify-workflow',
   skill_apply: 'modify-workflow',

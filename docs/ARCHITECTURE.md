@@ -279,7 +279,7 @@ OTLP exporter 故障必须 fail-open，不能改变 Turn、Tool、Queue 或 Prov
 
 ## 项目权限与 Agent 行动审批
 
-`server/canvas/canvasAgentQuery.mjs` 是 Agent 全图查询的安全投影 seam：每次由 `agentOperationalReaders.mjs` 经当前用户和项目权限重读 ProductStore，不接受客户端上传的全图作为权威；节点按稳定 ID cursor 分页，边截断和 continuation 必须显式返回。输出只含有界文本、生成设置、语义关系和权威实体标识，不含媒体 URL、字节或完整 Prompt。写入仍只能走 durable Canvas Graph commit；完整决策见 ADR 0014。
+`server/canvas/canvasAgentQuery.mjs` 是 Agent 全图查询的安全投影 seam：每次由 `agentOperationalReaders.mjs` 经当前用户和项目权限重读 ProductStore，不接受客户端上传的全图作为权威；节点按稳定 ID cursor 分页，边截断和 continuation 必须显式返回。输出只含有界文本、生成设置、语义关系、权威实体标识及节点邻接关系 hash，不含媒体 URL、字节或完整 Prompt。`server/canvas/canvasAgentActionSet.mjs` 将创建文字/Generate、更新、参考连接和删除规范为领域操作；触达既有节点必须携带该 hash，故无关协作修改可继续、触达实体变化则要求重新确认。整组先在内存副本预演，任一失败零写入；通过后由 `canvasAgentEditing.mjs` 仅调用一次 durable Canvas Graph commit。模型不能创建 Result、系统边或权威任务血缘；完整决策见 ADR 0014。
 
 项目权限由服务端区分读取、编辑、生成、内容删除、工作流修改、成员管理、外部工具、项目删除、审计与运行详情。
 Owner 可管理成员、读取治理信息并审批外部工具；Editor 可编辑、生成和维护工作流；Viewer 只读。UI 隐藏按钮不是鉴权边界。

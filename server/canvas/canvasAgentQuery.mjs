@@ -1,5 +1,7 @@
 // @ts-check
 
+import { canvasAgentEntityHash } from './canvasAgentEntityHash.mjs'
+
 const NODE_TYPES = new Set(['asset', 'prompt', 'reference', 'result', 'text', 'generate'])
 const DIRECTIONS = new Set(['incoming', 'outgoing', 'either'])
 const MAX_NODE_LIMIT = 50
@@ -184,7 +186,7 @@ export function queryCanvasForAgent(document, raw = {}) {
   const edgesTruncated = edgeStart + selectedEdges.length < relatedEdges.length
   const hasMore = afterIndex + 1 + selected.length < matching.length
   return {
-    nodes: selected.map(publicNode),
+    nodes: selected.map((node) => ({ ...publicNode(node), entityHash: canvasAgentEntityHash(document, node.id) })),
     edges: selectedEdges.map((edge) => publicEdge(edge, nodeById)),
     page: {
       returned: selected.length,

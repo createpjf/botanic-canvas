@@ -1,0 +1,61 @@
+import assert from 'node:assert/strict'
+import test from 'node:test'
+import { applyCanvasActionSet } from './canvasAgentActionSet.mjs'
+import { canvasAgentEntityHash } from './canvasAgentEntityHash.mjs'
+
+const models = [{ id: 'image-model', aspectRatios: ['1:1'], resolutions: ['1K'] }]
+function document() {
+  return {
+    id: 'project-action-set', updatedAt: 1,
+    nodes: [
+      { id: 'asset-1', type: 'asset', position: { x: 0, y: 0 }, data: { kind: 'asset', name: '商品', role: '商品', image: '/api/media/private' } },
+      { id: 'text-1', type: 'text', position: { x: 0, y: 200 }, data: { kind: 'text', label: '旧文案', content: '旧内容' } },
+      { id: 'result-busy', type: 'result', position: { x: 600, y: 0 }, data: { kind: 'result', label: '生成中', status: 'generating', jobId: 'job-1' } },
+    ],
+    edges: [], generationJobs: [{ id: 'job-1', status: 'running', resultNodeId: 'result-busy' }],
+  }
+}
+
+function precondition(base, nodeId) {
+  return { nodeId, hash: canvasAgentEntityHash(base, nodeId) }
+}
+
+test('Action Set 以确定性 ID 创建领域节点、连接参考并与文字更新一起预演', () => {
+  const base = document()
+  const input = {
+    actionId: 'action-1',
+    preconditions: [precondition(base, 'asset-1'), precondition(base, 'text-1')],
+    operations: [
+      { kind: 'create_text', temporaryId: 'prompt', position: { x: 200, y: 0 }, label: '新文案', content: '夏日新品' },
+      { kind: 'create_generate', temporaryId: 'generator', position: { x: 400, y: 0 }, label: '主图生成', prompt: '夏日新品', batchCount: 2, settings: { model: 'image-model', aspectRatio: '1:1', resolution: '1K' } },
+      { kind: 'connect_reference', sourceNodeId: 'asset-1', targetNodeId: 'generator' },
+      { kind: 'update_text', nodeId: 'text-1', content: '已更新' },
+    ],
+  }
+  const first = applyCanvasActionSet(base, input, models, 20)
+  const replay = applyCanvasActionSet(base, input, models, 20)
+  assert.deepEqual(first.createdNodeIds, replay.createdNodeIds)
+  assert.equal(first.document.nodes.find((node) => node.id === 'text-1').data.content, '已更新')
+  assert.equal(first.document.nodes.find((node) => node.id === first.createdNodeIds[1]).data.status, 'idle')
+  assert.deepEqual(first.document.edges.map((edge) => [edge.source, edge.target, edge.data]), [
+    ['asset-1', first.createdNodeIds[1], { role: 'reference' }],
+  ])
+  assert.equal(JSON.stringify(first.document).includes('system'), false)
+})
+
+test('Action Set 缺触达 hash 或末项触碰活跃节点时整组失败且不改变输入', () => {
+  const base = document()
+  const before = structuredClone(base)
+  assert.throws(() => applyCanvasActionSet(base, {
+    actionId: 'action-no-hash', operations: [{ kind: 'update_text', nodeId: 'text-1', content: '不应写入' }],
+  }, models), (error) => error.code === 'CANVAS_ACTION_SET_PRECONDITION_REQUIRED')
+  assert.throws(() => applyCanvasActionSet(base, {
+    actionId: 'action-busy',
+    preconditions: [precondition(base, 'text-1'), precondition(base, 'result-busy')],
+    operations: [
+      { kind: 'update_text', nodeId: 'text-1', content: '仍不应写入' },
+      { kind: 'delete_nodes', nodeIds: ['result-busy'] },
+    ],
+  }, models), (error) => error.code === 'CANVAS_NODE_BUSY')
+  assert.deepEqual(base, before)
+})
