@@ -448,9 +448,9 @@ export function createBotanicAgentPlanningToolRegistry({ input, finalizePlan, fi
       parameters: { type: 'object', additionalProperties: false, properties: {} },
       validate: (raw) => object(raw, '画布读取'),
       execute: async () => {
-        const graph = await operations?.queryCanvas?.({ nodeIds: (input.contextSnapshot ?? []).map((item) => item?.nodeId).filter(Boolean), limit: 50 })
-        return safeClone({ projectId: input.projectId, selectedResult: input.selectedResult,
-          settings: input.settings, references: input.references, ...(graph ? { graph } : {}) })
+        const nodeIds = [...new Set([input.selectedResult?.nodeId, ...(input.contextSnapshot ?? []).map((item) => item?.nodeId)].filter(Boolean))]
+        const graph = nodeIds.length ? await operations?.queryCanvas?.({ nodeIds, limit: 50 }) : undefined
+        return safeClone({ projectId: input.projectId, selectedResult: input.selectedResult, settings: input.settings, references: input.references, ...(graph ? { graph } : {}) })
       },
     },
     {
