@@ -581,6 +581,16 @@ test('Editor 不能越权执行外部工具，过期审批也不能绕过服务�
     ),
     (caught) => caught?.code === 'ACTION_APPROVAL_REQUIRED',
   )
+  requestBody.name = 'canvas_action_set'
+  requestBody.toolCallId = 'call-canvas-action-set-1'
+  requestBody.arguments = { operations: [{ kind: 'update_text', nodeId: 'text-1', content: '必须签名' }] }
+  await assert.rejects(
+    () => ownerHandler(
+      { method: 'POST', headers: { 'idempotency-key': 'agent-action-call-canvas-action-set-1-canvas_action_set' } }, {},
+      new URL('http://botanic.test/api/agent-actions'), {}, 'request-canvas-action-set',
+    ),
+    (caught) => caught?.code === 'ACTION_APPROVAL_REQUIRED',
+  )
 })
 
 test('Agent 阅读位置增量更新写入当前成员回执，不修改共享会话', async () => {

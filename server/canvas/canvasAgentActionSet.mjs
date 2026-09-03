@@ -171,6 +171,15 @@ function touchedExistingNodeIds(operations) {
   return requiredIds
 }
 
+function assertActionSetDocumentSafety(document, actionSet) {
+  const existingIds = new Set((document.nodes ?? []).map((item) => item.id))
+  const temporaryIds = new Set(actionSet.operations.flatMap((item) => item.temporaryId ? [item.temporaryId] : []))
+  if ([...temporaryIds].some((id) => existingIds.has(id))) fail('CANVAS_ACTION_SET_CONFLICT', '临时节点标识与既有节点冲突。', 409)
+  if (actionSet.operations.some((item) => item.kind === 'delete_nodes' && item.nodeIds.some((id) => temporaryIds.has(id)))) {
+    fail('CANVAS_ACTION_NOT_ALLOWED', '同一行动集不能创建后删除临时节点。')
+  }
+}
+
 function assertPreconditions(document, actionSet) {
   const requiredIds = touchedExistingNodeIds(actionSet.operations)
   const providedIds = new Set(actionSet.preconditions.map((item) => item.nodeId))
@@ -185,6 +194,7 @@ function assertPreconditions(document, actionSet) {
 /** 全部操作只作用于内存副本；任一操作失败时调用者不会得到部分文档。 */
 export function applyCanvasActionSet(document, raw, models, now = Date.now(), artifacts = new Map()) {
   const actionSet = normalizeCanvasActionSet(raw)
+  assertActionSetDocumentSafety(document, actionSet)
   assertPreconditions(document, actionSet)
   let current = structuredClone(document)
   const ids = new Map()
@@ -225,6 +235,9 @@ export function applyCanvasActionSet(document, raw, models, now = Date.now(), ar
         const connected = (current.edges ?? []).filter((edge) => edge.target === target)
           .map((edge) => node(current, edge.source)).filter((item) => ['asset', 'result', 'reference'].includes(item?.type))
         if (connected.length >= Number(model?.maximumReferences ?? 8)) fail('CANVAS_REFERENCE_LIMIT', '该生成模型的参考素材数量已达上限。')
+        if (sourceNode.type === 'result' && model?.mediaKind !== 'video' && connected.some((item) => item.type === 'result')) {
+          fail('CANVAS_ACTION_NOT_ALLOWED', '图片生成节点只能连接一个结果节点作为父图。')
+        }
         const nextTarget = { ...targetNode, data: { ...targetNode.data, inputOrder: [...new Set([...(targetNode.data?.inputOrder ?? []), source])] } }
         current = { ...current,
           nodes: current.nodes.map((item) => item.id === target ? nextTarget : item),

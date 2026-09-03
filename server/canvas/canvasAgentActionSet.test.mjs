@@ -79,6 +79,27 @@ test('Action Set 缺触达 hash 或末项触碰活跃节点时整组失败且不
   changed.nodes.find((node) => node.id === 'text-1').data.content = '协作者已修改'
   assert.throws(() => applyCanvasActionSet(changed, { actionId: 'action-frozen', ...prepared.arguments }, models),
     (error) => error.code === 'CANVAS_ACTION_SET_CONFLICT')
+  assert.throws(() => prepareCanvasActionSetProposal(base, { operations: [
+    { kind: 'create_text', temporaryId: 'text-1', position: { x: 1, y: 1 }, content: '冲突临时节点' },
+    { kind: 'update_text', nodeId: 'text-1', content: '不能绕过 hash' },
+  ] }, models, 'action-temp-collision'), (error) => error.code === 'CANVAS_ACTION_SET_CONFLICT')
+  assert.throws(() => prepareCanvasActionSetProposal(base, { operations: [
+    { kind: 'create_text', temporaryId: 'ephemeral', position: { x: 1, y: 1 }, content: '瞬时节点' },
+    { kind: 'delete_nodes', nodeIds: ['ephemeral'] },
+  ] }, models, 'action-create-delete'), (error) => error.code === 'CANVAS_ACTION_NOT_ALLOWED')
+  const twoResults = structuredClone(base)
+  twoResults.nodes.push(
+    { id: 'result-1', type: 'result', position: { x: 1, y: 1 }, data: { kind: 'result', image: '/api/media/one' } },
+    { id: 'result-2', type: 'result', position: { x: 2, y: 2 }, data: { kind: 'result', image: '/api/media/two' } },
+    { id: 'generate-1', type: 'generate', position: { x: 3, y: 3 }, data: { kind: 'generate', status: 'idle', settings: { model: 'image-model', aspectRatio: '1:1', resolution: '1K' } } },
+  )
+  assert.throws(() => applyCanvasActionSet(twoResults, {
+    actionId: 'action-two-results', preconditions: ['result-1', 'result-2', 'generate-1'].map((nodeId) => precondition(twoResults, nodeId)),
+    operations: [
+      { kind: 'connect_reference', sourceNodeId: 'result-1', targetNodeId: 'generate-1' },
+      { kind: 'connect_reference', sourceNodeId: 'result-2', targetNodeId: 'generate-1' },
+    ],
+  }, models), (error) => error.code === 'CANVAS_ACTION_NOT_ALLOWED')
   const artifacts = new Map([[artifact.id, artifact]])
   const reuse = prepareCanvasActionSetProposal(base, { operations: [{ kind: 'project_artifact', temporaryId: 'old', artifactId: artifact.id, position: { x: 1, y: 1 } }] }, models, 'action-artifact', artifacts)
   const driftedArtifacts = new Map([[artifact.id, { ...artifact, updatedAt: 11 }]])
