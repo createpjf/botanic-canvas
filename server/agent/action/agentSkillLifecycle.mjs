@@ -24,7 +24,6 @@ function assertLifecycle(existing, allowed, action) {
   if (!allowed.includes(existing.lifecycle)) throw new BotanicAgentSkillError(409, 'AGENT_SKILL_LIFECYCLE_INVALID', '当前 Skill 状态不能' + action + '。')
 }
 function issue(code, references = []) { return { code, references } }
-function lifecycleTimestamp(existing, candidate) { return Math.max(Number(candidate ?? Date.now()), Number(existing?.updatedAt ?? 0) + 1) }
 
 /** @param {any} body @param {any} options */
 export function createAgentSkillDraft(body, options = {}) {
@@ -35,7 +34,7 @@ export function updateAgentSkillDraft(existing, body, options = {}) {
   assertCurrent(existing, options.expected)
   assertLifecycle(existing, ['draft', 'review', 'published'], '编辑')
   const input = validateAgentSkillCreation({ ...body, projectId: existing.projectId })
-  return updateAgentSkill(existing, input, /** @type {any} */ ({ actorId: options.actorId, riskOf: options.riskOf, now: lifecycleTimestamp(existing, options.now) }))
+  return updateAgentSkill(existing, input, /** @type {any} */ ({ actorId: options.actorId, riskOf: options.riskOf, now: options.now }))
 }
 /** @param {any} skill @param {any} options */
 export function preflightAgentSkill(skill, options = {}) {
@@ -60,7 +59,7 @@ export function submitAgentSkillReview(existing, options = {}) {
   const preflight = preflightAgentSkill(existing, options)
   if (!preflight.ok) throw new BotanicAgentSkillError(409, 'AGENT_SKILL_PREFLIGHT_FAILED', 'Skill 检查未通过。')
   if (existing.lifecycle === 'review') return existing
-  const now = lifecycleTimestamp(existing, options.now)
+  const now = options.now ?? Date.now()
   return { ...existing, lifecycle: 'review', status: 'archived', reviewSubmittedBy: options.actorId, reviewSubmittedAt: now, updatedAt: now }
 }
 /** @param {any} existing @param {any} options */
@@ -70,18 +69,18 @@ export function publishReviewedAgentSkill(existing, options = {}) {
   const preflight = preflightAgentSkill(existing, options)
   if (!preflight.ok) throw new BotanicAgentSkillError(409, 'AGENT_SKILL_PREFLIGHT_FAILED', 'Skill 检查未通过。')
   const manifest = freezeAgentSkillDependencies(existing.manifest, options.skillCatalog ?? [])
-  return updateAgentSkill(existing, { ...(manifest ? { manifest } : {}) }, /** @type {any} */ ({ actorId: options.actorId, approvedBy: options.actorId, riskOf: options.riskOf, skillCatalog: options.skillCatalog ?? [], now: lifecycleTimestamp(existing, options.now) }))
+  return updateAgentSkill(existing, { ...(manifest ? { manifest } : {}) }, /** @type {any} */ ({ actorId: options.actorId, approvedBy: options.actorId, riskOf: options.riskOf, skillCatalog: options.skillCatalog ?? [], now: options.now }))
 }
 /** @param {any} existing @param {any} options */
 export function deprecatePublishedAgentSkill(existing, options = {}) {
   assertCurrent(existing, options.expected)
   assertLifecycle(existing, ['published'], '弃用')
-  return deprecateAgentSkill(existing, /** @type {any} */ ({ actorId: options.actorId, now: lifecycleTimestamp(existing, options.now) }))
+  return deprecateAgentSkill(existing, /** @type {any} */ ({ actorId: options.actorId, now: options.now }))
 }
 /** @param {any} existing @param {number} version @param {any} options */
 export function restoreAgentSkillVersionAsDraft(existing, version, options = {}) {
   assertCurrent(existing, options.expected)
   const snapshot = agentSkillVersion(existing, version)
   if (!snapshot?.name || !snapshot?.instructions || !snapshot?.capabilities) throw new BotanicAgentSkillError(404, 'AGENT_SKILL_VERSION_NOT_FOUND', '未找到可恢复的 Skill 版本。')
-  return updateAgentSkill(existing, { name: snapshot.name, instructions: snapshot.instructions, capabilities: snapshot.capabilities, manifest: snapshot.manifest }, /** @type {any} */ ({ actorId: options.actorId, riskOf: options.riskOf, now: lifecycleTimestamp(existing, options.now) }))
+  return updateAgentSkill(existing, { name: snapshot.name, instructions: snapshot.instructions, capabilities: snapshot.capabilities, manifest: snapshot.manifest }, /** @type {any} */ ({ actorId: options.actorId, riskOf: options.riskOf, now: options.now }))
 }
