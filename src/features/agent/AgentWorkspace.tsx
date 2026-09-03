@@ -140,8 +140,6 @@ import {
   AgentPanelBackButton,
   agentRunFeedback,
   agentRunOutputCount,
-  agentRuntimeStepMarker,
-  agentRuntimeStepStatusLabel,
 } from './AgentWorkspaceParts'
 import {
   applyAgentSessionContextChange,
@@ -686,7 +684,6 @@ export default function AgentWorkspace({
   const utilityMenuId = useId()
   const contextMenuId = useId()
   const modeMenuId = useId()
-  const runtimeStepsId = useId()
   const compatibleGroups = groups.filter((group) => group.role === botanicAgentComposerGroupRole(intent) && group.assetIds.length)
   const contextItems = contextOptions.filter((item) => session?.contextNodeIds.includes(item.id))
   const composerHasVisual = Boolean(target?.image) || contextItems.some((item) => (
@@ -874,8 +871,6 @@ export default function AgentWorkspace({
       ? { ...runtimeSummary, label: 'Waiting for your question', detail: 'Ask about verifiable information in this project.', nextAction: 'Enter a question' }
       : { ...runtimeSummary, label: 'Waiting for your request', detail: 'Describe a goal and Agent will read the context before planning.', nextAction: 'Enter a request' }
   }, [locale, runtimeMode, runtimeSummary])
-  const runtimeFailed = runtimePhase === 'failed' || runtimeSteps.some((step) => step.status === 'failed')
-  const runtimeComplete = runtimePhase === 'completed'
   const availableCanvasNodeIds = useMemo(() => new Set(contextOptions.map((item) => item.id)), [contextOptions])
   const latestRunFeedback = latestRun ? agentRunFeedback(latestRun, artifacts, availableCanvasNodeIds, locale) : undefined
   const runTimeline = useMemo(() => buildBotanicAgentRunTimeline(runs, sessions), [runs, sessions])
@@ -1576,6 +1571,7 @@ export default function AgentWorkspace({
     sourceInstruction?: string,
     structuredVariants?: Array<{ label: string; promptDelta: string }>,
     variationAxisLabel?: string,
+    modelResolved?: boolean,
     runtimeRequestKey?: string,
     resolvedIntent?: BotanicAgentIntent,
     executionContext?: AgentInstructionExecutionContext,
@@ -1604,6 +1600,8 @@ export default function AgentWorkspace({
       // 回合模型结构化声明的变体：规划器直接展开，不再从自然语言里挖轴。
       ...(structuredVariants?.length ? { structuredVariants } : {}),
       ...(structuredVariants?.length && variationAxisLabel ? { variationAxisLabel } : {}),
+      // 回合模型已综合本轮且未声明变体：语义结论是单图，规划器不做隐式挖掘。
+      ...(modelResolved ? { modelResolved: true } : {}),
       requestedIntent: resolvedIntent ?? planIntent,
       selectedResultNodeId: planTarget.id,
       selectedResultLabel: planTarget.label,
@@ -2871,6 +2869,7 @@ export default function AgentWorkspace({
       draft.instruction,
       draft.structuredVariants,
       draft.variationAxisLabel,
+      draft.modelResolved,
       sourceTurnId ? `agent-plan-${sourceTurnId}` : undefined,
       requestedIntent,
       { ...instructionExecutionContext, target: instructionTarget, targetNodeId: instructionTarget?.id ?? null },
@@ -3779,32 +3778,19 @@ export default function AgentWorkspace({
           reviewDecisionPending={Boolean(reviewDecisionPendingId && reviewDecisionPendingId === message.review?.id)}
         /></div>
         }) : null}
-        {showRuntimeFeed ? (() => {
-          const livePhase = runtimePhase === 'reading' || runtimePhase === 'planning' || runtimePhase === 'executing'
-          return <section className={`agent-runtime-feed is-${runtimeDisplaySummary.phase}${runtimeFailed ? ' is-failed' : runtimeComplete ? ' is-complete' : ''}`} data-phase={runtimeDisplaySummary.phase} role="status" aria-live={livePhase ? 'polite' : undefined} aria-label={flowCopy.runtimeAria}>
+        {showRuntimeFeed ? (
+          // 只在等待用户动作时出现的「下一步」状态条：运行过程展示唯一归对话时间线。
+          <section className={`agent-runtime-feed is-${runtimeDisplaySummary.phase}`} data-phase={runtimeDisplaySummary.phase} role="status" aria-label={flowCopy.runtimeAria}>
             <header className="agent-runtime-feed__header">
               <span className="agent-runtime-feed__status">
-                <span className="agent-runtime-feed__mark" aria-hidden="true">
-                  {livePhase && !runtimeFailed ? <span className="agent-composer__spinner" /> : runtimeFailed ? <AlertIcon /> : runtimeComplete ? <CheckIcon /> : <ClockIcon />}
-                </span>
+                <span className="agent-runtime-feed__mark" aria-hidden="true"><ClockIcon /></span>
                 <strong>{runtimeDisplaySummary.label}</strong>
-                {runtimeDisplaySummary.totalCount ? <small>{runtimeDisplaySummary.completedCount}/{runtimeDisplaySummary.totalCount}</small> : null}
               </span>
-              <button type="button" className="agent-runtime-feed__toggle" aria-label={runtimeDetailsOpen ? flowCopy.collapseSteps : flowCopy.viewSteps} title={runtimeDetailsOpen ? flowCopy.collapseSteps : flowCopy.viewSteps} aria-expanded={runtimeDetailsOpen} aria-controls={runtimeStepsId} onClick={() => setRuntimeDetailsOpen((open) => !open)}>
-                <ChecklistIcon />
-              </button>
             </header>
             <p className="agent-runtime-feed__summary">{runtimeDisplaySummary.detail}</p>
-            {runtimeDisplaySummary.phase === 'waiting_clarification' || runtimeDisplaySummary.phase === 'waiting_confirmation' || runtimeDisplaySummary.phase === 'waiting_reference' || runtimeDisplaySummary.phase === 'draft_ready' ? <span className="agent-runtime-feed__next">{flowCopy.nextStep}{runtimeDisplaySummary.nextAction}</span> : null}
-            {runtimeDetailsOpen ? <ol id={runtimeStepsId} aria-label={flowCopy.runSteps}>
-              {runtimeSteps.map((step) => <li key={step.id} className={`is-${step.status}`}>
-                <span className="agent-runtime-feed__step-marker" aria-hidden="true">{agentRuntimeStepMarker(step)}</span>
-                <span className="agent-runtime-feed__step-copy"><strong>{step.status === 'running' ? flowCopy.runningStep(step.label) : step.label}</strong><small>{step.error && locale === 'en' ? flowCopy.runtimeStepFailed : step.error ?? step.detail}</small></span>
-                <em>{agentRuntimeStepStatusLabel(step.status, locale)}</em>
-              </li>)}
-            </ol> : null}
+            <span className="agent-runtime-feed__next">{flowCopy.nextStep}{runtimeDisplaySummary.nextAction}</span>
           </section>
-        })() : null}
+        ) : null}
         {latestRun?.branches.length && latestRunFeedback && ['queued', 'running', 'executing'].includes(latestRun.status) ? <section className={`agent-run-card is-${latestRunFeedback.tone} is-compact`} aria-label={flowCopy.runProgress}>
           <header>
             <b aria-label={flowCopy.runProgress}>{latestRun.completedBranchCount}/{latestRun.branches.length}</b>

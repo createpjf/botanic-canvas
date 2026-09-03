@@ -226,6 +226,29 @@ test('图片草案把 Nano Banana 的固定执行参数写入计划', () => {
 
 const synthesizedProse = 'Mia 的氛围肖像照（海边版）：一位 20 多岁韩国女性，黑色长发自然垂落，清透裸妆，身穿燕麦色针织衫，站在海边浅滩上，背景是灰蓝色海面，柔和的自然光，视觉风格清新通透，画面比例 3:4。'
 
+test('模型综合过且未声明变体的单图修改请求不被逗号并列切成伪变体', () => {
+  const draft = prepareBotanicAgentGenerationDraft({
+    ...draftBase,
+    // 截图 bug 原句：含「风格」轴名 + 逗号并列，正则会切出「能不能做成一个横 | claude设计」两个伪变体。
+    instruction: '能不能做成一个横版的，claude 设计风格?',
+    decision: { kind: 'generation', mediaKind: 'image', promptSource: 'instruction' },
+    options: {},
+    generationModels: [imageModel],
+    executionMode: 'auto',
+    synthesizedPrompt: '横版 16:9 的 Claude 极简风格海报，保持原有内容结构。',
+  })
+  assert.equal(draft.kind, 'ready')
+  if (draft.kind !== 'ready') return
+  assert.equal(draft.modelResolved, true)
+  assert.equal(draft.structuredVariants, undefined)
+  const applied = buildBotanicAgentInitialDraftPlan(draft)
+  assert.equal(applied.kind, 'plan')
+  if (applied.kind !== 'plan') return
+  assert.equal(applied.plan.output.mode, 'single')
+  assert.equal(applied.plan.output.count, 1)
+  assert.equal(applied.plan.variation, undefined)
+})
+
 test('变体轴从用户原话解析；综合 Prompt 只做画面描述，不被挖成伪变体', () => {
   const draft = prepareBotanicAgentGenerationDraft({
     ...draftBase,

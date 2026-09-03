@@ -82,5 +82,23 @@ export function restoreAgentSkillVersionAsDraft(existing, version, options = {})
   assertCurrent(existing, options.expected)
   const snapshot = agentSkillVersion(existing, version)
   if (!snapshot?.name || !snapshot?.instructions || !snapshot?.capabilities) throw new BotanicAgentSkillError(404, 'AGENT_SKILL_VERSION_NOT_FOUND', '未找到可恢复的 Skill 版本。')
-  return updateAgentSkill(existing, { name: snapshot.name, instructions: snapshot.instructions, capabilities: snapshot.capabilities, manifest: snapshot.manifest }, /** @type {any} */ ({ actorId: options.actorId, riskOf: options.riskOf, now: options.now }))
+  const restored = updateAgentSkill(existing, { name: snapshot.name, instructions: snapshot.instructions, capabilities: snapshot.capabilities, manifest: snapshot.manifest }, /** @type {any} */ ({ actorId: options.actorId, riskOf: options.riskOf, now: options.now }))
+  if (restored.lifecycle === 'draft') return restored
+  // 恢复的内容与当前执行语义相同时 updateAgentSkill 判定为重放，原样返回已发布/已弃用记录。
+  // 恢复动作必须落在草稿上，因此这里只做生命周期转移：版本、内容摘要与历史版本都不动，
+  // 乐观锁字段随之保持可用。
+  const now = options.now ?? Date.now()
+  return {
+    ...restored,
+    lifecycle: 'draft',
+    status: 'archived',
+    governance: undefined,
+    reviewSubmittedBy: undefined,
+    reviewSubmittedAt: undefined,
+    publishedBy: undefined,
+    publishedAt: undefined,
+    deprecatedBy: undefined,
+    deprecatedAt: undefined,
+    updatedAt: now,
+  }
 }

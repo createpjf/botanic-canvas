@@ -14,6 +14,8 @@ export type BotanicAgentPlanRequestInput = {
   /** 回合模型结构化声明的变体：有它就直接展开，规划器不再从自然语言里挖轴。 */
   structuredVariants?: Array<{ label: string; promptDelta: string }>
   variationAxisLabel?: string
+  /** 回合模型已综合本轮生成：未声明 variants 即单图，规划器不做隐式挖掘。 */
+  modelResolved?: boolean
   requestedIntent?: BotanicAgentIntent
   selectedResultNodeId: string
   selectedResultLabel: string
@@ -39,6 +41,7 @@ export type BotanicAgentPlanRequest = {
   sourceInstruction?: string
   structuredVariants?: Array<{ label: string; promptDelta: string }>
   variationAxisLabel?: string
+  modelResolved?: boolean
   requestedIntent?: BotanicAgentIntent
   selectedResult: { nodeId: string; label: string }
   settings: GenerationRecipe['settings']
@@ -112,6 +115,7 @@ export function buildBotanicAgentPlanRequest(input: BotanicAgentPlanRequestInput
     ...(input.structuredVariants?.length && input.variationAxisLabel?.trim()
       ? { variationAxisLabel: input.variationAxisLabel.trim().slice(0, 16) }
       : {}),
+    ...(input.modelResolved ? { modelResolved: true } : {}),
     ...(input.requestedIntent ? { requestedIntent: input.requestedIntent } : {}),
     selectedResult: { nodeId: input.selectedResultNodeId, label: input.selectedResultLabel },
     settings: { ...input.rootRecipe.settings, ...input.generationOverrides },

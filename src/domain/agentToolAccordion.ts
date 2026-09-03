@@ -16,7 +16,7 @@ import {
   type TimelineStepKind,
 } from './agentTimeline.ts'
 
-export type AgentToolAccordionRowStatus = 'running' | 'succeeded' | 'failed' | 'aborted'
+export type AgentToolAccordionRowStatus = 'running' | 'awaiting_confirmation' | 'succeeded' | 'failed' | 'aborted'
 
 export type AgentToolAccordionRow = {
   id: string
@@ -25,6 +25,8 @@ export type AgentToolAccordionRow = {
   verb: string
   detail: string
   status: AgentToolAccordionRowStatus
+  /** 动作目标（hostname / 节点名 / MCP server 名），来自既有安全展示数据的投影。 */
+  target?: string
   durationMs?: number
   error?: string
   callCount?: number
@@ -145,12 +147,15 @@ function toolCallRowStatus(status: AgentToolCallTrace['status']): AgentToolAccor
   if (status === 'aborted') return 'aborted'
   if (status === 'failed') return 'failed'
   if (status === 'succeeded') return 'succeeded'
+  // 等待用户批准与正在运行是两种用户可感知状态：折叠成 running 会让人误以为系统卡住。
+  if (status === 'awaiting_confirmation') return 'awaiting_confirmation'
   return 'running'
 }
 
 function toolAccordionVerb(kind: TimelineStepKind, status: AgentToolAccordionRowStatus, locale: string) {
   const en = locale === 'en'
   if (status === 'aborted') return en ? 'Not run' : '未执行'
+  if (status === 'awaiting_confirmation') return en ? 'Awaiting approval' : '等待确认'
   if (kind === 'search') {
     if (status === 'running') return en ? 'Searching' : '正在检索'
     if (status === 'failed') return en ? 'Search failed' : '检索失败'
@@ -204,6 +209,7 @@ function toolAccordionDurationMs(startedAt?: number, endedAt?: number) {
 
 function aggregateAccordionStatus(statuses: AgentToolAccordionRowStatus[]): AgentToolAccordionRowStatus {
   if (statuses.some((status) => status === 'failed')) return 'failed'
+  if (statuses.some((status) => status === 'awaiting_confirmation')) return 'awaiting_confirmation'
   if (statuses.some((status) => status === 'running')) return 'running'
   if (statuses.some((status) => status === 'aborted')) return 'aborted'
   return 'succeeded'
@@ -255,10 +261,18 @@ function quietReadSummaryRow(rows: AgentToolAccordionRow[], locale: string): Age
   }
 }
 
+/** 动作目标：web 步骤取来源 hostname、MCP 取 server 名。纯投影，不新增数据来源。 */
+function toolAccordionTarget(call: AgentToolCallTrace, hostname?: string) {
+  if (hostname) return hostname
+  if (isMcpToolName(call.name)) return agentMcpServerIdFromLabel(call.label)
+  return undefined
+}
+
 function buildToolAccordionRow(
   call: AgentToolCallTrace,
   timing?: { startedAt?: number; endedAt?: number },
   locale = 'zh-CN',
+  hostname?: string,
 ): AgentToolAccordionRow {
   const presentation = agentTimelineToolPresentation(call)
   const status = toolCallRowStatus(call.status)
@@ -268,6 +282,7 @@ function buildToolAccordionRow(
       ? `Ran in ${Math.round(durationMs / 1_000)}s`
       : `已在 ${Math.round(durationMs / 1_000)}s 内运行`)
     : toolAccordionVerb(presentation.kind, status, locale)
+  const target = toolAccordionTarget(call, hostname)
   return {
     id: call.id,
     kind: presentation.kind,
@@ -275,6 +290,7 @@ function buildToolAccordionRow(
     verb,
     detail: toolAccordionDetail(call),
     status,
+    ...(target ? { target } : {}),
     ...(durationMs !== undefined ? { durationMs } : {}),
     ...(call.error?.trim() ? { error: call.error.trim() } : {}),
   }
@@ -457,13 +473,20 @@ export function presentAgentToolAccordion(
 
   if (!orderedCalls.length) return null
 
+  // web 步骤的目标 hostname：单来源步骤才有明确目标，多来源（聚合搜索）不标。
+  const hostnameByToolId = new Map<string, string>()
+  for (const step of steps) {
+    if (step.sources?.length !== 1) continue
+    for (const id of step.sourceToolIds) hostnameByToolId.set(id, step.sources[0].hostname)
+  }
+
   const visibleRows: AgentToolAccordionRow[] = []
   const quietRows: AgentToolAccordionRow[] = []
   let quietInsertIndex: number | undefined
   let nextUpdateAt: number | undefined
   for (const call of orderedCalls) {
     const timing = timingByToolId.get(call.id)
-    const row = buildToolAccordionRow(call, timing, locale)
+    const row = buildToolAccordionRow(call, timing, locale, hostnameByToolId.get(call.id))
     const disposition = quietReadDisposition(call, row, timing, now)
     if (disposition.nextUpdateAt !== undefined) {
       nextUpdateAt = nextUpdateAt === undefined ? disposition.nextUpdateAt : Math.min(nextUpdateAt, disposition.nextUpdateAt)
@@ -484,7 +507,7 @@ export function presentAgentToolAccordion(
   const focusStep = steps.find((step) => step.status === 'running') ?? steps.at(-1)
   return {
     elapsedMs: timelineElapsedMs(timeline, now),
-    groups: [{ id: 'tools', title: accordionGroupTitle(focusStep, rows, locale), status, open: status === 'running', rows }],
+    groups: [{ id: 'tools', title: accordionGroupTitle(focusStep, rows, locale), status, open: status === 'running' || status === 'awaiting_confirmation', rows }],
     ...(nextUpdateAt ? { nextUpdateAt } : {}),
   }
 }
@@ -515,7 +538,7 @@ export function presentAgentToolAccordionFromCalls(
       id: 'plan-tools',
       title,
       status,
-      open: status === 'running',
+      open: status === 'running' || status === 'awaiting_confirmation',
       rows,
     }],
   }

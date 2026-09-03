@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { BotanicAgentSkill } from '../../domain/agent'
 import { createProjectAgentSkillDraft, executeProjectAgentSkillLifecycleAction, listProjectAgentSkills, preflightProjectAgentSkill, submitProjectAgentSkillReview, updateProjectAgentSkillDraft, type AgentSkillPreflight, type AgentSkillLifecycleAction } from '../../lib/agentSkillApi'
 import { localizeProductError } from '../../i18n/core'
@@ -15,8 +15,21 @@ export function AgentSkillManagement({ projectId, enabled, startCreating, onCrea
   const [skills, setSkills] = useState<BotanicAgentSkill[]>([]), [editing, setEditing] = useState<BotanicAgentSkill | null>(null)
   const [draft, setDraft] = useState({ name: '', instructions: '' }), [preflights, setPreflights] = useState<Record<string, AgentSkillPreflight>>({})
   const [pending, setPending] = useState<Pending | null>(null), [busy, setBusy] = useState(''), [error, setError] = useState('')
-  const load = useCallback(async () => { if (!enabled) return; try { setSkills(await listProjectAgentSkills(projectId, { includeAll: true })); setError('') } catch (caught) { setError(localizeProductError(caught, locale, { 'zh-CN': copy.loadError, en: copy.loadError })) } }, [copy.loadError, enabled, locale, projectId])
-  useEffect(() => { void load() }, [load])
+  // 切项目或卸载后到达的旧响应不得覆盖当前列表，否则后续行动会打到别的项目的 Skill 上。
+  useEffect(() => {
+    if (!enabled) return
+    let active = true
+    void (async () => {
+      try {
+        const items = await listProjectAgentSkills(projectId, { includeAll: true })
+        if (!active) return
+        setSkills(items); setError('')
+      } catch (caught) {
+        if (active) setError(localizeProductError(caught, locale, { 'zh-CN': copy.loadError, en: copy.loadError }))
+      }
+    })()
+    return () => { active = false }
+  }, [copy.loadError, enabled, locale, projectId])
   useEffect(() => { if (!startCreating) return; setEditing({ id: '', projectId, name: '', instructions: '', status: 'archived', lifecycle: 'draft', createdAt: 0, updatedAt: 0 } as BotanicAgentSkill); setDraft({ name: '', instructions: '' }); setPending(null); onCreatingHandled() }, [onCreatingHandled, projectId, startCreating])
   const replace = (skill: BotanicAgentSkill) => { setSkills((items) => [skill, ...items.filter((item) => item.id !== skill.id)]); setPreflights((items) => { const next = { ...items }; delete next[skill.id]; return next }); onChanged(skill) }
   const perform = async (key: string, task: () => Promise<BotanicAgentSkill>) => { setBusy(key); setError(''); try { const skill = await task(); replace(skill); setEditing(null); setDraft({ name: '', instructions: '' }); setPending(null) } catch (caught) { setError(localizeProductError(caught, locale, { 'zh-CN': copy.actionError, en: copy.actionError })) } finally { setBusy('') } }

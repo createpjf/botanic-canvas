@@ -174,13 +174,17 @@ function splitNumberedList(text: string) {
   return uniqueLabels(parts)
 }
 
-function parallelLocationValues(text: string) {
-  return uniqueLabels([...text.matchAll(/一个在([\u4e00-\u9fff]{1,8}?)(?=一个在|[，。,；;、\s]|$)/gu)].map((match) => match[1]))
-}
-
-function parallelCounterValues(text: string) {
-  return uniqueLabels([...text.matchAll(counterEnumPattern)].map((match) => match[1]))
-}
+const parallelLocationValues = (text: string) => uniqueLabels(
+  [...text.matchAll(/一个在([\u4e00-\u9fff]{1,8}?)(?=一个在|[，。,；;、\s]|$)/gu)].map((match) => match[1]),
+)
+const parallelCounterValues = (text: string) => uniqueLabels(
+  [...text.matchAll(counterEnumPattern)].map((match) => match[1]),
+)
+/** 强枚举证据（顿号/举例词/编号/「一个在X」/并列计数）：modelResolved 下只有它们允许隐式挖掘，普通逗号并列是句子成分。 */
+const instructionHasEnumerationEvidence = (text: string) => /、|比方|比如|例如|譬如/u.test(text)
+  || splitNumberedList(text).length >= botanicAgentVariationValueMin
+  || parallelLocationValues(text).length >= botanicAgentVariationValueMin
+  || parallelCounterValues(text).length >= botanicAgentVariationValueMin
 
 function inferInstructionValues(text: string) {
   const numbered = splitNumberedList(text)
@@ -188,10 +192,8 @@ function inferInstructionValues(text: string) {
   const parallel = parallelLocationValues(text)
   if (parallel.length >= botanicAgentVariationValueMin) return parallel
   const counters = parallelCounterValues(text)
-  if (counters.length >= botanicAgentVariationValueMin) return counters
-  return listedValuesFromText(text)
+  return counters.length >= botanicAgentVariationValueMin ? counters : listedValuesFromText(text)
 }
-
 function parseCountToken(token: string) {
   if (chineseCountByToken[token] != null) return chineseCountByToken[token]
   const count = Number(token)
@@ -498,14 +500,13 @@ export type BotanicAgentVariationRequestInput = {
   fallbackPrompt?: string
   /** 回合模型已结构化声明的变体；有它就不再从自然语言里挖轴，正则只做校验兜底。 */
   structuredVariants?: BotanicAgentStructuredVariant[]
-  /** 模型声明的变化维度短名（如「肤色」「场景」），仅用于展示与追问文案。 */
+  /** 模型声明的变化维度短名（如「肤色」），仅用于展示与追问文案。 */
   variationAxisLabel?: string
+  /** 回合模型已综合本轮（synthesizedPrompt 存在）：未声明 variants 即单图，无强枚举证据不做隐式挖掘。 */
+  modelResolved?: boolean
 }
 
-export type BotanicAgentStructuredVariant = {
-  label: string
-  promptDelta: string
-}
+export type BotanicAgentStructuredVariant = { label: string; promptDelta: string }
 
 export type BotanicAgentVariationRequest =
   | { kind: 'none' }
@@ -513,9 +514,7 @@ export type BotanicAgentVariationRequest =
   | { kind: 'ask'; clarification: BotanicAgentClarification }
   | { kind: 'ready'; spec: BotanicAgentVariationSpec }
 
-function stripCreativeBriefAppendix(instruction: string) {
-  return instruction.replace(/\n{2,}(?:创作简报：|Creative brief:)[\s\S]*$/iu, '').trim()
-}
+const stripCreativeBriefAppendix = (instruction: string) => instruction.replace(/\n{2,}(?:创作简报：|Creative brief:)[\s\S]*$/iu, '').trim()
 
 export function resolveBotanicAgentVariationRequest(input: BotanicAgentVariationRequestInput): BotanicAgentVariationRequest {
   const locale = input.locale ?? 'zh-CN'
@@ -525,9 +524,9 @@ export function resolveBotanicAgentVariationRequest(input: BotanicAgentVariation
   const confirmed = answered.length ? answered : uniqueLabels(input.brief?.variation?.values ?? [])
   const explicitBatch = instructionRequestsBatchVariation(instruction) || intent === 'batch_variation'
   const allowCustomAxis = explicitBatch || confirmed.length >= botanicAgentVariationValueMin
-  // 隐式枚举挖掘只对短指令生效：长文本是画面描述（如模型综合的 Prompt），
-  // 里面的逗号列表是句子成分而不是取值，挖出来只会产生伪变体和碎片分支。
-  const implicitMiningAllowed = explicitBatch || Array.from(instruction).length <= 40
+  // 隐式枚举挖掘只对短指令生效：长文本是画面描述，逗号列表是句子成分而不是取值。
+  // modelResolved（模型已综合本轮且未声明 variants，语义结论是单图）时只有强枚举证据才允许挖掘。
+  const implicitMiningAllowed = explicitBatch || ((!input.modelResolved || instructionHasEnumerationEvidence(instruction)) && Array.from(instruction).length <= 40)
   const inferred = confirmed.length ? confirmed : implicitMiningAllowed ? inferInstructionValues(instruction) : []
   const axes = fillAxisValues(implicitMiningAllowed ? parseAxes(instruction) : [], inferred, input.brief?.variation?.axisKey)
     .filter((axis) => axis.key !== 'custom' || allowCustomAxis)
@@ -858,6 +857,7 @@ export function applyBotanicAgentVariationToPlan(
     clarificationAnswers: input.clarificationAnswers,
     brief: input.brief,
     assetGroup: input.assetGroup,
+    modelResolved: input.modelResolved,
   })
   if (request.kind === 'none') return { kind: 'plan', plan }
   if (request.kind === 'asset_group') {

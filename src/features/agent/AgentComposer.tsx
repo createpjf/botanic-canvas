@@ -21,6 +21,17 @@ import { AGENT_COMPOSER_QUEUE_LIMIT, agentQueuedInstructionPreview, type AgentQu
 import { initialAgentComposerHistoryState, navigateAgentComposerHistory, nextAgentSuggestionIndex, rankAgentSuggestions } from './agentComposerState'
 import { agentComposerLocalCommands, type AgentComposerLocalCommand, type AgentComposerLocalCommandId } from './agentComposerCommands'
 import { BOTANIC_AGENT_MOUNTED_SKILL_LIMIT } from './agentSkillForm'
+import {
+  AgentAttachment,
+  AgentAttachmentEmpty,
+  AgentAttachmentHoverPreview,
+  AgentAttachmentInfo,
+  AgentAttachmentPreview,
+  AgentAttachmentRemove,
+  AgentAttachments,
+  attachmentFromContextItem,
+  attachmentFromSkill,
+} from './AgentAttachment'
 import { useProductI18n, useProductMessages } from '../../i18n/react'
 
 type AgentComposerProps = {
@@ -334,20 +345,27 @@ export function AgentComposer({
     {contextItems.length || mountedSkills.length ? <div className="agent-composer__attachments">
       {contextItems.length ? <div className="agent-composer__attach-row" aria-label={`${copy.referenced} ${contextItems.length}`}>
         <span className="agent-composer__attach-label">{copy.referenced}</span>
-        <div className="agent-composer__attach-chips">
-          {contextItems.map((item) => <button key={item.id} data-flip-id={item.id} type="button" className="agent-composer__chip is-media" aria-label={`${copy.remove} ${item.label}`} title={item.kind === '文字' && item.content ? `${copy.description} “${item.label}”: ${item.content}` : `${copy.remove} ${item.label}`} onClick={() => onRemoveContext(item.id)}>
-            {item.image ? <img src={item.image} alt="" /> : <span>{contextKindLabel(item.kind).slice(0, 1)}</span>}
-            <i aria-hidden="true">×</i>
-          </button>)}
-        </div>
+        <AgentAttachments variant="inline" className="agent-composer__attach-chips">
+          {contextItems.map((item) => {
+            const data = attachmentFromContextItem(item)
+            return <AgentAttachment key={item.id} data={data} flipId={item.id} onRemove={() => onRemoveContext(item.id)}>
+              <AgentAttachmentPreview />
+              <AgentAttachmentInfo />
+              <AgentAttachmentHoverPreview />
+              <AgentAttachmentRemove />
+            </AgentAttachment>
+          })}
+        </AgentAttachments>
       </div> : null}
       {mountedSkills.length ? <div className="agent-composer__attach-row" aria-label={`${copy.mounted} ${mountedSkills.length} Skill`}>
-        <span className="agent-composer__attach-label">{`${copy.mounted} ${mountedSkills.length}/{BOTANIC_AGENT_MOUNTED_SKILL_LIMIT}`}</span>
-        <div className="agent-composer__attach-chips">
-          {mountedSkills.map((skill) => <button key={skill.id} data-flip-id={skill.id} type="button" className="agent-composer__chip is-skill" aria-label={`${copy.remove} Skill ${skill.name}`} title={`${copy.remove} ${skill.name}`} onClick={() => onRemoveMountedSkill(skill.id)}>
-            <SparkleIcon /><b>{skill.name}</b><i aria-hidden="true">×</i>
-          </button>)}
-        </div>
+        <span className="agent-composer__attach-label">{`${copy.mounted} ${mountedSkills.length}/${BOTANIC_AGENT_MOUNTED_SKILL_LIMIT}`}</span>
+        <AgentAttachments variant="inline" className="agent-composer__attach-chips">
+          {mountedSkills.map((skill) => <AgentAttachment key={skill.id} data={attachmentFromSkill(skill)} flipId={skill.id} onRemove={() => onRemoveMountedSkill(skill.id)}>
+            <AgentAttachmentPreview />
+            <AgentAttachmentInfo />
+            <AgentAttachmentRemove />
+          </AgentAttachment>)}
+        </AgentAttachments>
       </div> : null}
     </div> : null}
     {skillMenuOpen ? <div id={suggestionListId} className="agent-composer__mention-menu" role="listbox" aria-multiselectable="true" aria-label={copy.callSkill} onPointerDown={(event) => event.stopPropagation()}>
@@ -421,10 +439,23 @@ export function AgentComposer({
       <div className="agent-composer__context-upload">
         <button type="button" role="menuitem" onClick={() => fileInputRef.current?.click()}><UploadIcon /><span><b>{copy.chooseImages}</b><small>{copy.dragHint}</small></span></button>
       </div>
-      {imageContextOptions.length ? imageContextOptions.map((item) => {
-        const selected = session?.contextNodeIds.includes(item.id) ?? false
-        return <button key={item.id} type="button" role="menuitemcheckbox" className={selected ? 'is-selected' : ''} aria-checked={selected} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onToggleImageContext(item.id, selected) }}>{item.image ? <img src={item.image} alt="" /> : null}<span><b>{item.label}</b><small>{contextKindLabel(item.kind)}</small></span>{selected ? <i aria-hidden="true">✓</i> : null}</button>
-      }) : <p>{copy.noImages}</p>}
+      {imageContextOptions.length ? <AgentAttachments variant="list" role="group" aria-label={copy.addImages}>
+        {imageContextOptions.map((item) => {
+          const selected = session?.contextNodeIds.includes(item.id) ?? false
+          return <AgentAttachment
+            key={item.id}
+            data={attachmentFromContextItem(item)}
+            selected={selected}
+            role="menuitemcheckbox"
+            aria-checked={selected}
+            onActivate={() => onToggleImageContext(item.id, selected)}
+          >
+            <AgentAttachmentPreview />
+            <AgentAttachmentInfo showMediaType />
+            {selected ? <i aria-hidden="true">✓</i> : null}
+          </AgentAttachment>
+        })}
+      </AgentAttachments> : <AgentAttachmentEmpty>{copy.noImages}</AgentAttachmentEmpty>}
     </div> : null}
     {modeMenuOpen ? <div id={modeMenuId} className="agent-composer__mode-menu" role="group" aria-label={copy.executionMode}>
       <button type="button" aria-label={copy.manual} aria-pressed={session?.executionMode === 'manual'} className={session?.executionMode === 'manual' ? 'is-selected' : ''} title={copy.manualTitle} onClick={() => onExecutionModeChange('manual')}><ChecklistIcon /><span><strong>{copy.manual}</strong><small>{copy.manualHelp}</small></span></button>

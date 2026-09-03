@@ -294,7 +294,7 @@ function generateImagesTool(input, targetVision) {
       + '必须用 variants 逐条声明：label 是 2-8 字短名（如“白人”“海边”），'
       + 'promptDelta 是该变体相对共享画面的完整差异描述（如“人物肤色为白人，保持五官与身份不变”）；'
       + '此时 prompt 只写各变体共享的画面底稿，不要把变体差异或枚举写进 prompt。'
-      + 'axisLabel 是变化维度短名（如“肤色”“场景”）。'
+      + 'axisLabel 是变化维度短名（如“肤色”“场景”）。用户只是修改单张（改比例/风格/构图）时不要写 variants；句中出现“风格”“场景”等词不代表要多张。'
       + 'intent 必须概括这次生成操作；任意对象增删改且没有更精确枚举时使用 continue_generation。'
       + '用户提到画面比例（如 16:9）或清晰度（1K/2K）时填写 aspectRatio / resolution。',
     risk: 'costly',

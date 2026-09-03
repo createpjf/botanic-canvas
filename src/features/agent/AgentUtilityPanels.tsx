@@ -21,6 +21,8 @@ import type { CollaborationActivity, CollaborationDocumentChange } from '../../d
 import { createLatestOperation } from '../../domain/latestOperation'
 import { downloadMedia } from '../../lib/mediaDownload'
 import { agentArtifactKindLabel, agentMemoryKindLabel, agentRunFeedback, AgentPanelBackButton } from './AgentWorkspaceParts'
+import { AgentMarkdown } from './AgentMarkdown'
+import { AgentAttachment, AgentAttachmentPreview, AgentAttachments, attachmentFromArtifact } from './AgentAttachment'
 import {
   agentReviewCandidateRows,
   agentReviewCoverageSummary,
@@ -36,13 +38,7 @@ import {
   reconcileAgentReviewOutcome,
   submitAgentReviewDecisions,
 } from '../../lib/agentApi'
-import {
-  brandKitSummary,
-  brandProposalRows,
-  effectiveBrandRuleRows,
-  overriddenBrandRuleRows,
-  type ResolvedBrandKit,
-} from '../../domain/brandKitPresentation'
+import { brandKitSummary, brandProposalRows, effectiveBrandRuleRows, overriddenBrandRuleRows, type ResolvedBrandKit } from '../../domain/brandKitPresentation'
 import { fetchBrandKitLibrary, fetchProjectBrandKit } from '../../lib/brandKitApi'
 import { cachedProjectCapabilities } from '../../lib/db'
 import { serverPersistenceEnabled } from '../../lib/productSession'
@@ -372,7 +368,7 @@ export function AgentResultPanel({
       <div className="agent-result-panel__detail">
         {media ? <div className="agent-result-panel__hero">
           {preview.kind === 'image' ? <img src={preview.url} alt={shortLabel} /> : <video src={preview.url} controls playsInline />}
-        </div> : <div className="agent-result-panel__document is-detail"><span>{preview.kind === 'workflow' ? '⌘' : 'Aa'}</span><p>{preview.content ?? preview.label}</p></div>}
+        </div> : <div className="agent-result-panel__document is-detail is-rich"><span>{preview.kind === 'workflow' ? '⌘' : 'Aa'}</span><AgentMarkdown content={preview.content ?? preview.label} showSources={false} /></div>}
         <p className="agent-result-panel__detail-meta">
           {agentArtifactKindLabel(preview, locale)}
           {modelLabel ? ` · ${modelLabel}` : ''}
@@ -453,21 +449,21 @@ export function AgentResultPanel({
             {conversationRunIds.includes(group.id) ? <button type="button" onClick={() => onLocateConversation(group.id)}>{copy.sourceConversation}</button> : null}
             <button type="button" onClick={() => toggleGroup(group.artifacts)}>{group.artifacts.every((artifact) => selectedIds.includes(artifact.id)) ? copy.clearSelection : copy.selectAll}</button>
           </header>
-          <div className={`agent-result-panel__grid${tab === 'tool' ? ' is-documents' : ''}`}>
+          <AgentAttachments variant="grid" className={`agent-result-panel__grid${tab === 'tool' ? ' is-documents' : ''}`}>
             {group.artifacts.map((artifact) => {
               const media = isMediaArtifact(artifact)
               const selected = selectedIds.includes(artifact.id)
               const shortLabel = artifactShortLabel(artifact, copy.generatedResult)
-              return <article key={artifact.id} className={selected ? 'is-selected' : ''}>
+              return <AgentAttachment key={artifact.id} data={attachmentFromArtifact(artifact)} selected={selected} className="agent-result-panel__item">
                 <button type="button" className="agent-result-panel__select" aria-pressed={selected} aria-label={`${selected ? copy.deselect : copy.select} ${shortLabel}`} title={selected ? copy.deselect : copy.select} onClick={() => toggleSelection(artifact.id)}>{selected ? '✓' : ''}</button>
                 <button type="button" className="agent-result-panel__open" aria-label={`${copy.view} ${shortLabel}`} onClick={() => setPreviewId(artifact.id)}>
-                  {media ? <span className="agent-result-panel__preview">
-                    {artifact.kind === 'image' ? <img src={artifact.url} alt="" /> : <video src={artifact.url} muted playsInline />}
-                  </span> : <span className="agent-result-panel__document"><span>{artifact.kind === 'workflow' ? '⌘' : 'Aa'}</span><b>{shortLabel}</b></span>}
+                  {media
+                    ? <AgentAttachmentPreview />
+                    : <span className="agent-result-panel__document"><span>{artifact.kind === 'workflow' ? '⌘' : 'Aa'}</span><b>{shortLabel}</b></span>}
                 </button>
-              </article>
+              </AgentAttachment>
             })}
-          </div>
+          </AgentAttachments>
         </section>
       })}
       {!filteredArtifacts.length ? <div className="agent-panel__empty">{tab === 'tool' ? copy.noToolArtifacts : copy.noGeneratedResults}</div> : null}

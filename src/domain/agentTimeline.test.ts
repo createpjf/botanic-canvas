@@ -757,3 +757,19 @@ test('流式attempt切换清除失败前缀,重复/迟到chunk不污染当前答
   assert.equal(state.timeline.stream?.attemptId, 'text')
   assert.equal(state.timeline.stream?.previewRevision, 2)
 })
+
+test('awaiting_confirmation 不折叠成 running，MCP 行派生 server 目标', () => {
+  const awaiting = presentAgentToolAccordionFromCalls([{
+    id: 'confirm-1', name: 'canvas_action_set', label: '执行画布操作', risk: 'write' as const,
+    status: 'awaiting_confirmation' as const, requiresConfirmation: true,
+  }], 'zh-CN')
+  assert.equal(awaiting?.groups[0]?.rows[0]?.status, 'awaiting_confirmation')
+  assert.equal(awaiting?.groups[0]?.rows[0]?.verb, '等待确认')
+  // 等待确认时组保持展开，让用户看得到要批准什么。
+  assert.equal(awaiting?.groups[0]?.open, true)
+
+  const mcp = presentAgentToolAccordionFromCalls([{
+    ...toolCall('mcp-1', 'mcp_call', '调用 MCP：figma.get_file', 'succeeded'), risk: 'external' as const,
+  }], 'zh-CN')
+  assert.equal(mcp?.groups[0]?.rows[0]?.target, 'figma')
+})

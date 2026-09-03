@@ -18,14 +18,7 @@ import {
   type BotanicAgentPlan,
 } from '../../domain/agent'
 import { collectAgentMediaSources, collectAgentVisionMediaSources, prepareAgentMediaSources } from '../../domain/agentMedia'
-import {
-  type AssetNodeData,
-  type CanvasDocument,
-  type GenerateNodeData,
-  type ResultNodeData,
-  type TextNodeData,
-  type UploadedAssetInput,
-} from '../../domain/canvas'
+import type { AssetNodeData, CanvasDocument, GenerateNodeData, ResultNodeData, TextNodeData, UploadedAssetInput } from '../../domain/canvas'
 import { canUseForImageDelivery } from '../../domain/deliveryPresentation'
 import { botanicAgentConfirmBranchDrafts, botanicAgentBranchGenerationPrompt } from '../../domain/agentVariations'
 import {
@@ -45,19 +38,12 @@ import { useCanvasStore } from '../../store/canvasStore'
 import { recordSentryBreadcrumb } from '../../lib/sentry'
 import { useAgentSessionMessages } from '../agent/useAgentSessionMessages'
 import type { AgentArtifactIndexState, AgentContextItem, AgentDockTarget } from '../agent/agentWorkspace.types'
-import {
-  projectAcceptedAgentRunBestEffort,
-  preserveCanvasAgentActionError,
-} from './canvasAgentActionExecution'
+import { projectAcceptedAgentRunBestEffort, preserveCanvasAgentActionError, removeUnstartedGenerateBranches, trackCreatedGenerateBranch, type UnstartedGenerateBranch } from './canvasAgentActionExecution'
 import { canvasSystemLabel } from './canvasI18n'
 
 const canvasAgentExecutionCopy = {
   'zh-CN': {
-    selectedResult: '已选结果',
-    imageAsset: '图片素材',
-    generatedResult: '生成结果',
-    textDescription: '文字描述',
-    generateNode: '生成节点',
+    selectedResult: '已选结果', imageAsset: '图片素材', generatedResult: '生成结果', textDescription: '文字描述', generateNode: '生成节点',
     projectChanged: '项目已切换，本次计划未启动。',
     projectChangedResult: '已切换项目，结果保留在原项目，未写入当前画布。',
     actionFailed: 'Agent 操作执行失败，请稍后重试。',
@@ -68,11 +54,7 @@ const canvasAgentExecutionCopy = {
     generationNotStarted: '生成任务未启动，请检查参考素材与生成服务。',
   },
   en: {
-    selectedResult: 'Selected result',
-    imageAsset: 'Image asset',
-    generatedResult: 'Generated result',
-    textDescription: 'Text description',
-    generateNode: 'Generation node',
+    selectedResult: 'Selected result', imageAsset: 'Image asset', generatedResult: 'Generated result', textDescription: 'Text description', generateNode: 'Generation node',
     projectChanged: 'The project changed, so this plan was not started.',
     projectChangedResult: 'The project changed. The result remains in the original project and was not added to this canvas.',
     actionFailed: 'Unable to complete the Agent action. Try again.',
@@ -118,6 +100,12 @@ function canvasAgentDockTarget(
   return node?.type === 'result' && data?.image && rootRecipe
     ? { id: node.id, label: canvasSystemLabel(data.label ?? fallbackLabel, locale), image: data.image, rootRecipe }
     : undefined
+}
+
+/** 清理孤儿分支节点（判定在 canvasAgentActionExecution，注入实时 store）。 */
+function cleanupUnstartedBranches(branches: UnstartedGenerateBranch[]) {
+  const { document, removeNodeFromCanvas } = useCanvasStore.getState()
+  removeUnstartedGenerateBranches(branches, document, removeNodeFromCanvas)
 }
 
 export function useCanvasAgentExecutionBridge({
@@ -700,42 +688,51 @@ export function useCanvasAgentExecutionBridge({
     runId = saveAgentPlan(plan)
     updateAgentRunStatus(runId, 'executing')
     let started = false
-    if (plan.output.mode === 'batch_by_asset' && plan.assetGroupId) {
-      started = await runBatchVariation({
-        sourceResultNodeId: selectedResultNodeId,
-        groupId: plan.assetGroupId,
-        prompt: plan.prompt,
-        candidatesPerAsset: plan.output.candidatesPerItem,
-        settings: plan.settings,
-        agentRunId: undefined,
-      })
-    } else if (plan.output.mode === 'batch_by_variation') {
-      const nodeIds = branchInputs.flatMap((branch) => {
-        const nodeId = createGenerateBranchFromResult(selectedResultNodeId, {
-          prompt: botanicAgentBranchGenerationPrompt(plan.prompt, branch.variation?.promptDelta),
-          batchCount: 1,
+    // 本次回退路径新建的分支节点。执行失败时清理其中从未进入提交流程的
+    // （无 status/jobId/submissionKey），否则孤儿「新图 · 图像 01」空节点会永远留在画布上。
+    const createdBranches: UnstartedGenerateBranch[] = []
+    try {
+      if (plan.output.mode === 'batch_by_asset' && plan.assetGroupId) {
+        started = await runBatchVariation({
+          sourceResultNodeId: selectedResultNodeId,
+          groupId: plan.assetGroupId,
+          prompt: plan.prompt,
+          candidatesPerAsset: plan.output.candidatesPerItem,
           settings: plan.settings,
-          refinementMode: 'faithful',
+          agentRunId: undefined,
         })
-        return nodeId ? [nodeId] : []
-      })
-      const results = await Promise.all(nodeIds.map((nodeId) => runGraphGeneration(nodeId)))
-      started = results.some(Boolean)
-    } else {
-      const branchId = plan.intent === 'redo_from_root'
-        ? createGenerateFromResultRecipe(selectedResultNodeId)
-        : createGenerateBranchFromResult(selectedResultNodeId, {
-            prompt: plan.prompt,
-            batchCount: plan.output.count,
-            settings: plan.settings,
-            refinementMode: 'faithful',
+      } else if (plan.output.mode === 'batch_by_variation') {
+        const nodeIds = branchInputs.flatMap((branch) => {
+          const nodeId = createGenerateBranchFromResult(selectedResultNodeId, {
+            prompt: botanicAgentBranchGenerationPrompt(plan.prompt, branch.variation?.promptDelta),
+            batchCount: 1, settings: plan.settings, refinementMode: 'faithful',
           })
-      if (branchId) {
-        if (plan.intent === 'redo_from_root') updateGenerateNode(branchId, { prompt: plan.prompt, settings: plan.settings })
-        started = await runGraphGeneration(branchId)
+          return nodeId ? [nodeId] : []
+        })
+        createdBranches.push(...nodeIds.map((nodeId) => ({ nodeId })))
+        const results = await Promise.all(nodeIds.map((nodeId) => runGraphGeneration(nodeId)))
+        started = results.some(Boolean)
+      } else {
+        // redo_from_root 还会为缺失的原始参考补建素材节点，清理时不能把它们留成孤儿。
+        const beforeNodeIds = new Set(useCanvasStore.getState().document.nodes.map((node) => node.id))
+        const branchId = plan.intent === 'redo_from_root'
+          ? createGenerateFromResultRecipe(selectedResultNodeId)
+          : createGenerateBranchFromResult(selectedResultNodeId, {
+              prompt: plan.prompt, batchCount: plan.output.count, settings: plan.settings, refinementMode: 'faithful',
+            })
+        if (branchId) {
+          createdBranches.push(trackCreatedGenerateBranch(branchId, beforeNodeIds, useCanvasStore.getState().document.nodes))
+          if (plan.intent === 'redo_from_root') updateGenerateNode(branchId, { prompt: plan.prompt, settings: plan.settings })
+          started = await runGraphGeneration(branchId)
+        }
       }
+    } catch (caught) {
+      // 取消/deadline 等异常路径同样不能留孤儿节点；清理后原样上抛，Run 语义不变。
+      cleanupUnstartedBranches(createdBranches)
+      throw caught
     }
     if (!started) {
+      cleanupUnstartedBranches(createdBranches)
       updateAgentRunStatus(runId, 'failed', copy.generationNotStarted)
       return { started: false, runId }
     }

@@ -198,7 +198,7 @@ export function validateBotanicAgentPlanInput(raw) {
   const instruction = requiredText(input.instruction, '修改要求', 4000)
   // 用户原话：综合 Prompt 链路里 instruction 是模型写的画面描述，变体轴只允许从原话解析。
   const sourceInstruction = optionalText(input.sourceInstruction, '用户原话', 4000)
-  // 回合模型结构化声明的变体：有它就直接展开，不再从自然语言里挖轴。坏条目静默丢弃，剩余不足 2 条视为未声明。
+  // 回合模型结构化声明的变体：有它就直接展开。坏条目静默丢弃，剩余不足 2 条视为未声明。
   let structuredVariants
   if (Array.isArray(input.structuredVariants)) {
     const seen = new Set()
@@ -214,9 +214,10 @@ export function validateBotanicAgentPlanInput(raw) {
     if (structuredVariants.length < 2) structuredVariants = undefined
   }
   const variationAxisLabel = structuredVariants ? optionalText(input.variationAxisLabel, '变体维度', 16) : undefined
+  // modelResolved：回合模型已综合本轮，未声明 variants 即单图，变体解析不做隐式挖掘。
+  if (input.modelResolved !== undefined && typeof input.modelResolved !== 'boolean') invalidRequest('modelResolved 无效。')
   const requestedIntent = optionalText(input.requestedIntent, '操作类型', 80)
   if (requestedIntent && !INTENTS.has(requestedIntent)) invalidRequest('操作类型不支持。')
-
   const selected = structuredObject(input.selectedResult, '当前结果')
   const selectedResult = {
     nodeId: requiredText(selected.nodeId, '结果节点', 160),
@@ -373,9 +374,7 @@ export function validateBotanicAgentPlanInput(raw) {
         return result
       })
     })()
-
   const parentPrompt = optionalText(input.parentPrompt, '父图提示词', 6000)
-
   // 本轮请求的张数。素材组批量由素材数决定，这里只约束单次生成要出几张。
   let outputCount
   if (input.outputCount !== undefined) {
@@ -393,6 +392,7 @@ export function validateBotanicAgentPlanInput(raw) {
     ...(sourceInstruction ? { sourceInstruction } : {}),
     ...(structuredVariants ? { structuredVariants } : {}),
     ...(variationAxisLabel ? { variationAxisLabel } : {}),
+    ...(input.modelResolved === true ? { modelResolved: true } : {}),
     ...(requestedIntent ? { requestedIntent } : {}),
     selectedResult,
     settings: effectiveSettings,
@@ -550,8 +550,7 @@ function normalizeProviderPlan(raw, input) {
     ...(selectedAssetGroup ? { assetGroupId: selectedAssetGroup.id } : {}),
   }
   const applied = applyBotanicAgentVariationToPlan(plan, {
-    // 模型结构化声明的变体直接展开；否则变体轴只从用户原话解析，
-    // 综合 Prompt 里的「两张」等字样会把模型 prose 挖成伪变体。
+    // 模型结构化声明的变体直接展开；否则变体轴只从用户原话解析（综合 Prompt 是模型 prose）。
     instruction: input.sourceInstruction || input.instruction,
     requestedIntent: input.requestedIntent,
     clarificationAnswers: input.clarificationAnswers,
@@ -560,6 +559,7 @@ function normalizeProviderPlan(raw, input) {
     fallbackPrompt: input.parentPrompt,
     structuredVariants: input.structuredVariants,
     variationAxisLabel: input.variationAxisLabel,
+    modelResolved: input.modelResolved,
   })
   if (applied.kind === 'clarification') return { kind: 'clarification', clarification: applied.clarification }
   return applied.plan

@@ -162,6 +162,20 @@ function parallelCounterValues(text) {
   return uniqueLabels([...text.matchAll(counterEnumPattern)].map((match) => match[1]))
 }
 
+/**
+ * 强枚举证据：顿号列表、举例引导词、编号列表、「一个在X一个在Y」并列。
+ * modelResolved 下只有这些结构化信号才允许隐式挖掘——普通逗号并列
+ * （「……，……风格」）是句子成分，不是取值枚举。
+ */
+function instructionHasEnumerationEvidence(text) {
+  if (/、/u.test(text)) return true
+  if (/比方|比如|例如|譬如/u.test(text)) return true
+  if (splitNumberedList(text).length >= botanicAgentVariationValueMin) return true
+  if (parallelLocationValues(text).length >= botanicAgentVariationValueMin) return true
+  if (parallelCounterValues(text).length >= botanicAgentVariationValueMin) return true
+  return false
+}
+
 function inferInstructionValues(text) {
   const numbered = splitNumberedList(text)
   if (numbered.length >= botanicAgentVariationValueMin) return numbered
@@ -446,7 +460,11 @@ export function resolveBotanicAgentVariationRequest(input) {
   const explicitBatch = instructionRequestsBatchVariation(instruction) || intent === 'batch_variation'
   // 隐式枚举挖掘只对短指令生效：长文本是画面描述（如模型综合的 Prompt），
   // 里面的逗号列表是句子成分而不是取值，挖出来只会产生伪变体和碎片分支。
-  const implicitMiningAllowed = explicitBatch || Array.from(instruction).length <= 40
+  // 回合模型已综合本轮（modelResolved）且未声明 variants 时，它的语义结论是单图；
+  // 此时只有强枚举证据（顿号、举例、编号、并列计数）才允许挖掘，
+  // 普通逗号并列（「……，……风格」）不得推翻模型判断切成伪变体。
+  const implicitMiningAllowed = explicitBatch
+    || ((!input.modelResolved || instructionHasEnumerationEvidence(instruction)) && Array.from(instruction).length <= 40)
   const allowCustomAxis = explicitBatch || confirmed.length >= botanicAgentVariationValueMin
   const inferred = confirmed.length ? confirmed : implicitMiningAllowed ? inferInstructionValues(instruction) : []
   const axes = fillAxisValues(implicitMiningAllowed ? parseAxes(instruction) : [], inferred, input.brief?.variation?.axisKey)
@@ -679,6 +697,7 @@ export function applyBotanicAgentVariationToPlan(plan, input) {
     clarificationAnswers: input.clarificationAnswers,
     brief: input.brief,
     assetGroup: input.assetGroup,
+    modelResolved: input.modelResolved,
   })
   if (request.kind === 'none') return { kind: 'plan', plan }
   if (request.kind === 'asset_group') {

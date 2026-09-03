@@ -42,7 +42,7 @@ import {
 import { BobCharacter } from '../../components/bob/BobCharacter'
 import { bobMessageAllowsSays, bobMessageIsLargeReply, bobReplyPresentation } from '../../domain/bobPresentation'
 import { useBobSaysPlays } from './useBobSaysPlays'
-import { AlertIcon, CheckIcon, ChevronDownIcon, ClockIcon, ContinueChatIcon, CopyIcon, EditIcon, FileSearchIcon, FileTextIcon, FocusIcon, GlobeIcon, HammerIcon, ImageIcon, ListTodoIcon, MoreIcon, MousePointerClickIcon, PinNodeIcon, SearchCodeIcon, SparkleIcon, SquareTerminalIcon, ThumbDownIcon, ThumbUpIcon, UnplugIcon, WrenchIcon } from '../../components/BotanicIcons'
+import { AlertIcon, CheckIcon, ChevronDownIcon, ClockIcon, ContinueChatIcon, CopyIcon, EditIcon, FocusIcon, MoreIcon, PinNodeIcon, ThumbDownIcon, ThumbUpIcon } from '../../components/BotanicIcons'
 import { AgentThinkingOrb } from '../../components/AgentThinkingOrb'
 import { AgentToolOrb } from '../../components/AgentToolOrb'
 import { AgentWebSourcePills } from '../../components/AgentWebSourcePills'
@@ -72,7 +72,9 @@ import { useProductI18n } from '../../i18n/react'
 import type { ProductLocale } from '../../i18n/core'
 import type { BotanicAgentRunReview } from '../../domain/agentReviewContract'
 import { agentTimelineOrbState, agentTimelineStepToolName, timelineStepShowsWebSources, timelineWebSourceHref, type AgentTimelineState, type TimelineBlock, type TimelineStepKind, type TimelineWebSource } from '../../domain/agentTimeline'
-import { agentMcpServerBrandLogoSrc, agentMcpServerIdFromLabel, agentTimelineHasRenderableContent, agentToolAccordionElapsedLabel, agentToolIconKey, conversationTimelineStepTitle, presentAgentTimelineConversation, presentAgentToolAccordion, presentAgentToolAccordionFromCalls, type AgentToolAccordionGroup, type AgentToolAccordionRow, type AgentToolAccordionView } from '../../domain/agentToolAccordion'
+import { agentTimelineHasRenderableContent, conversationTimelineStepTitle, presentAgentTimelineConversation, presentAgentToolAccordion, presentAgentToolAccordionFromCalls } from '../../domain/agentToolAccordion'
+import { AgentToolCallAccordion, AgentToolCallIcon } from './AgentActionCard'
+import { AgentAttachment, AgentAttachmentHoverPreview, AgentAttachmentInfo, AgentAttachmentPreview, AgentAttachments, attachmentFromArtifact, attachmentFromContextItem } from './AgentAttachment'
 /** 单条任务消息内联展示的结果上限；更多结果去结果面板看，避免对话被结果流冲垮。 */
 const inlineRunResultLimit = 4
 const justFinishedRevealMs = 1200
@@ -298,144 +300,9 @@ function timelineElapsedLabel(startedAt: number, endedAt: number, locale: Produc
   return minutes ? `${locale === 'en' ? 'Thought for' : '思考了'} ${minutes}m ${remainder}s` : `${locale === 'en' ? 'Thought for' : '思考了'} ${seconds}s`
 }
 
-function AgentToolCallIcon({
-  toolName,
-  kind,
-  label,
-}: {
-  toolName?: string
-  kind?: TimelineStepKind
-  label?: string
-}) {
-  const key = agentToolIconKey({ toolName, kind, label })
-  if (key === 'unplug') {
-    const logo = agentMcpServerBrandLogoSrc(agentMcpServerIdFromLabel(label))
-    if (logo) return <img className="agent-tool-accordion__brand" src={logo} alt="" draggable={false} />
-  }
-  if (key === 'search-code') return <SearchCodeIcon />
-  if (key === 'file-search') return <FileSearchIcon />
-  if (key === 'file-text') return <FileTextIcon />
-  if (key === 'square-terminal') return <SquareTerminalIcon />
-  if (key === 'globe') return <GlobeIcon />
-  if (key === 'mouse-pointer-click') return <MousePointerClickIcon />
-  if (key === 'unplug') return <UnplugIcon />
-  if (key === 'sparkles') return <SparkleIcon />
-  if (key === 'image') return <ImageIcon />
-  if (key === 'list-todo') return <ListTodoIcon />
-  if (key === 'hammer') return <HammerIcon />
-  return <WrenchIcon />
-}
-
 function TimelineStepIcon({ kind }: { kind: TimelineStepKind }) {
   // 管道步没有 toolName 时仍按 kind 兜底；accordion 行走 AgentToolCallIcon。
   return <AgentToolCallIcon kind={kind} />
-}
-
-function AgentToolAccordionRowView({
-  row,
-  index,
-}: {
-  row: AgentToolAccordionRow
-  index: number
-}) {
-  const [detailOpen, setDetailOpen] = useState(false)
-  const hasDetail = Boolean(row.error || (row.calls && row.calls.length > 1))
-  const copy = (
-    <span className="agent-tool-accordion__row-copy">
-      <strong className={row.status === 'running' ? 'is-shimmer' : undefined}>{row.verb}</strong>
-      <span className="agent-tool-accordion__detail" title={row.detail}>{row.detail}</span>
-    </span>
-  )
-  return <div
-    className={`agent-tool-accordion__row is-${row.status}`}
-    style={prefersReducedMotion() ? undefined : { animationDelay: `${index * 60}ms` }}
-  >
-    <span className="agent-tool-accordion__row-icon" aria-hidden="true">
-      <AgentToolCallIcon toolName={row.toolName} kind={row.kind} label={row.detail} />
-    </span>
-    {hasDetail ? <button
-      type="button"
-      className="agent-tool-accordion__row-toggle"
-      aria-expanded={detailOpen}
-      onClick={() => setDetailOpen((value) => !value)}
-    >
-      {copy}
-      <ChevronDownIcon />
-    </button> : copy}
-    {detailOpen && row.error ? <p className="agent-tool-accordion__row-error">{row.error}</p> : null}
-    {detailOpen && row.calls?.length ? <div className="agent-tool-accordion__nested">
-      {row.calls.map((call) => <div key={call.id} className={`agent-tool-accordion__row is-${call.status} is-nested`}>
-        <span className="agent-tool-accordion__row-icon" aria-hidden="true">
-          <AgentToolCallIcon toolName={call.toolName} kind={call.kind} label={call.detail} />
-        </span>
-        <span className="agent-tool-accordion__row-copy">
-          <strong>{call.verb}</strong>
-          <span className="agent-tool-accordion__detail" title={call.detail}>{call.detail}</span>
-        </span>
-        {call.error ? <p className="agent-tool-accordion__row-error">{call.error}</p> : null}
-      </div>)}
-    </div> : null}
-  </div>
-}
-
-function AgentToolAccordionGroupView({ group }: { group: AgentToolAccordionGroup }) {
-  const rootRef = useRef<HTMLDivElement>(null)
-  const panelRef = useRef<HTMLDivElement>(null)
-  const readyRef = useRef(false)
-  const [open, setOpen] = useState(group.open)
-  useEffect(() => {
-    setOpen(group.open)
-  }, [group.id, group.open, group.status])
-
-  useGSAP(() => {
-    const panel = panelRef.current
-    if (!panel) return
-    const duration = prefersReducedMotion() ? 0 : botanicMotion.duration.panel
-    if (!readyRef.current) {
-      readyRef.current = true
-      gsap.set(panel, open
-        ? { height: 'auto', autoAlpha: 1, y: 0 }
-        : { height: 0, autoAlpha: 0, y: 0 })
-      return
-    }
-    gsap.to(panel, {
-      height: open ? 'auto' : 0,
-      autoAlpha: open ? 1 : 0,
-      y: open || prefersReducedMotion() ? 0 : -4,
-      duration,
-      ease: botanicMotion.ease,
-    })
-  }, { dependencies: [open, group.rows.length], scope: rootRef })
-
-  return <div ref={rootRef} className={`agent-tool-accordion__group is-${group.status}${open ? ' is-open' : ''}`}>
-    <button
-      type="button"
-      className={`agent-tool-accordion__title${group.status === 'running' ? ' is-shimmer' : ''}`}
-      aria-expanded={open}
-      onClick={() => setOpen((value) => !value)}
-    >
-      <span>{group.title}</span>
-      <ChevronDownIcon />
-    </button>
-    <div
-      ref={panelRef}
-      className="agent-tool-accordion__panel"
-      aria-hidden={!open}
-      inert={!open ? true : undefined}
-    >
-      {group.rows.map((row, index) => <AgentToolAccordionRowView key={row.id} row={row} index={index} />)}
-    </div>
-  </div>
-}
-
-function AgentToolCallAccordion({ view }: { view: AgentToolAccordionView }) {
-  const { locale } = useProductI18n()
-  if (!view.groups.length) return null
-  const showElapsed = view.elapsedMs >= 1_000
-  return <div className="agent-tool-accordion" aria-label={locale === 'en' ? 'Agent tool calls' : 'Agent 工具调用'}>
-    {showElapsed ? <p className="agent-tool-accordion__elapsed">{agentToolAccordionElapsedLabel(view.elapsedMs, locale)}</p> : null}
-    {view.groups.map((group) => <AgentToolAccordionGroupView key={group.id} group={group} />)}
-  </div>
 }
 
 function TimelineStepMarker({
@@ -685,18 +552,21 @@ function AgentPlanContextChips({
 }) {
   const { locale } = useProductI18n()
   if (!items.length) return null
-  const kindLabel = (kind: BotanicAgentContextSnapshot['kind']) => locale === 'en'
-    ? ({ '素材': 'Asset', '结果': 'Result', '文字': 'Text', '节点': 'Node' }[kind] ?? kind)
-    : kind
-  return <div className="agent-plan__context-locks" aria-label={locale === 'en' ? 'References' : '参考'}>
+  return <AgentAttachments variant="inline" className="agent-plan__context-locks" aria-label={locale === 'en' ? 'References' : '参考'}>
     {items.map((item) => {
       const ref = mentionCatalog?.references?.find((candidate) => candidate.id === item.nodeId)
-      return <span key={item.nodeId} className="agent-plan__context-lock">
-        {ref?.image ? <img src={ref.image} alt="" /> : <i aria-hidden="true">{kindLabel(item.kind).slice(0, 1)}</i>}
-        <small>{ref?.label ?? item.label}</small>
-      </span>
+      return <AgentAttachment key={item.nodeId} data={attachmentFromContextItem({
+        id: item.nodeId,
+        label: ref?.label ?? item.label,
+        kind: item.kind,
+        ...(ref?.image ? { image: ref.image } : {}),
+      })}>
+        <AgentAttachmentPreview />
+        <AgentAttachmentInfo />
+        <AgentAttachmentHoverPreview />
+      </AgentAttachment>
     })}
-  </div>
+  </AgentAttachments>
 }
 
 function AgentPlanSettingsEditor({
@@ -1194,14 +1064,14 @@ export function AgentConversationMessage({
   const showUtilities = !timeline && !streaming && botanicAgentMessageHasUtilities(utilityActions)
   // 结算后有图：正文 → 产物 → 过程；过程默认已折叠，不挡主阅读。
   const runResults = message.kind === 'run' && inlineRunResults.length
-    ? <div className={`agent-run-message__results${!streaming ? ' is-featured' : ''}`} aria-label={t('本次任务结果', 'Task results')}>
-      {inlineRunResults.map((artifact) => artifact.kind === 'image'
-        ? <img key={artifact.id} src={artifact.url} alt={artifact.label} />
-        : <video key={artifact.id} src={artifact.url} muted playsInline aria-label={artifact.label} />)}
+    ? <AgentAttachments variant="grid" className={`agent-run-message__results${!streaming ? ' is-featured' : ''}`} aria-label={t('本次任务结果', 'Task results')}>
+      {inlineRunResults.map((artifact) => <AgentAttachment key={artifact.id} data={attachmentFromArtifact(artifact)}>
+        <AgentAttachmentPreview decorative={false} />
+      </AgentAttachment>)}
       {runMediaArtifacts.length > inlineRunResults.length ? <button type="button" className="agent-run-message__more" onClick={onShowResults}>
         {t(`查看全部 ${runMediaArtifacts.length} 项`, `View all ${runMediaArtifacts.length} results`)}
       </button> : null}
-    </div>
+    </AgentAttachments>
     : null
   const resultsFirst = Boolean(runResults && !streaming)
   const messageProse = message.kind === 'composition' && message.composition
