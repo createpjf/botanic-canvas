@@ -65,7 +65,7 @@ export function useAgentSkillRegistry(input: {
       .then((items) => { if (active) setSystemSkills(items) })
       .catch(() => { if (active) setSystemSkills([]) })
     void listProjectAgentSkills(projectId).then((items) => {
-      if (active) setSkills(items)
+      if (active) setSkills(items.filter((skill) => skill.lifecycle ? skill.lifecycle === 'published' : skill.status === 'active'))
     }).catch((reason) => {
       if (active) dispatch({ type: 'submitFailed', error: localizeProductError(reason, locale, {
         'zh-CN': '项目 Skill 列表加载失败。',
@@ -93,6 +93,10 @@ export function useAgentSkillRegistry(input: {
 
   const toggleExpanded = useCallback((skillId: string) => {
     setExpandedSkillId((current) => nextExpandedSkillId(current, skillId))
+  }, [])
+
+  const managedSkillChanged = useCallback((skill: BotanicAgentSkill) => {
+    setSkills((items) => skill.lifecycle === 'published' ? [skill, ...items.filter((item) => item.id !== skill.id)] : items.filter((item) => item.id !== skill.id))
   }, [])
 
   const toggleMounted = useCallback((skillId: string, mounted: boolean) => {
@@ -154,6 +158,7 @@ export function useAgentSkillRegistry(input: {
     cancelConfirm,
     toggleExpanded,
     toggleMounted,
+    managedSkillChanged,
     submit,
   }
 }

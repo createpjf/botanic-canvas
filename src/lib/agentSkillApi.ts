@@ -17,7 +17,8 @@ export async function updateProjectAgentSkillDraft(projectId: string, skill: Bot
 export type AgentSkillLifecycleAction = 'skill_publish' | 'skill_deprecate' | 'skill_restore'
 export async function executeProjectAgentSkillLifecycleAction(projectId: string, skill: BotanicAgentSkill, name: AgentSkillLifecycleAction, version?: number) {
   const argumentsValue = { skillId: skill.id, expectedVersion: skill.version, expectedContentHash: skill.contentHash, ...(version ? { version } : {}) }
-  const toolCallId = `call-${name}-${skill.id}-${skill.version}`, submissionKey = `agent-${name}-${skill.id}-${skill.version}`.replace(/[^A-Za-z0-9_-]/g, '-').slice(0, 120)
+  const actionVersion = version ? `${skill.version}-${version}` : `${skill.version}`
+  const toolCallId = `call-${name}-${skill.id}-${actionVersion}`, submissionKey = `agent-${name}-${skill.id}-${actionVersion}`.replace(/[^A-Za-z0-9_-]/g, '-').slice(0, 120)
   const identity = { projectId, name, toolCallId, arguments: argumentsValue }
   const approval = await productRequest<{ approval: { token: string; approvedAt: number; expiresAt: number } }>('/api/agent-action-approvals', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': submissionKey }, body: JSON.stringify(identity) })
   const response = await productRequest<{ output: { skill: BotanicAgentSkill } }>('/api/agent-actions', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': submissionKey }, body: JSON.stringify({ ...identity, confirmed: true, approval: approval.approval }) })

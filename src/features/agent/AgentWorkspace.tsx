@@ -3665,24 +3665,18 @@ export default function AgentWorkspace({
         /></div> : null}
         {skillPanelOpen ? <div data-agent-flip className="agent-workspace__flip-surface"><AgentSkillPanel
           open={skillPanelOpen}
+          projectId={projectId}
           serverPersistenceEnabled={serverPersistenceEnabled}
           copy={flowCopy}
           systemSkills={systemSkills}
           skills={skills}
           mountedSkillIds={session?.mountedSkillIds}
           expandedSkillId={skillRegistry.expandedSkillId}
-          form={skillRegistry.form}
-          nameInputRef={skillRegistry.nameInputRef}
-          createButtonRef={skillRegistry.createButtonRef}
+          startCreating={skillRegistry.form.open}
           onToggleExpanded={skillRegistry.toggleExpanded}
           onToggleMounted={skillRegistry.toggleMounted}
-          onEditName={skillRegistry.editName}
-          onEditInstructions={skillRegistry.editInstructions}
-          onOpenForm={skillRegistry.openForm}
           onCloseForm={skillRegistry.closeForm}
-          onRequestConfirm={skillRegistry.requestConfirm}
-          onCancelConfirm={skillRegistry.cancelConfirm}
-          onSubmit={skillRegistry.submit}
+          onManagedSkillChanged={skillRegistry.managedSkillChanged}
         /></div> : null}
         {!utilityPanelOpen ? <div data-agent-flip className="agent-workspace__conversation">
         {!hasMessages ? <section className="agent-workspace__welcome">

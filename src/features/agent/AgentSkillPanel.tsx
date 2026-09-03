@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useState, type RefObject } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { BotanicAgentSkill, BotanicAgentSkillCatalogItem } from '../../domain/agent'
-import { CloseIcon, PlusIcon, SearchIcon, SparkleIcon } from '../../components/BotanicIcons'
+import { CloseIcon, SearchIcon, SparkleIcon } from '../../components/BotanicIcons'
 import { AgentSkillCard } from './AgentUtilityPanels'
-import { BOTANIC_AGENT_MOUNTED_SKILL_LIMIT, type AgentSkillFormState } from './agentSkillForm'
+import { AgentSkillManagement } from './AgentSkillManagement'
+import { BOTANIC_AGENT_MOUNTED_SKILL_LIMIT } from './agentSkillForm'
 
 export type AgentSkillSourceFilter = 'all' | 'system' | 'project'
 
@@ -43,44 +44,32 @@ type AgentSkillPanelCopy = {
 
 export function AgentSkillPanel({
   open,
+  projectId,
   serverPersistenceEnabled,
   copy,
   systemSkills,
   skills,
   mountedSkillIds,
   expandedSkillId,
-  form,
-  nameInputRef,
-  createButtonRef,
+  startCreating,
   onToggleExpanded,
   onToggleMounted,
-  onEditName,
-  onEditInstructions,
-  onOpenForm,
   onCloseForm,
-  onRequestConfirm,
-  onCancelConfirm,
-  onSubmit,
+  onManagedSkillChanged,
 }: {
   open: boolean
+  projectId: string
   serverPersistenceEnabled: boolean
   copy: AgentSkillPanelCopy
   systemSkills: BotanicAgentSkillCatalogItem[]
   skills: BotanicAgentSkill[]
   mountedSkillIds?: readonly string[]
   expandedSkillId: string
-  form: AgentSkillFormState
-  nameInputRef: RefObject<HTMLInputElement | null>
-  createButtonRef: RefObject<HTMLButtonElement | null>
+  startCreating: boolean
   onToggleExpanded: (id: string) => void
   onToggleMounted: (id: string, mounted: boolean) => void
-  onEditName: (value: string) => void
-  onEditInstructions: (value: string) => void
-  onOpenForm: () => void
   onCloseForm: () => void
-  onRequestConfirm: () => void
-  onCancelConfirm: () => void
-  onSubmit: () => Promise<void>
+  onManagedSkillChanged: (skill: BotanicAgentSkill) => void
 }) {
   const [query, setQuery] = useState('')
   const [sourceFilter, setSourceFilter] = useState<AgentSkillSourceFilter>('all')
@@ -122,7 +111,6 @@ export function AgentSkillPanel({
         <option value="system">{copy.skillSourceSystem}</option>
         <option value="project">{copy.skillSourceProject}</option>
       </select>
-      {!form.open ? <button type="button" className="agent-skill-panel__create-entry" aria-expanded="false" onClick={onOpenForm}><PlusIcon />{copy.newSkill}</button> : null}
     </div> : null}
     {mountedItems.length ? <section className="agent-skill-panel__mounted" aria-label={copy.mountedSkills(mountedItems.length)}>
       <header><strong>{copy.mountedSkills(mountedItems.length)}</strong><span>{mountedItems.length}/{BOTANIC_AGENT_MOUNTED_SKILL_LIMIT}</span></header>
@@ -134,15 +122,7 @@ export function AgentSkillPanel({
         </span>)}
       </div>
     </section> : <p className="agent-skill-panel__empty-mounted">{copy.noMountedSkills}</p>}
-    {serverPersistenceEnabled && form.open ? <form className="agent-skill-panel__form" onSubmit={(event) => { event.preventDefault(); if (form.confirming) void onSubmit(); else onRequestConfirm() }}>
-      <label><span>{copy.skillName}</span><input ref={nameInputRef} required value={form.name} onChange={(event) => onEditName(event.target.value)} maxLength={80} placeholder={copy.skillNamePlaceholder} autoFocus /></label>
-      <label><span>{copy.skillRules}</span><textarea required value={form.instructions} onChange={(event) => onEditInstructions(event.target.value)} maxLength={4000} placeholder={copy.skillRulesPlaceholder} /></label>
-      {form.confirming ? <div className="agent-skill-panel__confirm">
-        <span><strong>{copy.createProjectSkill}</strong><small>{copy.createProjectSkillDetail}</small></span>
-        <div><button type="button" autoFocus onClick={onCancelConfirm}>{copy.cancel}</button><button type="submit" disabled={form.saving}>{form.saving ? copy.creating : copy.confirmCreate}</button></div>
-      </div> : <div className="agent-skill-panel__form-actions"><button ref={createButtonRef} type="button" className="agent-skill-panel__cancel" onClick={onCloseForm}>{copy.cancel}</button><button type="submit" className="agent-skill-panel__create">{copy.createSkill}</button></div>}
-      {form.error ? <p role="alert">{form.error}</p> : null}
-    </form> : null}
+    <AgentSkillManagement projectId={projectId} enabled={serverPersistenceEnabled} startCreating={startCreating} onCreatingHandled={onCloseForm} onChanged={onManagedSkillChanged} />
     <div className="agent-skill-panel__list">
       <header><strong>{copy.availableSkills}</strong><span>{filteredItems.length}</span></header>
       {filteredItems.map((skill) => <AgentSkillCard
