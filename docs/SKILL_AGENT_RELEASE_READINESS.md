@@ -16,7 +16,7 @@ npm run release:ready
 
 `release:ready` 顺序执行单元/契约测试、固定 Agent eval、安全检查、架构边界、生产构建和 Chromium Playwright E2E。测试使用本地持久化或固定 fixture，不调用真实模型 Provider，不读取生产素材，不执行数据库迁移。
 
-通过标准：命令退出码为 0；没有 skipped/only 测试；构建生成 `dist/release.json`；Playwright 报告无失败。
+通过标准：命令退出码为 0；没有 `only` 或意外跳过的测试（环境能力跳过项必须与批准清单一致）；构建生成 `dist/release.json`；Playwright 报告无失败。
 
 ## Staging UAT
 
@@ -27,7 +27,7 @@ npm run release:ready
 5. 在计划卡核对“保持、改变、写入、恢复”，再确认行动；核对 Action Receipt、Run、Artifact 和画布结果血缘。
 6. 模拟一个可重试失败，确认任务面板保留重试、修改参数或换模型入口。
 7. 刷新页面，确认 Skill 版本、Run 绑定、Receipt 与恢复入口不漂移。
-8. 运行 `npm run smoke:e2e -- --base-url <staging-url>`（仅在已配置隔离测试项目和额度时）；保存输出与时间戳。
+8. 仅在已配置隔离测试项目、明确额度并获得人工授权时，从 staging Web 完成一次真实 Provider smoke；保存 Run/Artifact ID、输出与时间戳。`npm run smoke:e2e -- --dry-run` 只用于预览本地 smoke 的费用与覆盖面，不能替代远端 staging 验证。
 
 任何一步失败都停止推进，保留证据并回滚 staging 变更。不得用生产项目代替 staging 测试项目。
 
