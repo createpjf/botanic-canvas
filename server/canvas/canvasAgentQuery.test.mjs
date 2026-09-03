@@ -10,6 +10,7 @@ const document = {
     { id: 'generate-c', type: 'generate', position: { x: 300, y: 400 }, data: { kind: 'generate', label: '主图 C', status: 'running', settings: { model: 'm' } } },
     { id: 'generate-d', type: 'generate', position: { x: 300, y: 600 }, data: { kind: 'generate', label: '主图 D', settings: { model: 'm' } } },
     { id: 'result-a', type: 'result', position: { x: 600, y: 0 }, data: { kind: 'result', status: 'ready', jobId: 'job-1', candidateId: 'out-1', image: 'private://result' } },
+    { id: 'frame-review', type: 'frame', position: { x: 0, y: 700 }, data: { kind: 'frame', label: '审阅泳道', stage: 'review', width: 900, height: 400 } },
   ],
   edges: [
     { id: 'edge-product', source: 'asset-product', target: 'generate-a', data: { role: '商品' } },
@@ -37,9 +38,26 @@ test('分页查询缺少指定参考的空闲 Generate 节点且不泄露媒体�
   assert.deepEqual(generated.nodes[0].authority, { jobId: 'job-1', candidateId: 'out-1' })
 })
 
+test('聚合与关键词模式基于安全投影返回确定性结果', () => {
+  const aggregate = queryCanvasForAgent(document, { mode: 'aggregate' })
+  assert.equal(aggregate.aggregate.total, 7)
+  assert.deepEqual(aggregate.aggregate.byType.find((item) => item.value === 'generate'), { value: 'generate', count: 4 })
+  assert.deepEqual(aggregate.aggregate.byStage, [{ value: 'review', count: 1 }])
+  assert.deepEqual(aggregate.nodes, [])
+  const keyword = queryCanvasForAgent(document, { mode: 'keyword', query: '主图', limit: 2 })
+  assert.deepEqual(keyword.nodes.map((node) => node.id), ['generate-a', 'generate-b'])
+  assert.deepEqual(keyword.nodes[0].match.fields, ['label'])
+  assert.equal(keyword.page.hasMore, true)
+  assert.deepEqual(queryCanvasForAgent(document, { mode: 'keyword', query: 'secret prompt' }).nodes, [])
+})
+
 test('非法过滤与不属于当前结果集的游标明确失败', () => {
   assert.throws(
     () => queryCanvasForAgent(document, { types: ['unknown'] }),
+    (error) => error instanceof CanvasAgentQueryError && error.code === 'CANVAS_QUERY_INVALID',
+  )
+  assert.throws(
+    () => queryCanvasForAgent(document, { mode: 'keyword' }),
     (error) => error instanceof CanvasAgentQueryError && error.code === 'CANVAS_QUERY_INVALID',
   )
   assert.throws(

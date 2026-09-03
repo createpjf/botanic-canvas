@@ -19,14 +19,14 @@ export function createAgentOperationalReaders({ productStore, userId, projectId,
         if (!project?.document) return undefined
         const result = queryCanvasForAgent(project.document, query)
         writeAgentSemanticEvent(AGENT_SEMANTIC_EVENT_NAMES.CANVAS_LIFECYCLE, {
-          kind: 'query', outcome: 'completed', mode: 'nodes',
+          kind: 'query', outcome: 'completed', mode: query?.mode ?? 'nodes',
           completeness: result.page?.hasMore || result.page?.edgesTruncated ? 'truncated' : 'complete',
           durationMs: Date.now() - startedAt, returnedCount: result.page?.returned ?? result.nodes?.length ?? 0,
         })
         return result
       } catch (caught) {
         writeAgentSemanticEvent(AGENT_SEMANTIC_EVENT_NAMES.CANVAS_LIFECYCLE, {
-          kind: 'query', outcome: 'failed', mode: 'nodes', reason: 'CANVAS_QUERY_FAILED', durationMs: Date.now() - startedAt,
+          kind: 'query', outcome: 'failed', mode: query?.mode ?? 'nodes', reason: 'CANVAS_QUERY_FAILED', durationMs: Date.now() - startedAt,
         })
         throw caught
       }

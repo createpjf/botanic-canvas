@@ -5,6 +5,7 @@ import { canvasAgentEntityHash } from './canvasAgentEntityHash.mjs'
 const NODE_TYPES = new Set(['asset', 'prompt', 'reference', 'result', 'text', 'generate', 'frame'])
 const FRAME_STAGES = new Set(['brief', 'references', 'generation', 'review', 'approved', 'delivery', 'archive', 'custom'])
 const DIRECTIONS = new Set(['incoming', 'outgoing', 'either'])
+const QUERY_MODES = new Set(['nodes', 'aggregate', 'keyword'])
 const MAX_NODE_LIMIT = 50
 const MAX_EDGE_LIMIT = 100
 const MAX_TEXT_LENGTH = 1_000
@@ -45,6 +46,26 @@ function nodeLabel(node) {
 
 function nodeStatus(node) {
   return node?.data?.taskStatus ?? node?.data?.status ?? (node?.type === 'generate' ? 'idle' : undefined)
+}
+function normalizedKeyword(value) { return String(value ?? '').normalize('NFKC').toLocaleLowerCase('zh-CN').replace(/\s+/gu, ' ').trim() }
+function keywordDocument(node) {
+  const label = normalizedKeyword(nodeLabel(node)).slice(0, 160)
+  const content = ['text', 'prompt'].includes(node.type) ? normalizedKeyword(node.data?.content).slice(0, MAX_TEXT_LENGTH) : ''
+  const metadata = normalizedKeyword([node.id, node.type, nodeStatus(node), node.type === 'frame' ? node.data?.stage : ''].filter(Boolean).join(' '))
+  return { label, content, metadata, combined: [label, content, metadata].filter(Boolean).join(' ') }
+}
+function keywordMatch(node, needle) {
+  const document = keywordDocument(node), terms = [...new Set(needle.split(' ').filter(Boolean))]
+  if (!terms.length || terms.some((term) => !document.combined.includes(term))) return undefined
+  const fields = ['label', 'content', 'metadata'].filter((field) => terms.some((term) => document[field].includes(term)))
+  const score = (document.label.includes(needle) ? 100 : 0) + terms.reduce((total, term) => total
+    + (document.label.includes(term) ? 20 : 0) + (document.content.includes(term) ? 10 : 0) + (document.metadata.includes(term) ? 3 : 0), 0)
+  return { score, fields }
+}
+function counts(items, valueOf) {
+  const values = new Map()
+  for (const item of items) { const value = valueOf(item); if (value) values.set(value, (values.get(value) ?? 0) + 1) }
+  return [...values].sort(([left], [right]) => left.localeCompare(right)).map(([value, count]) => ({ value, count }))
 }
 
 function edgeRole(edge, nodeById) {
@@ -137,7 +158,12 @@ export function normalizeCanvasAgentQuery(raw = {}) {
     relation = { direction, role: text(relationRaw.role, '关系角色', 80), nodeId: text(relationRaw.nodeId, '关系节点') }
   }
   const requestedLimit = Number(raw.limit)
+  const mode = text(raw.mode, '查询模式', 20) ?? 'nodes'
+  if (!QUERY_MODES.has(mode)) throw new CanvasAgentQueryError('CANVAS_QUERY_INVALID', '查询模式无效。')
+  const keyword = text(raw.query, '检索关键词', 120)
+  if (mode === 'keyword' && !keyword) throw new CanvasAgentQueryError('CANVAS_QUERY_INVALID', '关键词检索必须提供 query。')
   return {
+    mode, keyword: keyword ? normalizedKeyword(keyword) : undefined,
     nodeIds: textList(raw.nodeIds, '节点标识'),
     types: textList(raw.types, '节点类型', NODE_TYPES),
     statuses: textList(raw.statuses, '节点状态'),
@@ -186,11 +212,18 @@ export function queryCanvasForAgent(document, raw = {}) {
     if (missingRole && document.edges.some((edge) => edge.target === node.id && isReferenceEdge(edge, nodeById)
       && normalizeRole(edgeRole(edge, nodeById)) === missingRole)) return false
     return true
-  }).sort((left, right) => left.id.localeCompare(right.id))
-  const afterIndex = query.afterId ? matching.findIndex((node) => node.id === query.afterId) : -1
+  })
+  if (query.mode === 'aggregate') {
+    return { aggregate: { total: matching.length, byType: counts(matching, (node) => node.type), byStatus: counts(matching, nodeStatus), byStage: counts(matching, (node) => node.type === 'frame' ? node.data?.stage : undefined) },
+      nodes: [], edges: [], page: { returned: matching.length, hasMore: false, edgesTruncated: false } }
+  }
+  const ranked = query.mode === 'keyword' ? matching.map((node) => ({ node, match: keywordMatch(node, query.keyword) })).filter((item) => item.match)
+    .sort((left, right) => right.match.score - left.match.score || left.node.id.localeCompare(right.node.id))
+    : matching.sort((left, right) => left.id.localeCompare(right.id)).map((node) => ({ node }))
+  const afterIndex = query.afterId ? ranked.findIndex((item) => item.node.id === query.afterId) : -1
   if (query.afterId && afterIndex < 0) throw new CanvasAgentQueryError('CANVAS_QUERY_CURSOR_INVALID', '画布查询游标不属于当前结果集。')
-  const selected = matching.slice(afterIndex + 1, afterIndex + 1 + query.limit)
-  const selectedIds = new Set(selected.map((node) => node.id))
+  const selected = ranked.slice(afterIndex + 1, afterIndex + 1 + query.limit)
+  const selectedIds = new Set(selected.map((item) => item.node.id))
   const relatedEdges = document.edges
     .filter((edge) => selectedIds.has(edge.source) || selectedIds.has(edge.target))
     .sort((left, right) => left.id.localeCompare(right.id))
@@ -198,14 +231,14 @@ export function queryCanvasForAgent(document, raw = {}) {
   if (query.edgeAfterId && edgeStart === 0) throw new CanvasAgentQueryError('CANVAS_QUERY_CURSOR_INVALID', '连线查询游标不属于当前结果集。')
   const selectedEdges = relatedEdges.slice(edgeStart, edgeStart + MAX_EDGE_LIMIT)
   const edgesTruncated = edgeStart + selectedEdges.length < relatedEdges.length
-  const hasMore = afterIndex + 1 + selected.length < matching.length
+  const hasMore = afterIndex + 1 + selected.length < ranked.length
   return {
-    nodes: selected.map((node) => ({ ...publicNode(node), entityHash: canvasAgentEntityHash(document, node.id) })),
+    nodes: selected.map(({ node, match }) => ({ ...publicNode(node), entityHash: canvasAgentEntityHash(document, node.id), ...(match ? { match } : {}) })),
     edges: selectedEdges.map((edge) => publicEdge(edge, nodeById)),
     page: {
       returned: selected.length,
       hasMore,
-      ...(hasMore ? { afterId: selected.at(-1)?.id } : {}),
+      ...(hasMore ? { afterId: selected.at(-1)?.node.id } : {}),
       edgesTruncated,
       ...(edgesTruncated ? { edgeAfterId: selectedEdges.at(-1)?.id } : {}),
     },
