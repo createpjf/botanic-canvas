@@ -631,3 +631,9 @@ test('Skill Loader V2:冻结 catalog 恢复时命中原版本,历史缺失或 ha
     (caught) => caught.code === 'AGENT_SKILL_SNAPSHOT_MISMATCH',
   )
 })
+test('Skill 治理工具把乐观锁字段原样交给领域执行器', async () => {
+  let received
+  const registry = createBotanicAgentActionToolRegistry({ manageSkill: async (_name, value) => { received = value; return {} } })
+  await registry.execute('skill_restore', { skillId: 'skill-1', expectedVersion: 3, expectedContentHash: 'hash-3', version: 1 }, {})
+  assert.deepEqual(received, { skillId: 'skill-1', expectedVersion: 3, expectedContentHash: 'hash-3', version: 1 })
+})

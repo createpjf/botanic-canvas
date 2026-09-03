@@ -10,7 +10,7 @@ function text(value, name, maximum = 160) {
 function expected(value) {
   const version = Number(value?.expectedVersion), contentHash = text(value?.expectedContentHash, 'Skill 内容摘要', 128)
   if (!Number.isSafeInteger(version) || version < 1) throw new AgentToolRuntimeError('INVALID_AGENT_SKILL_ACTION', 'Skill 版本无效。', 400)
-  return { version, contentHash }
+  return { expectedVersion: version, expectedContentHash: contentHash }
 }
 function base(raw) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new AgentToolRuntimeError('INVALID_AGENT_SKILL_ACTION', 'Skill 行动参数无效。', 400)
