@@ -47,6 +47,7 @@ test('Action Set 以确定性 ID 创建领域节点、连接参考并与文字�
   const first = applyCanvasActionSet(base, frozen, models, 20, artifacts)
   const replay = applyCanvasActionSet(base, frozen, models, 20, artifacts)
   assert.deepEqual(first.createdNodeIds, replay.createdNodeIds)
+  assert.deepEqual(first.movedNodeIds, ['text-1', first.createdNodeIds[0], first.createdNodeIds[2]])
   const organized = first.document.nodes.find((node) => node.id === 'text-1')
   assert.equal(organized.data.content, '已更新')
   assert.equal(organized.data.label, '确认文案')

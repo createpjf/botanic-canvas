@@ -117,6 +117,7 @@ export function createCanvasAgentEditExecutors({ productStore, publishProjectUpd
           canvasPatch: {
             nodes: saved.document.nodes.filter((node) => [...edited.createdNodeIds, ...edited.updatedNodeIds].includes(node.id)),
             edges: saved.document.edges.filter((edge) => edited.createdEdgeIds.includes(edge.id)),
+            positionNodeIds: edited.movedNodeIds,
             updatedAt: saved.document.updatedAt, baseRevision, revision, baseGraphRevision, graphRevision,
           },
         }

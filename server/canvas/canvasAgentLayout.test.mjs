@@ -19,6 +19,8 @@ test('声明式 row/grid/workflow 布局按稳定顺序生成不重叠绝对坐�
   const workflow = positions(layoutCanvasAgentNodes(document, { nodeIds: ['a', 'b', 'c'], mode: 'workflow', anchor: { x: 10, y: 20 }, gap: 30 }))
   assert.ok(workflow.a.x < workflow.b.x && workflow.b.x < workflow.c.x)
   assert.deepEqual(layoutCanvasAgentNodes(document, { nodeIds: ['a', 'b', 'c'], mode: 'workflow', anchor: { x: 10, y: 20 }, gap: 30 }), layoutCanvasAgentNodes(document, { nodeIds: ['a', 'b', 'c'], mode: 'workflow', anchor: { x: 10, y: 20 }, gap: 30 }))
+  const selected = { ...document, nodes: document.nodes.map((item) => item.id === 'b' ? { ...item, selected: true } : item) }
+  assert.deepEqual(layoutCanvasAgentNodes(selected, { nodeIds: ['a', 'b', 'c'], mode: 'column', anchor: { x: 0, y: 0 } }), layoutCanvasAgentNodes(document, { nodeIds: ['a', 'b', 'c'], mode: 'column', anchor: { x: 0, y: 0 } }))
 })
 
 test('声明式布局拒绝重复节点与不足三个节点的分布请求', () => {

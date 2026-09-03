@@ -19,6 +19,17 @@ test('混合检索只发送安全文本并融合关键词与语义稳定排序',
   assert.equal(JSON.stringify(request.body).includes('private secret prompt'), false)
   assert.deepEqual(result.nodes.map((node) => node.id), ['a', 'g'])
   assert.deepEqual(result.search, { requestedMode: 'hybrid', effectiveMode: 'hybrid', degraded: false })
+
+  const large = { nodes: Array.from({ length: 52 }, (_, index) => ({ id: `n-${String(index).padStart(2, '0')}`, type: 'text', position: { x: index, y: 0 }, data: { label: `节点 ${index}`, content: '候选' } })), edges: [] }
+  const batchSizes = []
+  const beyondFirstPage = await queryCanvasWithSemanticSearch(large, { mode: 'semantic', query: '目标', limit: 1 }, config, async (_url, init) => {
+    const input = JSON.parse(init.body).input
+    batchSizes.push(input.length)
+    return { ok: true, json: async () => ({ data: input.map((_, index) => ({ embedding: index === 0 || (input.length === 3 && index === 2) ? [1, 0] : [0, 1] })) }) }
+  })
+  assert.deepEqual(batchSizes, [51, 3])
+  assert.equal(beyondFirstPage.nodes[0].id, 'n-51')
+  assert.equal(beyondFirstPage.page.searchTruncated, false)
 })
 
 test('语义 Provider 失败时确定性降级关键词检索', async () => {

@@ -234,6 +234,7 @@ export function applyCanvasActionSet(document, raw, models, now = Date.now(), ar
   const createdNodeIds = []
   const createdEdgeIds = []
   const updatedNodeIds = []
+  const movedNodeIds = []
   const removedNodeIds = []
   for (const operation of actionSet.operations) {
     if (operation.kind === 'create_text' || operation.kind === 'create_generate' || operation.kind === 'project_artifact' || operation.kind === 'create_frame') {
@@ -290,7 +291,7 @@ export function applyCanvasActionSet(document, raw, models, now = Date.now(), ar
     } else if (operation.kind === 'organize_nodes') {
       const placements = operation.placements.map((item) => ({ ...item, nodeId: resolvedId(item.nodeId, ids) }))
       const applied = applyBotanicAgentCanvasOrganization(current, { placements }, now)
-      current = applied.document; updatedNodeIds.push(...applied.updatedNodeIds)
+      current = applied.document; updatedNodeIds.push(...applied.updatedNodeIds); movedNodeIds.push(...applied.updatedNodeIds)
       const memberships = placements.filter((item) => Object.hasOwn(item, 'frameId')).map((item) => ({
         nodeId: item.nodeId, frameId: item.frameId === null ? null : resolvedId(item.frameId, ids),
       }))
@@ -306,14 +307,14 @@ export function applyCanvasActionSet(document, raw, models, now = Date.now(), ar
       const nodeIds = operation.nodeIds.map((id) => resolvedId(id, ids))
       const placements = layoutCanvasAgentNodes(current, { ...operation, nodeIds })
       const applied = applyBotanicAgentCanvasOrganization(current, { placements }, now)
-      current = applied.document; updatedNodeIds.push(...applied.updatedNodeIds)
+      current = applied.document; updatedNodeIds.push(...applied.updatedNodeIds); movedNodeIds.push(...applied.updatedNodeIds)
     } else {
       const nodeIds = operation.nodeIds.map((id) => resolvedId(id, ids))
       const applied = applyBotanicAgentCanvasNodeDeletion(current, { nodeIds }, now)
       current = applied.document; removedNodeIds.push(...applied.removedNodeIds); updatedNodeIds.push(...(applied.updatedNodeIds ?? []))
     }
   }
-  return { document: current, actionSet, createdNodeIds, createdEdgeIds, updatedNodeIds: [...new Set(updatedNodeIds)], removedNodeIds: [...new Set(removedNodeIds)] }
+  return { document: current, actionSet, createdNodeIds, createdEdgeIds, updatedNodeIds: [...new Set(updatedNodeIds)], movedNodeIds: [...new Set(movedNodeIds)], removedNodeIds: [...new Set(removedNodeIds)] }
 }
 
 function previewNode(node) {

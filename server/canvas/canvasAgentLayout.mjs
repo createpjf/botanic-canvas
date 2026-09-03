@@ -13,7 +13,7 @@ function bounds(node) {
   if (node.type === 'prompt') return { width: 252, height: 126 }
   if (node.type === 'reference') return { width: 252, height: 148 }
   if (node.type === 'text') return { width: 236, height: 158 }
-  if (node.type === 'generate') return { width: 176, height: node.selected ? 316 : 148 }
+  if (node.type === 'generate') return { width: 176, height: 148 }
   if (node.type === 'frame') return { width: Number(node.data?.width) || 320, height: Number(node.data?.height) || 240 }
   const ratio = node.data?.generationSettings?.aspectRatio
   return { width: 300, height: (ratio === '16:9' ? 169 : ratio === '4:3' ? 225 : ratio === '1:1' ? 300 : ratio === '4:5' ? 375 : ratio === '9:16' ? 533 : 400) + 36 }
