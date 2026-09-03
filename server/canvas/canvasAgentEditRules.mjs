@@ -77,6 +77,17 @@ export function applyBotanicAgentGenerateSettingsUpdate(document, { nodeId, sett
   return { document: replacedNode(document, next, now), node: next }
 }
 
+export function applyBotanicAgentCanvasOrganization(document, { placements }, now = Date.now()) {
+  const byId = new Map()
+  for (const placement of placements) {
+    const current = findNode(document, placement.nodeId)
+    if (placement.label !== undefined && !LABELABLE_NODE_TYPES.has(current.type)) throw editError('CANVAS_EDIT_NOT_ALLOWED', '该节点类型不支持重命名。')
+    if (placement.label !== undefined && nodeIsBusy(document, current)) throw editError('CANVAS_NODE_BUSY', '任务进行中的节点不能重命名。', 409)
+    byId.set(current.id, { ...current, position: placement.position, data: { ...current.data, ...(placement.label === undefined ? {} : { label: placement.label }) } })
+  }
+  return { document: { ...document, nodes: document.nodes.map((node) => byId.get(node.id) ?? node), updatedAt: now }, updatedNodeIds: [...byId.keys()] }
+}
+
 export function applyBotanicAgentCanvasNodeDeletion(document, { nodeIds }, now = Date.now()) {
   const ids = new Set(nodeIds)
   const removedNodes = []

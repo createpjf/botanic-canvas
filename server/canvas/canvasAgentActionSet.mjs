@@ -6,6 +6,7 @@ import { canvasAgentArtifactHash, projectCanvasResultFromArtifact } from './canv
 import { AgentToolRuntimeError } from '../agent/tools/agentToolRuntime.mjs'
 import {
   applyBotanicAgentCanvasNodeDeletion,
+  applyBotanicAgentCanvasOrganization,
   applyBotanicAgentCanvasTextUpdate,
   applyBotanicAgentGenerateSettingsUpdate,
   CANVAS_NODE_LABEL_LIMIT,
@@ -13,7 +14,7 @@ import {
 } from './canvasAgentEditRules.mjs'
 
 const MAX_OPERATIONS = 20
-const OPERATION_KINDS = new Set(['create_text', 'create_generate', 'project_artifact', 'connect_reference', 'update_text', 'update_generate_settings', 'delete_nodes'])
+const OPERATION_KINDS = new Set(['create_text', 'create_generate', 'project_artifact', 'connect_reference', 'update_text', 'update_generate_settings', 'organize_nodes', 'delete_nodes'])
 const CONSTRAINT_DIMENSIONS = new Set(['person', 'garment', 'product', 'scene', 'style', 'pose', 'composition', 'lighting', 'aspect_ratio', 'copy_space'])
 
 const nodeId = { type: 'string', maxLength: 160 }
@@ -28,7 +29,7 @@ export const CANVAS_ACTION_SET_PARAMETERS = Object.freeze({
         position: { type: 'object', additionalProperties: false, properties: { x: { type: 'number' }, y: { type: 'number' } }, required: ['x', 'y'] },
         label: { type: 'string', maxLength: CANVAS_NODE_LABEL_LIMIT }, content: { type: 'string', maxLength: CANVAS_TEXT_CONTENT_LIMIT },
         prompt: { type: 'string', maxLength: CANVAS_TEXT_CONTENT_LIMIT }, batchCount: { type: 'number' }, settings: { type: 'object' },
-        artifactId: nodeId, artifactHash: { type: 'string', maxLength: 100 }, constraints: { type: 'array', maxItems: 10, items: { type: 'object', additionalProperties: false, properties: { dimension: { type: 'string', enum: [...CONSTRAINT_DIMENSIONS] }, mode: { type: 'string', enum: ['preserve', 'change'] } }, required: ['dimension', 'mode'] } },
+        artifactId: nodeId, artifactHash: { type: 'string', maxLength: 100 }, placements: { type: 'array', maxItems: 20, items: { type: 'object', additionalProperties: false, properties: { nodeId, position: { type: 'object', additionalProperties: false, properties: { x: { type: 'number' }, y: { type: 'number' } }, required: ['x', 'y'] }, label: { type: 'string', maxLength: CANVAS_NODE_LABEL_LIMIT } }, required: ['nodeId', 'position'] } }, constraints: { type: 'array', maxItems: 10, items: { type: 'object', additionalProperties: false, properties: { dimension: { type: 'string', enum: [...CONSTRAINT_DIMENSIONS] }, mode: { type: 'string', enum: ['preserve', 'change'] } }, required: ['dimension', 'mode'] } },
       }, required: ['kind'],
     } },
     preconditions: { type: 'array', maxItems: 50, items: { type: 'object', additionalProperties: false,
@@ -62,7 +63,7 @@ function generationSettings(value) {
 }
 function position(value) {
   const input = object(value, '节点位置')
-  if (!Number.isFinite(input.x) || !Number.isFinite(input.y)) fail('CANVAS_ACTION_SET_INVALID', '节点位置格式无效。')
+  if (!Number.isFinite(input.x) || !Number.isFinite(input.y) || Math.abs(input.x) > 1_000_000 || Math.abs(input.y) > 1_000_000) fail('CANVAS_ACTION_SET_INVALID', '节点位置格式无效。')
   return { x: Number(input.x), y: Number(input.y) }
 }
 function node(document, id) {
@@ -124,6 +125,13 @@ export function normalizeCanvasActionSet(raw) {
     } else if (kind === 'connect_reference') {
       result.sourceNodeId = text(operation.sourceNodeId, '参考来源节点')
       result.targetNodeId = text(operation.targetNodeId, '参考目标节点')
+    } else if (kind === 'organize_nodes') {
+      if (!Array.isArray(operation.placements) || !operation.placements.length || operation.placements.length > 20) fail('CANVAS_ACTION_SET_INVALID', '组织节点必须包含 1–20 个位置。')
+      result.placements = operation.placements.map((entry) => {
+        const placement = object(entry, '节点组织位置')
+        return { nodeId: text(placement.nodeId, '节点标识'), position: position(placement.position), label: optionalText(placement.label, '节点名称', CANVAS_NODE_LABEL_LIMIT) }
+      })
+      if (new Set(result.placements.map((item) => item.nodeId)).size !== result.placements.length) fail('CANVAS_ACTION_SET_INVALID', '同一节点不能重复组织。')
     } else if (kind === 'delete_nodes') {
       if (!Array.isArray(operation.nodeIds) || !operation.nodeIds.length || operation.nodeIds.length > 12) fail('CANVAS_ACTION_SET_INVALID', '删除节点必须包含 1–12 个标识。')
       result.nodeIds = [...new Set(operation.nodeIds.map((id) => text(id, '删除节点标识')))]
@@ -157,6 +165,7 @@ function touchedExistingNodeIds(operations) {
   for (const operation of operations) {
     if (operation.nodeId && !temporaryIds.has(operation.nodeId)) requiredIds.add(operation.nodeId)
     for (const id of operation.nodeIds ?? []) if (!temporaryIds.has(id)) requiredIds.add(id)
+    for (const item of operation.placements ?? []) if (!temporaryIds.has(item.nodeId)) requiredIds.add(item.nodeId)
     for (const id of [operation.sourceNodeId, operation.targetNodeId]) if (id && !temporaryIds.has(id)) requiredIds.add(id)
   }
   return requiredIds
@@ -230,6 +239,10 @@ export function applyCanvasActionSet(document, raw, models, now = Date.now(), ar
       const id = resolvedId(operation.nodeId, ids)
       const applied = applyBotanicAgentGenerateSettingsUpdate(current, { nodeId: id, settings: operation.settings, batchCount: operation.batchCount }, models, now)
       current = applied.document; updatedNodeIds.push(id)
+    } else if (operation.kind === 'organize_nodes') {
+      const placements = operation.placements.map((item) => ({ ...item, nodeId: resolvedId(item.nodeId, ids) }))
+      const applied = applyBotanicAgentCanvasOrganization(current, { placements }, now)
+      current = applied.document; updatedNodeIds.push(...applied.updatedNodeIds)
     } else {
       const nodeIds = operation.nodeIds.map((id) => resolvedId(id, ids))
       const applied = applyBotanicAgentCanvasNodeDeletion(current, { nodeIds }, now)
@@ -240,7 +253,8 @@ export function applyCanvasActionSet(document, raw, models, now = Date.now(), ar
 }
 
 function previewNode(node) {
-  return { id: node.id, type: node.type, label: node.data?.label ?? node.data?.name ?? node.id }
+  return { id: node.id, type: node.type, label: node.data?.label ?? node.data?.name ?? node.id,
+    position: { x: Number(node.position?.x) || 0, y: Number(node.position?.y) || 0 } }
 }
 
 /** 服务端在提案时重建前置条件并预演；返回值可直接冻结到 Proposal。 */

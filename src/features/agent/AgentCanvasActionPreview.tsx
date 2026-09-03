@@ -11,7 +11,11 @@ export function AgentCanvasActionPreview({ preview, locale }: Props) {
   const t = (zh: string, en: string) => isEnglish ? en : zh
   const groups = [
     { key: 'created', label: t('新增', 'Create'), items: preview.created.map((item) => item.label) },
-    { key: 'updated', label: t('修改', 'Update'), items: preview.updated.map((item) => item.after.label) },
+    { key: 'updated', label: t('修改', 'Update'), items: preview.updated.map(({ before, after }) => {
+      const renamed = before.label === after.label ? after.label : `${before.label} → ${after.label}`
+      return !before.position || !after.position || (before.position.x === after.position.x && before.position.y === after.position.y)
+        ? renamed : `${renamed} · (${before.position.x}, ${before.position.y}) → (${after.position.x}, ${after.position.y})`
+    }) },
     { key: 'removed', label: t('删除', 'Delete'), items: preview.removed.map((item) => item.label) },
     { key: 'connections', label: t('连接', 'Connect'), items: preview.connections.map((item) => `${item.sourceNodeId} → ${item.targetNodeId}`) },
   ].filter((group) => group.items.length)

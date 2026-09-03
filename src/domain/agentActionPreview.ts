@@ -1,4 +1,4 @@
-export type BotanicCanvasActionPreviewNode = { id: string; type: string; label: string }
+export type BotanicCanvasActionPreviewNode = { id: string; type: string; label: string; position?: { x: number; y: number } }
 
 export type BotanicCanvasActionPreview = {
   created: BotanicCanvasActionPreviewNode[]

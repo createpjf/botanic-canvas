@@ -32,6 +32,7 @@ test('Action Set 以确定性 ID 创建领域节点、连接参考并与文字�
       { kind: 'create_generate', temporaryId: 'generator', position: { x: 400, y: 0 }, label: '主图生成', prompt: '改成海边', batchCount: 2, settings: { model: 'image-model', aspectRatio: '1:1', resolution: '1K' }, constraints: [{ dimension: 'person', mode: 'preserve' }, { dimension: 'scene', mode: 'change' }] },
       { kind: 'connect_reference', sourceNodeId: 'asset-1', targetNodeId: 'generator' },
       { kind: 'connect_reference', sourceNodeId: 'approved', targetNodeId: 'generator' },
+      { kind: 'organize_nodes', placements: [{ nodeId: 'text-1', position: { x: 80, y: 420 }, label: '确认文案' }] },
       { kind: 'update_text', nodeId: 'text-1', content: '已更新' },
     ],
   }
@@ -44,7 +45,10 @@ test('Action Set 以确定性 ID 创建领域节点、连接参考并与文字�
   const first = applyCanvasActionSet(base, frozen, models, 20, artifacts)
   const replay = applyCanvasActionSet(base, frozen, models, 20, artifacts)
   assert.deepEqual(first.createdNodeIds, replay.createdNodeIds)
-  assert.equal(first.document.nodes.find((node) => node.id === 'text-1').data.content, '已更新')
+  const organized = first.document.nodes.find((node) => node.id === 'text-1')
+  assert.equal(organized.data.content, '已更新')
+  assert.equal(organized.data.label, '确认文案')
+  assert.deepEqual(organized.position, { x: 80, y: 420 })
   const projected = first.document.nodes.find((node) => node.id === first.createdNodeIds[1])
   const generate = first.document.nodes.find((node) => node.id === first.createdNodeIds[2])
   assert.equal(projected.data.image, artifact.url)
