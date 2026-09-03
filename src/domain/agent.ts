@@ -3,6 +3,7 @@ import type { BotanicAgentClarification, BotanicCreativeBrief } from './agentCre
 import type { BotanicAgentBranchVariation, BotanicAgentVariationSpec } from './agentVariations.ts'
 import type { BotanicAgentComposition } from './agentCreativeComposition.ts'
 import type { BotanicAgentMessageMention } from './agentMentions.ts'
+import type { BotanicCanvasActionPreview } from './agentActionPreview.ts'
 export type {
   BotanicAgentComposerSubmission,
   BotanicAgentMentionCatalog,
@@ -194,16 +195,16 @@ export function mergeBotanicAgentCanvasPatch(
   }
   return { ...document, nodes, edges, updatedAt: Math.max(document.updatedAt, patch.updatedAt) }
 }
-
 export type BotanicAgentActionProposal = {
   id: string
   kind: 'skill' | 'mcp' | 'canvas'
-  toolName: 'skill_apply' | 'skill_create' | 'mcp_call'
-    | 'canvas_update_text' | 'canvas_update_generate_settings' | 'canvas_delete_nodes'
+  toolName: 'skill_apply' | 'skill_create' | 'mcp_call' | 'canvas_action_set' | 'canvas_update_text' | 'canvas_update_generate_settings' | 'canvas_delete_nodes'
   label: string
   summary: string
   risk: 'write' | 'external'
   arguments: Record<string, unknown>
+  preview?: BotanicCanvasActionPreview
+  previewHash?: string
   status: 'awaiting_confirmation' | 'running' | 'succeeded' | 'failed' | 'uncertain' | 'dismissed'
   /**
    * 当前人工重试 attempt 的公开幂等键。它不是授权凭据，可以随 Message 持久化，
@@ -224,7 +225,6 @@ export type BotanicAgentActionProposal = {
   error?: string
   result?: BotanicAgentActionResult
 }
-
 /**
  * Action Receipt 的安全读模型。它只描述执行状态与人工决议，不携带原始回执、
  * intent hash、工具输出或一次性重试 token。

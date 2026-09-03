@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { applyCanvasActionSet } from './canvasAgentActionSet.mjs'
+import { applyCanvasActionSet, prepareCanvasActionSetProposal } from './canvasAgentActionSet.mjs'
 import { canvasAgentEntityHash } from './canvasAgentEntityHash.mjs'
 
 const models = [{ id: 'image-model', aspectRatios: ['1:1'], resolutions: ['1K'] }]
@@ -32,8 +32,13 @@ test('Action Set 以确定性 ID 创建领域节点、连接参考并与文字�
       { kind: 'update_text', nodeId: 'text-1', content: '已更新' },
     ],
   }
-  const first = applyCanvasActionSet(base, input, models, 20)
-  const replay = applyCanvasActionSet(base, input, models, 20)
+  const prepared = prepareCanvasActionSetProposal(base, { operations: input.operations }, models, input.actionId)
+  assert.deepEqual(prepared.preview.summary, { created: 2, updated: 1, removed: 0, connected: 1 })
+  assert.equal(typeof prepared.previewHash, 'string')
+  assert.deepEqual(prepared.arguments.preconditions.map((item) => item.nodeId), ['asset-1', 'text-1'])
+  const frozen = { actionId: input.actionId, ...prepared.arguments }
+  const first = applyCanvasActionSet(base, frozen, models, 20)
+  const replay = applyCanvasActionSet(base, frozen, models, 20)
   assert.deepEqual(first.createdNodeIds, replay.createdNodeIds)
   assert.equal(first.document.nodes.find((node) => node.id === 'text-1').data.content, '已更新')
   assert.equal(first.document.nodes.find((node) => node.id === first.createdNodeIds[1]).data.status, 'idle')
@@ -57,5 +62,10 @@ test('Action Set 缺触达 hash 或末项触碰活跃节点时整组失败且不
       { kind: 'delete_nodes', nodeIds: ['result-busy'] },
     ],
   }, models), (error) => error.code === 'CANVAS_NODE_BUSY')
+  const prepared = prepareCanvasActionSetProposal(base, { operations: [{ kind: 'update_text', nodeId: 'text-1', content: '已冻结' }] }, models, 'action-frozen')
+  const changed = structuredClone(base)
+  changed.nodes.find((node) => node.id === 'text-1').data.content = '协作者已修改'
+  assert.throws(() => applyCanvasActionSet(changed, { actionId: 'action-frozen', ...prepared.arguments }, models),
+    (error) => error.code === 'CANVAS_ACTION_SET_CONFLICT')
   assert.deepEqual(base, before)
 })

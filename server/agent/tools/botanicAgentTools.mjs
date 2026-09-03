@@ -633,16 +633,15 @@ export function createBotanicAgentPlanningToolRegistry({ input, finalizePlan, fi
         }
       },
       execute: async ({ toolName, arguments: argumentsValue, reason }, context) => {
-        const labels = { canvas_action_set: '原子修改画布',
-          canvas_update_text: '修改画布文字',
-          canvas_update_generate_settings: '调整生成参数',
-          canvas_delete_nodes: '删除画布节点',
-        }
+        const actionId = context?.toolCallId ?? `canvas-${toolName}`
+        const prepared = toolName === 'canvas_action_set' ? await operations?.prepareCanvasActionSet?.(actionId, argumentsValue) : undefined
+        if (toolName === 'canvas_action_set' && !prepared) throw new AgentToolRuntimeError('CANVAS_PREVIEW_UNAVAILABLE', '暂时无法预演画布修改，请重新查询后再试。', 503)
+        const labels = { canvas_action_set: '原子修改画布', canvas_update_text: '修改画布文字',
+          canvas_update_generate_settings: '调整生成参数', canvas_delete_nodes: '删除画布节点' }
         const proposal = {
-          id: context?.toolCallId ?? `canvas-${toolName}`,
-          kind: 'canvas', toolName, label: labels[toolName],
-          summary: reason, risk: 'write',
-          arguments: argumentsValue,
+          id: actionId, kind: 'canvas', toolName, label: labels[toolName],
+          summary: reason, risk: 'write', arguments: prepared?.arguments ?? argumentsValue,
+          ...(prepared ? { preview: prepared.preview, previewHash: prepared.previewHash } : {}),
           status: 'awaiting_confirmation',
         }
         propose(proposal)

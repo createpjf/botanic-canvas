@@ -131,14 +131,19 @@ export function normalizeCanvasActionSet(raw) {
   return { actionId, operations, preconditions }
 }
 
-function assertPreconditions(document, actionSet) {
-  const temporaryIds = new Set(actionSet.operations.filter((item) => item.temporaryId).map((item) => item.temporaryId))
+function touchedExistingNodeIds(operations) {
+  const temporaryIds = new Set(operations.filter((item) => item.temporaryId).map((item) => item.temporaryId))
   const requiredIds = new Set()
-  for (const operation of actionSet.operations) {
+  for (const operation of operations) {
     if (operation.nodeId && !temporaryIds.has(operation.nodeId)) requiredIds.add(operation.nodeId)
     for (const id of operation.nodeIds ?? []) if (!temporaryIds.has(id)) requiredIds.add(id)
     for (const id of [operation.sourceNodeId, operation.targetNodeId]) if (id && !temporaryIds.has(id)) requiredIds.add(id)
   }
+  return requiredIds
+}
+
+function assertPreconditions(document, actionSet) {
+  const requiredIds = touchedExistingNodeIds(actionSet.operations)
   const providedIds = new Set(actionSet.preconditions.map((item) => item.nodeId))
   if ([...requiredIds].some((id) => !providedIds.has(id))) fail('CANVAS_ACTION_SET_PRECONDITION_REQUIRED', '既有触达节点必须包含查询所得的 entityHash。', 409)
   for (const item of actionSet.preconditions) {
@@ -203,4 +208,33 @@ export function applyCanvasActionSet(document, raw, models, now = Date.now()) {
     }
   }
   return { document: current, actionSet, createdNodeIds, createdEdgeIds, updatedNodeIds: [...new Set(updatedNodeIds)], removedNodeIds: [...new Set(removedNodeIds)] }
+}
+
+function previewNode(node) {
+  return { id: node.id, type: node.type, label: node.data?.label ?? node.data?.name ?? node.id }
+}
+
+/** 服务端在提案时重建前置条件并预演；返回值可直接冻结到 Proposal。 */
+export function prepareCanvasActionSetProposal(document, raw, models, actionId) {
+  const normalized = normalizeCanvasActionSet({ ...raw, actionId, preconditions: [] })
+  const preconditions = [...touchedExistingNodeIds(normalized.operations)].sort().map((nodeId) => {
+    const hash = canvasAgentEntityHash(document, nodeId)
+    if (!hash) fail('CANVAS_NODE_NOT_FOUND', '未找到画布节点：' + nodeId + '。', 404)
+    return { nodeId, hash }
+  })
+  const argumentsValue = { operations: normalized.operations, preconditions }
+  const applied = applyCanvasActionSet(document, { ...argumentsValue, actionId }, models)
+  const before = new Map((document.nodes ?? []).map((node) => [node.id, node]))
+  const after = new Map((applied.document.nodes ?? []).map((node) => [node.id, node]))
+  const created = applied.createdNodeIds.map((id) => previewNode(after.get(id)))
+  const removed = applied.removedNodeIds.map((id) => previewNode(before.get(id)))
+  const updated = applied.updatedNodeIds.filter((id) => before.has(id) && after.has(id))
+    .map((id) => ({ before: previewNode(before.get(id)), after: previewNode(after.get(id)) }))
+  const connections = applied.createdEdgeIds.map((id) => {
+    const edge = applied.document.edges.find((item) => item.id === id)
+    return { id, sourceNodeId: edge.source, targetNodeId: edge.target, role: edge.data?.role ?? 'reference' }
+  })
+  const preview = { created, updated, removed, connections,
+    summary: { created: created.length, updated: updated.length, removed: removed.length, connected: connections.length } }
+  return { arguments: argumentsValue, preview, previewHash: canonicalHash({ actionId, arguments: argumentsValue, preview }) }
 }

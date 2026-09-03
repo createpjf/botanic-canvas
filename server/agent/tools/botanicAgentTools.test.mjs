@@ -218,18 +218,29 @@ test('画布修改走提案-确认制：规划期只出提案，确认后经注�
     finalizePlan: (raw) => raw,
     finalizeClarification: (raw) => raw,
     onProposeAction: (proposal) => proposals.push(proposal),
+    operations: { prepareCanvasActionSet: async (actionId) => ({
+      arguments: { operations: [{ kind: 'create_text', temporaryId: 'new-copy', content: '新品' }], preconditions: [] },
+      preview: { created: [{ id: actionId + '-node', type: 'text', label: '新品' }], updated: [], removed: [], connections: [], summary: { created: 1, updated: 0, removed: 0, connected: 0 } },
+      previewHash: 'preview-hash',
+    }) },
   })
   await planning.execute('canvas_edit_propose', {
     operation: 'update_text',
     arguments: { nodeId: 'text-1', content: '新提示词' },
     reason: '按用户要求改写生成描述。',
   }, { toolCallId: 'call-canvas-1' })
-  assert.deepEqual(proposals, [{
-    id: 'call-canvas-1', kind: 'canvas', toolName: 'canvas_update_text', label: '修改画布文字',
-    summary: '按用户要求改写生成描述。', risk: 'write',
-    arguments: { nodeId: 'text-1', content: '新提示词' },
-    status: 'awaiting_confirmation',
-  }])
+  await planning.execute('canvas_edit_propose', {
+    operation: 'action_set', arguments: { operations: [{ kind: 'create_text', temporaryId: 'model-copy', content: '未冻结' }] },
+    reason: '新增已确认文案。',
+  }, { toolCallId: 'call-action-set-1' })
+  assert.equal(proposals[0].arguments.content, '新提示词')
+  assert.deepEqual(proposals[1], {
+    id: 'call-action-set-1', kind: 'canvas', toolName: 'canvas_action_set', label: '原子修改画布',
+    summary: '新增已确认文案。', risk: 'write',
+    arguments: { operations: [{ kind: 'create_text', temporaryId: 'new-copy', content: '新品' }], preconditions: [] },
+    preview: { created: [{ id: 'call-action-set-1-node', type: 'text', label: '新品' }], updated: [], removed: [], connections: [], summary: { created: 1, updated: 0, removed: 0, connected: 0 } },
+    previewHash: 'preview-hash', status: 'awaiting_confirmation',
+  })
 
   const executed = []
   const actions = createBotanicAgentActionToolRegistry({

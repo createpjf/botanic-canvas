@@ -4471,6 +4471,14 @@ details.agent-timeline__thinking { display: block; width: 100%; }
 .agent-action-card > header small { color: #879289; font-size: 10px; }
 .agent-action-card > strong { color: #2e4735; font-size: 12px; }
 .agent-action-card > p { margin: 0; color: #6e7c72; font-size: 11px; line-height: 1.55; }
+.agent-action-preview { display: grid; gap: 7px; padding: 9px; border: 1px solid #d8e4d7; border-radius: 8px; background: #f7faf6; }
+.agent-action-preview h4, .agent-action-preview p, .agent-action-preview ul { margin: 0; }
+.agent-action-preview h4 { color: #2f4936; font-size: 12px; }
+.agent-action-preview__summary { color: #637568; font-size: 11px; line-height: 1.45; }
+.agent-action-preview__group { display: grid; grid-template-columns: 42px minmax(0, 1fr); gap: 7px; font-size: 11px; }
+.agent-action-preview__group strong { color: #58705f; }
+.agent-action-preview__group ul { display: grid; gap: 3px; padding-left: 16px; color: #354c3b; overflow-wrap: anywhere; }
+.agent-action-preview__group.is-removed strong, .agent-action-preview__group.is-removed ul { color: #985247; }
 .agent-action-card__impact { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 3px 7px; padding: 6px 7px; border-radius: 6px; background: #edf3ec; font-size: 11px; }
 .agent-action-card__impact span { color: #7b897e; }
 .agent-action-card__impact b { overflow: hidden; color: #425b48; font-weight: 720; text-overflow: ellipsis; white-space: nowrap; }
