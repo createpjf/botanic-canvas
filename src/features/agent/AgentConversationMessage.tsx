@@ -52,6 +52,7 @@ import { AgentClarificationCard, AgentPromptDiff } from './AgentWorkspaceParts'
 import { AgentMarkdownSources } from './AgentMarkdown'
 import { AgentPromptResponse } from './AgentPromptResponse'
 import { AgentCanvasActionPreview } from './AgentCanvasActionPreview'
+import { AgentActionImpact, AgentPlanImpactSummary } from './AgentImpactSummary'
 import { AgentMessageRichContent, AgentRichText } from './AgentMentionText'
 import { agentMessageNeedsCollapse, splitAgentMessageSources } from '../../domain/agentMarkdown'
 import type { BotanicAgentMentionCatalog } from '../../domain/agentMentions'
@@ -1280,8 +1281,6 @@ export function AgentConversationMessage({
           : null
         const appliedSkills = plan.actions?.filter((action) => action.toolName === 'skill_apply') ?? []
         const confirmableActions = plan.actions?.filter((action) => action.toolName !== 'skill_apply') ?? []
-        const lockedConstraints = plan.constraints.filter((constraint) => constraint.mode === 'preserve')
-        const variedConstraints = plan.constraints.filter((constraint) => constraint.mode === 'vary')
         const branchPrompts = botanicAgentPlanBranchPrompts({
           ...plan,
           prompt: planSubmitted ? plan.prompt : planPrompt,
@@ -1334,7 +1333,7 @@ export function AgentConversationMessage({
               const settled = action.status === 'succeeded' || action.status === 'dismissed'
               const body = <>
                 {action.toolName === 'canvas_action_set' && action.preview ? <AgentCanvasActionPreview preview={action.preview} locale={locale} /> : null}
-                <div className="agent-action-card__impact"><span>{t('输入', 'Input')}</span><b>{action.toolName === 'mcp_call' ? `${String(action.arguments.server)}.${String(action.arguments.tool)}` : t('新项目 Skill', 'New project Skill')}</b><span>{t('输出', 'Output')}</span><b>{action.toolName === 'mcp_call' ? t('文件 / 结果面板', 'Files / results panel') : t('可复用 Skill', 'Reusable Skill')}</b></div>
+                <AgentActionImpact action={action} locale={locale} />
                 <details className="agent-action-card__details"><summary>{t('查看参数', 'View parameters')}</summary><pre>{JSON.stringify(action.arguments, null, 2)}</pre></details>
                 {action.error ? <small className="agent-action-card__error">{action.error}</small> : null}
                 {action.status === 'succeeded' ? <>
@@ -1362,10 +1361,7 @@ export function AgentConversationMessage({
               </article>
             })}
           </div> : null}
-          {planSubmitted ? null : <div className="agent-message__constraints">
-            {lockedConstraints.length ? <div className="agent-message__constraint-group is-locked"><span>{t('锁定', 'Locked')}</span>{lockedConstraints.map((constraint) => <b key={constraint.dimension}>{dimensionLabel(constraint.dimension)}</b>)}</div> : null}
-            {variedConstraints.length ? <div className="agent-message__constraint-group is-variable"><span>{t('变化', 'Varied')}</span>{variedConstraints.map((constraint) => <b key={constraint.dimension}>{dimensionLabel(constraint.dimension)}</b>)}</div> : null}
-          </div>}
+          <AgentPlanImpactSummary plan={plan} submitted={planSubmitted} locale={locale} dimensionLabel={dimensionLabel} />
           {planSubmitted
             ? null
             : <>
