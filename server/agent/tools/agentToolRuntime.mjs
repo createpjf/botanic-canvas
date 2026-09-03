@@ -3,7 +3,8 @@ import { presentationWebSources } from './agentWebResearch.mjs'
 import {
   AGENT_TURN_TERMINAL_CONTENT_LIMIT,
   completeAgentTurnCheckpoint,
-  agentTurnCheckpointResultEnvelopeUrls,
+  agentTurnCheckpointStructuredSourceUrls,
+  sanitizeAgentTurnCheckpointResultEnvelope,
   journalAgentTurnCheckpointCall,
   prepareAgentTurnCheckpoint,
   terminalAgentTurnCheckpoint,
@@ -25,13 +26,10 @@ const MODEL_TOOL_CALL_TOTAL_LIMIT = 64
 /** 连续相同工具签名达到此次数时发时间线警告；再打到终止阈值则停手。 */
 
 import {
-  AGENT_TOOL_OUTPUT_TOKEN_BUDGET,
-  AGENT_TOOL_OUTPUT_TOTAL_TOKEN_BUDGET,
   AgentToolRuntimeError,
-  boundedToolOutput,
   createAgentToolNoProgressDetector,
+  createToolOutputBudget,
   classifyAgentToolFailure,
-  compactToolOutputEnvelope,
   deepFreeze,
   isRecoverableToolFailure,
   isTerminalKnownToolFailure,
@@ -40,7 +38,6 @@ import {
   parseArgumentsSafe,
   safePresentationLabel,
   safeReportedToolPresentation,
-  serializedOutput,
   stableToolOutput,
   terminalModelContent,
   toolEventPresentation,
@@ -375,67 +372,11 @@ export async function runAgentToolLoop({
     checkpoint = next
   }
 
-  let toolOutputTokens = 0
-  const toolOutputRecords = []
-
-  const compactRecord = (record) => {
-    const content = compactToolOutputEnvelope(record.entry, record.serialized, 'cumulative_budget')
-    const tokens = estimateAgentContextTokens(content)
-    if (tokens >= record.tokens) return false
-    conversation[record.conversationIndex].content = content
-    toolOutputTokens -= record.tokens - tokens
-    record.content = content
-    record.tokens = tokens
-    record.compact = true
-    return true
-  }
-
-  // 先按预算生成最终 envelope,再把同一字符串同时交给 checkpoint（journal call）与模型
-  // history（H6G 规则 4）。计算与追加之间不得插入其他输出。
-  const prepareToolOutput = (entry, output) => {
-    const serialized = serializedOutput(output)
-    const compactContent = compactToolOutputEnvelope(entry, serialized, 'cumulative_budget')
-    const compactTokens = estimateAgentContextTokens(compactContent)
-    while (toolOutputTokens + compactTokens > AGENT_TOOL_OUTPUT_TOTAL_TOKEN_BUDGET) {
-      const candidate = toolOutputRecords.find((record) => !record.compact && record.tokens > compactTokens)
-      if (!candidate || !compactRecord(candidate)) break
-    }
-    const available = Math.max(0, AGENT_TOOL_OUTPUT_TOTAL_TOKEN_BUDGET - toolOutputTokens)
-    const maximumTokens = Math.min(AGENT_TOOL_OUTPUT_TOKEN_BUDGET, available)
-    const reason = maximumTokens < AGENT_TOOL_OUTPUT_TOKEN_BUDGET
-      ? 'cumulative_budget'
-      : 'per_output_budget'
-    let bounded = boundedToolOutput(entry, output, maximumTokens, reason)
-    if (bounded.tokens > available) {
-      bounded = {
-        content: compactContent,
-        tokens: compactTokens,
-        compact: true,
-        serialized,
-      }
-    }
-    if (bounded.tokens > available) {
-      // 每步/整轮 tool-call 数已受限，正常不会走到这里。
-      // 仍保留一个有效 JSON tool message，避免破坏 assistant↔tool 配对。
-      const minimal = '{"_botanicTruncation":{"truncated":true,"reason":"cumulative_budget"}}'
-      bounded = {
-        content: minimal,
-        tokens: estimateAgentContextTokens(minimal),
-        compact: true,
-        serialized,
-      }
-    }
-    return bounded
-  }
-
-  const appendPreparedToolOutput = (entry, bounded) => {
-    const conversationIndex = conversation.length
-    conversation.push({ role: 'tool', tool_call_id: entry.trace.id, name: entry.trace.name, content: bounded.content })
-    toolOutputTokens += bounded.tokens
-    toolOutputRecords.push({ ...bounded, entry, conversationIndex })
-  }
-
-  const appendToolOutput = (entry, output) => appendPreparedToolOutput(entry, prepareToolOutput(entry, output))
+  // 输出预算整形已拆至 agentToolOutput.mjs 的 createToolOutputBudget（H6G 规则 4 seam）。
+  const outputBudget = createToolOutputBudget(conversation)
+  const prepareToolOutput = (entry, output) => outputBudget.prepare(entry, output)
+  const appendPreparedToolOutput = (entry, bounded) => outputBudget.append(entry, bounded)
+  const appendToolOutput = (entry, output) => outputBudget.appendOutput(entry, output)
 
   const traceFor = (tool, call, step, index, rawArguments) => {
     const summary = rawArguments ? agentToolCallSummary(rawArguments) : undefined
@@ -738,7 +679,9 @@ export async function runAgentToolLoop({
       emitHarness('tool', 'started', { step })
       // journal completed 恢复:复用 durable envelope,不再执行工具、不重新扣配额。
       if (entry.reuseEnvelope !== undefined) {
-        for (const url of agentTurnCheckpointResultEnvelopeUrls(entry.reuseEnvelope)) {
+        // DNS 级复检只针对结构化来源 URL（结果的 `url` 字段）。正文自由文本里的
+        // 链接不是出口目标——恢复不会抓取它们,一条死链不该让已成功的结果失效。
+        for (const url of agentTurnCheckpointStructuredSourceUrls(entry.reuseEnvelope)) {
           const classified = await withinExecutionBoundary(() => assertPublicHttpsUrl(
             url,
             checkpointUrlLookup ? { lookup: checkpointUrlLookup } : {},
@@ -907,18 +850,42 @@ export async function runAgentToolLoop({
       if (checkpointing && entry.descriptor.recovery === 'journal') {
         // H6G 规则 4:先按剩余预算生成最终 envelope,同一字符串先 durable 进 checkpoint,
         // commit 成功后才进入模型 history/下一次 sampling。
+        // 规则 1 的「规范化脱敏」在写入侧完成:页面正文里的 http 链接、非公开 URL、
+        // data: 字样是内容而不是出口目标,替换为占位符;校验器只作 backstop。
         const bounded = prepareToolOutput(entry, output)
-        await persistCheckpoint(journalAgentTurnCheckpointCall(checkpoint, {
-          callId: trace.id,
-          phase: 'completed',
-          resultEnvelope: bounded.content,
-        }))
+        const sanitized = sanitizeAgentTurnCheckpointResultEnvelope(bounded.content)
+        const boundedSafe = sanitized === bounded.content
+          ? bounded
+          : { ...bounded, content: sanitized, tokens: estimateAgentContextTokens(sanitized) }
+        let journaled
+        try {
+          journaled = journalAgentTurnCheckpointCall(checkpoint, {
+            callId: trace.id,
+            phase: 'completed',
+            resultEnvelope: boundedSafe.content,
+          })
+        } catch (caught) {
+          if (typeof caught?.code !== 'string' || !caught.code.startsWith('AGENT_TURN_CHECKPOINT_')) throw caught
+          // backstop 拒绝该结果:降级为 durable failed,绝不让 call 滞留在 dispatched
+          // （那会把整轮卡死在 AGENT_TOOL_OUTCOME_UNKNOWN）。结果不进入模型,
+          // 失败作为已知终局回给模型换个来源。
+          await persistCheckpoint(journalAgentTurnCheckpointCall(checkpoint, { callId: trace.id, phase: 'failed' }))
+          entry.completedDescriptor = { ...entry.completedDescriptor, phase: 'failed' }
+          const error = '工具结果不符合持久化安全边界，已丢弃。'
+          const failed = { ...trace, status: 'failed', error }
+          toolCalls[toolCalls.length - 1] = failed
+          if (emitEvents) emit({ type: 'tool', step, toolCall: failed })
+          emitHarness('tool', 'failed', { step, reason: caught.code })
+          appendToolOutput(entry, { ok: false, error, code: 'AGENT_TOOL_RESULT_REJECTED' })
+          continue
+        }
+        await persistCheckpoint(journaled)
         entry.completedDescriptor = {
           ...entry.completedDescriptor,
           phase: 'completed',
-          resultEnvelope: bounded.content,
+          resultEnvelope: boundedSafe.content,
         }
-        appendPreparedToolOutput(entry, bounded)
+        appendPreparedToolOutput(entry, boundedSafe)
         continue
       }
       appendToolOutput(entry, output)

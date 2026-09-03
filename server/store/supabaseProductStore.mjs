@@ -1460,12 +1460,12 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
       return clone(data.payload)
     },
 
-    async listAgentSkills(userId, projectId) {
+    async listAgentSkills(userId, projectId, options = {}) {
       if (!await memberRole(projectId, userId)) return undefined
       const { data, error } = await supabaseRequest(() => supabase.from('agent_skills').select('payload')
-        .eq('project_id', projectId).eq('status', 'active').order('updated_at', { ascending: false }))
+        .eq('project_id', projectId).order('updated_at', { ascending: false }))
       fail(error)
-      return (data ?? []).map((row) => clone(row.payload))
+      return (data ?? []).map((row) => clone(row.payload)).filter((skill) => options.includeAll === true || skill.status !== 'archived')
     },
 
     async readAgentSkillVersion(userId, projectId, skillId, version) {

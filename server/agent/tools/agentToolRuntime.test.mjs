@@ -1701,3 +1701,127 @@ test('journal call 在同一执行内二次到达派发边界:emit duplicate_dis
     console.log = originalLog
   }
 })
+
+test('journal envelope 写入前脱敏:页面正文含 http 链接与端口 URL 时仍 durable completed', async () => {
+  const registry = createAgentToolRegistry([{
+    name: 'web_probe_read', label: '外部读取', risk: 'external', recovery: 'journal',
+    description: '测试外部读取。',
+    parameters: { type: 'object', additionalProperties: false, properties: { url: { type: 'string' } }, required: ['url'] },
+    validate: (input) => ({ url: input.url }),
+    execute: async (input) => ({
+      url: input.url,
+      text: '参见 http://finance.yahoo.com/legacy 与 https://api.example.com:8443/v1 及 data:application/json 格式',
+    }),
+  }])
+  const attempt = { id: 'attempt-sanitize', model: 'model-a', snapshotHash: 'hash-sanitize' }
+  const checkpoints = []
+  let modelSawEnvelope
+  const result = await runAgentToolLoop({
+    registry, messages: [], maximumSteps: 2, attempt,
+    saveCheckpoint: async (checkpoint) => { checkpoints.push(structuredClone(checkpoint)) },
+    callModel: async ({ step, messages }) => {
+      if (step === 0) {
+        return { choices: [{ message: { tool_calls: [{
+          id: 'call-sanitize-1', type: 'function',
+          function: { name: 'web_probe_read', arguments: JSON.stringify({ url: 'https://finance.yahoo.com/quote' }) },
+        }] } }] }
+      }
+      modelSawEnvelope = messages.find((message) => message.role === 'tool')?.content
+      return { choices: [{ message: { content: '调研完成' } }] }
+    },
+  })
+  assert.equal(result.output, '调研完成')
+  const journaled = checkpoints.findLast((item) => item.completedSteps.length || item.pendingStep)
+  const call = (journaled.completedSteps[0] ?? journaled.pendingStep).calls[0]
+  assert.equal(call.phase, 'completed')
+  assert.ok(call.resultEnvelope.includes('https://finance.yahoo.com/quote'), '合规来源 URL 保留')
+  assert.ok(call.resultEnvelope.includes('[removed:non-public-url]'), '非公开 URL 被占位符替换')
+  assert.doesNotMatch(call.resultEnvelope, /http:\/\/finance|:8443|data:application\//u)
+  assert.equal(modelSawEnvelope, call.resultEnvelope, '模型 history 与 checkpoint 使用同一脱敏字符串')
+})
+
+test('journal envelope 仍被 backstop 拒绝时降级 durable failed,不滞留 dispatched', async () => {
+  const registry = createAgentToolRegistry([{
+    name: 'web_probe_read', label: '外部读取', risk: 'external', recovery: 'journal',
+    description: '测试外部读取。',
+    parameters: { type: 'object', additionalProperties: false, properties: { url: { type: 'string' } }, required: ['url'] },
+    validate: (input) => ({ url: input.url }),
+    // 脱敏无法修复的内容:输出顶层 reasoning 字段触发 backstop 拒绝。
+    execute: async (input) => ({ url: input.url, reasoning: 'chain' }),
+  }])
+  const attempt = { id: 'attempt-degrade', model: 'model-a', snapshotHash: 'hash-degrade' }
+  const checkpoints = []
+  let modelSawEnvelope
+  const result = await runAgentToolLoop({
+    registry, messages: [], maximumSteps: 2, attempt,
+    saveCheckpoint: async (checkpoint) => { checkpoints.push(structuredClone(checkpoint)) },
+    callModel: async ({ step, messages }) => {
+      if (step === 0) {
+        return { choices: [{ message: { tool_calls: [{
+          id: 'call-degrade-1', type: 'function',
+          function: { name: 'web_probe_read', arguments: JSON.stringify({ url: 'https://example.com/a' }) },
+        }] } }] }
+      }
+      modelSawEnvelope = messages.find((message) => message.role === 'tool')?.content
+      return { choices: [{ message: { content: '已换来源' } }] }
+    },
+  })
+  assert.equal(result.output, '已换来源', '拒绝结果回给模型继续,不终止整轮')
+  const failedCall = result.toolCalls.find((call) => call.id === 'call-degrade-1')
+  assert.equal(failedCall.status, 'failed')
+  const journaled = checkpoints.findLast((item) => (
+    [...item.completedSteps, ...(item.pendingStep ? [item.pendingStep] : [])]
+      .some((step) => step.calls.some((call) => call.phase && call.phase !== 'prepared'))
+  ))
+  const call = [...journaled.completedSteps, ...(journaled.pendingStep ? [journaled.pendingStep] : [])]
+    .flatMap((step) => step.calls).find((entry) => entry.id === 'call-degrade-1')
+  assert.equal(call.phase, 'failed', 'durable 落 failed,不滞留 dispatched')
+  assert.equal(call.resultEnvelope, undefined)
+  assert.match(modelSawEnvelope, /AGENT_TOOL_RESULT_REJECTED/u)
+})
+
+test('journal completed 复用只对结构化来源 URL 做 DNS 复检,正文死链不阻塞恢复', async () => {
+  let fetches = 0
+  const registry = createAgentToolRegistry([{
+    name: 'web_probe_read', label: '外部读取', risk: 'external', recovery: 'journal',
+    description: '测试外部读取。',
+    parameters: { type: 'object', additionalProperties: false, properties: { url: { type: 'string' } }, required: ['url'] },
+    validate: (input) => ({ url: input.url }),
+    execute: async () => { fetches += 1; return { ok: true } },
+  }])
+  const attempt = { id: 'attempt-reuse', model: 'model-a', snapshotHash: 'hash-reuse' }
+  const looked = []
+  const durable = {
+    version: 2, attempt,
+    completedSteps: [{ step: 0, calls: [{
+      id: 'call-reuse-1', name: 'web_probe_read', risk: 'external', recovery: 'journal', terminal: false,
+      phase: 'completed', arguments: { url: 'https://example.com/a' },
+      resultEnvelope: JSON.stringify({
+        url: 'https://example.com/a',
+        text: '正文提及 https://dead-link.example.net/gone 死链',
+      }),
+    }] }],
+  }
+  const recovered = await runAgentToolLoop({
+    registry, messages: [], maximumSteps: 2, attempt,
+    resumeCheckpoint: durable,
+    checkpointUrlLookup: async (hostname) => {
+      looked.push(hostname)
+      if (hostname === 'dead-link.example.net') throw new Error('NXDOMAIN')
+      return ['93.184.216.34']
+    },
+    saveCheckpoint: async () => {},
+    callModel: async () => ({ choices: [{ message: { content: '恢复完成' } }] }),
+  })
+  assert.equal(recovered.output, '恢复完成')
+  assert.equal(fetches, 0, '复用不得重新执行工具')
+  assert.deepEqual(looked, ['example.com'], '只复检结构化 url 字段,不复检正文链接')
+  // 结构化来源 URL 解析到私网仍必须 fail closed。
+  await assert.rejects(runAgentToolLoop({
+    registry, messages: [], maximumSteps: 2, attempt,
+    resumeCheckpoint: durable,
+    checkpointUrlLookup: async () => ['10.0.0.8'],
+    saveCheckpoint: async () => {},
+    callModel: async () => { throw new Error('私网结果不得进入模型') },
+  }), (caught) => caught.code === 'AGENT_TURN_CHECKPOINT_INVALID')
+})

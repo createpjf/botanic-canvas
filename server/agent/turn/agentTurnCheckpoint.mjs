@@ -167,6 +167,57 @@ export function agentTurnCheckpointResultEnvelopeUrls(value) {
   return [...decoded.matchAll(/\bhttps?:\/\/[^\s"'<>\\{}]+/giu)].map((match) => match[0])
 }
 
+/** 与 envelope URL 提取同源的原文匹配：额外容忍 JSON 转义的 `\/`，用于原地替换。 */
+const ENVELOPE_URL_PATTERN = /\bhttps?:(?:\\?\/){2}(?:[^\s"'<>{}\\]|\\\/)+/giu
+const ENVELOPE_MEDIA_DATA_URL_PATTERN = /data:(?:image|video|audio|application)\/[a-z0-9.+-]*(?:;[a-z0-9=+-]*)*(?:,[a-z0-9+/=_%.~-]*)?/giu
+
+/**
+ * H6G 规则 1 的「规范化脱敏」写入侧。envelope 就是抓取回来的页面正文，
+ * 天然可能包含 http 链接、非 443 端口 URL 或 `data:` 字样；这些是内容而不是
+ * 出口目标，写入前替换为占位符，validateResultEnvelope 仍是最终 backstop。
+ *
+ * @param {string} value
+ * @returns {string}
+ */
+export function sanitizeAgentTurnCheckpointResultEnvelope(value) {
+  if (typeof value !== 'string') return value
+  return value
+    .replace(ENVELOPE_MEDIA_DATA_URL_PATTERN, '[removed:data-url]')
+    .replace(ENVELOPE_URL_PATTERN, (match) => (
+      classifyPublicHttpUrl(match.replace(/\\\//gu, '/')).ok ? match : '[removed:non-public-url]'
+    ))
+}
+
+/**
+ * 复用恢复时需要 DNS 级复检的结构化来源 URL：只取 JSON 里 `url` 字段的值。
+ * 正文自由文本里的链接不是出口目标（恢复不会抓取它们），已在 checkpoint
+ * 校验时做过语法级校验，不做 DNS 复检——一条死链不该让已成功的结果失效。
+ *
+ * @param {string} value
+ * @returns {string[]}
+ */
+export function agentTurnCheckpointStructuredSourceUrls(value) {
+  if (typeof value !== 'string') return []
+  let parsed
+  try {
+    parsed = JSON.parse(value)
+  } catch {
+    return []
+  }
+  const urls = new Set()
+  const visit = (node, depth) => {
+    if (depth > 8 || !node || typeof node !== 'object') return
+    if (Array.isArray(node)) {
+      for (const item of node.slice(0, 32)) visit(item, depth + 1)
+      return
+    }
+    if (typeof node.url === 'string' && /^https?:\/\//iu.test(node.url.trim())) urls.add(node.url.trim())
+    for (const item of Object.values(node)) visit(item, depth + 1)
+  }
+  visit(parsed, 0)
+  return [...urls]
+}
+
 /** V2 result envelope：与实际送给模型的字符串完全一致;拒绝 raw/reasoning/媒体/Data URL/非公开 URL。 */
 function validateResultEnvelope(value, name) {
   if (typeof value !== 'string' || !value.trim()) invalid(`${name} result envelope 无效。`)
@@ -429,7 +480,8 @@ function journalCallIdentity(call) {
 /**
  * H6B：pendingStep 中单个 journal call 的 lifecycle 提交。
  * dispatched 在请求交给 client 前持久化;completed 携带与模型 history 完全一致的
- * envelope。逐 call 提交,不等整步收束。
+ * envelope（写入侧先做 H6G 规则 1 的规范化脱敏,调用方应读回本函数返回的
+ * durable 字符串再进入模型 history）。逐 call 提交,不等整步收束。
  */
 export function journalAgentTurnCheckpointCall(previous, input) {
   const checkpoint = validateAgentTurnCheckpoint(previous)
@@ -444,7 +496,9 @@ export function journalAgentTurnCheckpointCall(previous, input) {
   const updated = {
     ...target,
     phase,
-    ...(input?.resultEnvelope !== undefined ? { resultEnvelope: input.resultEnvelope } : {}),
+    ...(input?.resultEnvelope !== undefined
+      ? { resultEnvelope: sanitizeAgentTurnCheckpointResultEnvelope(input.resultEnvelope) }
+      : {}),
     ...(input?.resultRef !== undefined ? { resultRef: input.resultRef } : {}),
   }
   const calls = checkpoint.pendingStep.calls.map((call, callIndex) => (callIndex === index ? updated : call))

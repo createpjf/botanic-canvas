@@ -338,8 +338,11 @@ test('Agent 行动工具默认要求确认，并且 MCP 只能调用服务端白
     createWorkflow: async (value) => { calls.push(['workflow', value]); return { workflowId: 'workflow-1' } },
     submitGeneration: async (value) => { calls.push(['generation', value]); return { runId: 'run-1' } },
     createSkill: async (value) => { calls.push(['skill', value]); return { skillId: 'skill-1' } },
+    manageSkill: async (name, value) => { calls.push([name, value]); return { skillId: value.skillId } },
     mcpRuntime: runtime,
   })
+  assert.deepEqual(registry.names().filter((name) => name.startsWith('skill_')), ['skill_publish', 'skill_deprecate', 'skill_restore', 'skill_apply', 'skill_create'])
+  assert.equal(registry.get('skill_publish').requiresConfirmation, true)
   const modelResponse = {
     choices: [{ message: { content: null, tool_calls: [{
       id: 'call-submit-1', type: 'function',
@@ -627,4 +630,10 @@ test('Skill Loader V2:冻结 catalog 恢复时命中原版本,历史缺失或 ha
     () => pinnedBotanicAgentProjectSkills(frozen, [drifted]),
     (caught) => caught.code === 'AGENT_SKILL_SNAPSHOT_MISMATCH',
   )
+})
+test('Skill 治理工具把乐观锁字段原样交给领域执行器', async () => {
+  let received
+  const registry = createBotanicAgentActionToolRegistry({ manageSkill: async (_name, value) => { received = value; return {} } })
+  await registry.execute('skill_restore', { skillId: 'skill-1', expectedVersion: 3, expectedContentHash: 'hash-3', version: 1 }, {})
+  assert.deepEqual(received, { skillId: 'skill-1', expectedVersion: 3, expectedContentHash: 'hash-3', version: 1 })
 })

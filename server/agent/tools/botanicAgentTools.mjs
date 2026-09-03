@@ -7,6 +7,7 @@ import { createBotanicAgentOperationalActionDefinitions, createBotanicAgentOpera
 import { botanicCreativeBriefFieldIds } from '../semantic/botanicCreativeBrief.mjs'
 import { botanicAgentVariationClarificationFieldIds } from '../semantic/botanicAgentVariations.mjs'
 import { createBotanicAgentWebResearchTools } from './botanicAgentWebTools.mjs'
+import { createAgentSkillManagementTools } from './agentSkillManagementTools.mjs'
 import {
   agentSkillManifestRisk,
   botanicAgentSkillCapabilities,
@@ -792,17 +793,15 @@ export function createBotanicAgentActionToolRegistry({
   createWorkflow,
   submitGeneration,
   applySkill,
-  createSkill,
+  createSkill, manageSkill,
   mcpRuntime,
   mcpTools = {},
   /** 把 MCP 内联图片落成同源媒体（dataUrl → /api/media/...）；缺省时保留 data: URL 仅面板展示。 */
   persistMcpMedia,
-  // 画布编辑三件套（提案-确认制）：改文字 / 调生成参数 / 删节点。
   updateCanvasText,
   updateGenerateSettings,
   deleteCanvasNodes,
-  // 运维写工具（Epic 4）：按项目角色暴露，全部需要确认。缺执行器或权限不足时
-  // 不进注册表 —— 模型看不到的工具不会被它拿去向用户承诺。
+  // 运维写工具按项目角色暴露；缺执行器或权限不足时不进注册表。
   role,
   ...operationalExecutors
 } = {}) {
@@ -818,6 +817,7 @@ export function createBotanicAgentActionToolRegistry({
   const operationalActions = createBotanicAgentOperationalActionDefinitions({ role, ...operationalExecutors })
   return createAgentToolRegistry([
     ...operationalActions,
+    ...createAgentSkillManagementTools(manageSkill),
     {
       name: 'workflow_create', label: '创建画布工作流',
       description: '在当前项目中创建新的文字、参考和生成节点，不覆盖已有节点。',

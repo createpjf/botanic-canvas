@@ -1189,13 +1189,12 @@ export function createProductStore({ dataPath, bootstrapAccessToken, bootstrapEm
       return clone(payload)
     },
 
-    listAgentSkills(userId, projectId) {
+    listAgentSkills(userId, projectId, options = {}) {
       const project = state.projects.find((item) => item.id === projectId)
       if (!project || !canAccess(project, userId)) return undefined
       return state.agentSkills
-        .filter((skill) => skill.projectId === projectId && skill.status !== 'archived')
-        .sort((left, right) => right.updatedAt - left.updatedAt)
-        .map(clone)
+        .filter((skill) => skill.projectId === projectId && (options.includeAll === true || skill.status !== 'archived'))
+        .sort((left, right) => right.updatedAt - left.updatedAt).map(clone)
     },
 
     readAgentSkillVersion(userId, projectId, skillId, version) {

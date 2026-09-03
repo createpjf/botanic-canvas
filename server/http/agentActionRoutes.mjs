@@ -6,6 +6,7 @@ import {
   createBotanicAgentActionToolRegistry,
 } from '../agent/tools/botanicAgentTools.mjs'
 import { createAgentSkill, isUsableAgentSkill, publicAgentSkill, validateAgentSkillCreation } from '../agent/action/botanicAgentSkill.mjs'
+import { executeAgentSkillManagementAction } from '../agent/action/agentSkillManagementAction.mjs'
 import { createCanvasAgentEditExecutors } from '../canvas/canvasAgentEditing.mjs'
 import { generationIdempotencyKey, generationJobIdForIdempotency } from '../generation/generationIdempotency.mjs'
 import { agentToolPermission, assertFreshActionApproval, createActionApprovalToken } from '../agent/action/agentActionGovernance.mjs'
@@ -19,10 +20,12 @@ import { AGENT_SEMANTIC_EVENT_NAMES, writeAgentSemanticEvent } from '../observab
 // 需要短期审批 Token 的行动：会修改权威画布、花钱或触达外部系统。运维写工具里
 // 重试分支与重试工作流失败项都会真的调用 Provider，因此同样进这个集合。
 const approvalRequired = new Set([
-  'canvas_action_set', 'generation_submit', 'mcp_call', 'agent_branch_retry', 'review_retry', 'workflow_run_retry_failed',
+  'canvas_action_set', 'generation_submit', 'mcp_call', 'agent_branch_retry', 'review_retry', 'workflow_run_retry_failed', 'skill_publish', 'skill_deprecate', 'skill_restore',
 ])
 // 这些动作有稳定自有身份且重放无新增副作用；其余（MCP、创建 Skill、
 // 发布 Workflow、提交/重试计费任务）出现未知结果时一律停下，不自动再执行。
+// skill_publish/deprecate/restore 不在此列：生命周期迁移写成功后即不幂等
+// （published 不能再 publish），重放会把已生效的变更误报为失败。
 const safelyReplayableAgentActions = new Set([
   'workflow_create', 'skill_apply', 'agent_run_cancel', 'artifact_promote',
   'review_decide', 'review_retry', 'workflow_run_retry_failed',
@@ -30,7 +33,7 @@ const safelyReplayableAgentActions = new Set([
 // 这三条路径在存量客户端中本来就不属于 Message Proposal：
 // Run 确认的工作流/生成提交，以及 Skill Registry 直接创建。
 // 其他 HTTP Action 即使省略 context，也必须反查到唯一权威 Proposal。
-const standaloneAgentActions = new Set(['workflow_create', 'generation_submit', 'skill_create'])
+const standaloneAgentActions = new Set(['workflow_create', 'generation_submit', 'skill_create', 'skill_publish', 'skill_deprecate', 'skill_restore'])
 
 /**
  * Agent 行动资源(/api/agent-actions*、审批)的唯一 HTTP handler。
@@ -133,7 +136,8 @@ export function createAgentActionRouteHandler({
       if (!approvalRequired.has(actionName)) return error(response, 400, 'ACTION_APPROVAL_NOT_REQUIRED', '该行动不需要审批凭据。')
       try {
         await requireProjectPermission(productStore, user.id, projectId, agentToolPermission(actionName))
-        await requireActionProposal({ user, projectId, actionName, toolCallId, argumentsValue: body?.arguments, body })
+        if (actionHasContext(body)) await requireActionProposal({ user, projectId, actionName, toolCallId, argumentsValue: body?.arguments, body, requireExactContext: true })
+        else if (!standaloneAgentActions.has(actionName)) await requireActionProposal({ user, projectId, actionName, toolCallId, argumentsValue: body?.arguments, body })
         if (!config.agentActionApprovalSecret) {
           if (actionName === 'canvas_action_set') writeAgentSemanticEvent(AGENT_SEMANTIC_EVENT_NAMES.CANVAS_LIFECYCLE, {
             kind: 'approval', outcome: 'failed', reason: 'CANVAS_APPROVAL_UNAVAILABLE',
@@ -292,6 +296,7 @@ export function createAgentActionRouteHandler({
               capabilities: skill.capabilities,
             } }
           },
+          manageSkill: (operation, argumentsValue) => executeAgentSkillManagementAction({ productStore, userId: user.id, projectId, operation, argumentsValue }),
           role: (await productStore.projectAccess(user.id, projectId))?.role,
           retryBranch: async ({ runId, branchId }) => {
             // 与 HTTP 路由共用同一实现与同一幂等键，因此工具重复触发不会重复扣费。

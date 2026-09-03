@@ -163,6 +163,7 @@ function blockerReasons(state, candidate) {
   if (state.activeWriters.generationJobs) reasons.push(`有 ${state.activeWriters.generationJobs} 个生成任务仍在执行或待写回`)
   if (state.activeWriters.agentRuns) reasons.push(`有 ${state.activeWriters.agentRuns} 个 Agent Run 未结束`)
   if (state.activeWriters.agentTurns) reasons.push(`有 ${state.activeWriters.agentTurns} 个 Agent Turn 未结束`)
+  if (candidate?.logDriftDetected) reasons.push('epoch 2 日志重建结果与物化图谱不一致')
   if (candidate && !candidate.matchesMaterializedGraph) reasons.push('候选快照与当前画布不一致')
   return reasons
 }

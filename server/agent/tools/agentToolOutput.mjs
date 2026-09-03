@@ -85,6 +85,65 @@ export function boundedToolOutput(entry, output, maximumTokens, reason) {
   }
 }
 
+/**
+ * 一次工具循环内的有状态输出预算整形器。prepare 先按剩余预算（必要时压缩更早的
+ * 大输出）生成最终 envelope；append 把同一字符串写入模型 history。两者之间不得
+ * 插入其他输出（H6G 规则 4：checkpoint 与模型 history 必须是同一字符串）。
+ */
+export function createToolOutputBudget(conversation) {
+  let totalTokens = 0
+  const records = []
+
+  const compactRecord = (record) => {
+    const content = compactToolOutputEnvelope(record.entry, record.serialized, 'cumulative_budget')
+    const tokens = estimateAgentContextTokens(content)
+    if (tokens >= record.tokens) return false
+    conversation[record.conversationIndex].content = content
+    totalTokens -= record.tokens - tokens
+    Object.assign(record, { content, tokens, compact: true })
+    return true
+  }
+
+  const prepare = (entry, output) => {
+    const serialized = serializedOutput(output)
+    const compactContent = compactToolOutputEnvelope(entry, serialized, 'cumulative_budget')
+    const compactTokens = estimateAgentContextTokens(compactContent)
+    while (totalTokens + compactTokens > AGENT_TOOL_OUTPUT_TOTAL_TOKEN_BUDGET) {
+      const candidate = records.find((record) => !record.compact && record.tokens > compactTokens)
+      if (!candidate || !compactRecord(candidate)) break
+    }
+    const available = Math.max(0, AGENT_TOOL_OUTPUT_TOTAL_TOKEN_BUDGET - totalTokens)
+    const maximumTokens = Math.min(AGENT_TOOL_OUTPUT_TOKEN_BUDGET, available)
+    const reason = maximumTokens < AGENT_TOOL_OUTPUT_TOKEN_BUDGET
+      ? 'cumulative_budget'
+      : 'per_output_budget'
+    let bounded = boundedToolOutput(entry, output, maximumTokens, reason)
+    if (bounded.tokens > available) {
+      bounded = { content: compactContent, tokens: compactTokens, compact: true, serialized }
+    }
+    if (bounded.tokens > available) {
+      // 每步/整轮 tool-call 数已受限，正常不会走到这里。
+      // 仍保留一个有效 JSON tool message，避免破坏 assistant↔tool 配对。
+      const minimal = '{"_botanicTruncation":{"truncated":true,"reason":"cumulative_budget"}}'
+      bounded = { content: minimal, tokens: estimateAgentContextTokens(minimal), compact: true, serialized }
+    }
+    return bounded
+  }
+
+  const append = (entry, bounded) => {
+    const conversationIndex = conversation.length
+    conversation.push({ role: 'tool', tool_call_id: entry.trace.id, name: entry.trace.name, content: bounded.content })
+    totalTokens += bounded.tokens
+    records.push({ ...bounded, entry, conversationIndex })
+  }
+
+  return {
+    prepare,
+    append,
+    appendOutput: (entry, output) => append(entry, prepare(entry, output)),
+  }
+}
+
 export function deepFreeze(value) {
   if (!value || typeof value !== 'object' || Object.isFrozen(value)) return value
   for (const entry of Object.values(value)) deepFreeze(entry)

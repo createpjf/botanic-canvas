@@ -93,8 +93,8 @@ test('dry-run 零写入，apply 原子写入等价 epoch 2 快照并压缩旧增
     graph: structuredClone(currentGraph),
     revision: 7,
     epoch: 1,
-    snapshot: snapshotFor({ nodes: [node('node-a', 40, '旧版')], edges: [] }),
-    updates: [{ update: snapshotFor({ nodes: [node('node-a', 80, '旧增量')], edges: [] }) }],
+    snapshot: snapshotFor(currentGraph),
+    updates: [{ update: snapshotFor(currentGraph) }],
   }
   const database = fakeSql(state)
 
@@ -102,7 +102,7 @@ test('dry-run 零写入，apply 原子写入等价 epoch 2 快照并压缩旧增
   assert.equal(dryRun.mode, 'dry-run')
   assert.equal(dryRun.eligible, true)
   assert.equal(dryRun.current.schemaReady, true)
-  assert.equal(dryRun.current.logDriftDetected, true)
+  assert.equal(dryRun.current.logDriftDetected, false)
   assert.equal(dryRun.candidate.matchesMaterializedGraph, true)
   assert.equal(database.metrics.writes, 0)
   assert.match(database.metrics.transactions[0], /read only/u)
@@ -137,6 +137,37 @@ test('dry-run 零写入，apply 原子写入等价 epoch 2 快照并压缩旧增
   const verified = await runCanvasSyncEpoch2Cutover({ sql: database.sql, projectId: state.projectId, verify: true })
   assert.equal(verified.mode, 'verify')
   assert.equal(verified.verified, true)
+})
+
+test('dry-run 发现 epoch 2 日志漂移时阻止切换', async () => {
+  const graph = { nodes: [node('node-a', 400, '当前')], edges: [] }
+  const state = {
+    projectId: 'project-drift',
+    graph,
+    revision: 7,
+    epoch: 1,
+    snapshot: snapshotFor({ nodes: [node('node-a', 40, '旧版')], edges: [] }),
+    updates: [{ update: snapshotFor({ nodes: [node('node-a', 80, '旧增量')], edges: [] }) }],
+  }
+  const database = fakeSql(state)
+
+  const dryRun = await runCanvasSyncEpoch2Cutover({ sql: database.sql, projectId: state.projectId })
+  assert.equal(dryRun.current.logDriftDetected, true)
+  assert.equal(dryRun.eligible, false)
+  assert.match(dryRun.reasons.join('；'), /日志重建结果/u)
+  assert.equal(database.metrics.writes, 0)
+
+  await assert.rejects(
+    runCanvasSyncEpoch2Cutover({
+      sql: database.sql,
+      projectId: state.projectId,
+      apply: true,
+      expectedRevision: dryRun.current.graphRevision,
+    }),
+    (error) => error?.code === 'CANVAS_SYNC_CUTOVER_BLOCKED',
+  )
+  assert.equal(database.metrics.writes, 0)
+  assert.equal(state.epoch, 1)
 })
 
 test('apply 锁定后发现 revision 已变化时拒绝切换且零写入', async () => {
