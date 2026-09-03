@@ -31,7 +31,7 @@ canvas_query 每次经 ProductStore 的当前用户和项目授权读取项目�
 
 ### 4. Action Set 先预演、后冻结、再原子提交
 
-后续 Canvas Action Set 在确认前完成规范化、权限/风险判定、结构化 diff 和触达实体前置条件计算。批准 token、intent hash 与 Action Receipt 覆盖完整冻结操作；确认后模型无权追加或改变动作。
+后续 Canvas Action Set 在确认前完成规范化、权限/风险判定、结构化 diff 和触达实体前置条件计算。Preview 同时冻结变更节点、连线和未变化端点的安全 context 投影；确认卡的 display-only SVG 只由该 DTO 确定性生成，并保留语义列表，不读取实时 Canvas。批准 token、intent hash 与 Action Receipt 覆盖完整冻结操作；Preview/SVG 不是授权凭据，确认后模型无权追加或改变动作。
 
 执行时重新读取权威项目并验证触达实体。无关协作变更不阻塞；触达节点或边变化返回明确冲突，要求重新查询和提案。全部操作一次性通过 commitCanvasProjectMutation 提交，任一操作失败则整组零写入。
 

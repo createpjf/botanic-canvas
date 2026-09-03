@@ -40,6 +40,7 @@ test('Action Set 以确定性 ID 创建领域节点、连接参考并与文字�
   const artifacts = new Map([[artifact.id, artifact]])
   const prepared = prepareCanvasActionSetProposal(base, { operations: input.operations }, models, input.actionId, artifacts)
   assert.deepEqual(prepared.preview.summary, { created: 3, updated: 1, removed: 0, connected: 2 })
+  assert.deepEqual(prepared.preview.context.map((node) => node.id), ['asset-1'])
   assert.equal(typeof prepared.previewHash, 'string')
   assert.deepEqual(prepared.arguments.preconditions.map((item) => item.nodeId), ['asset-1', 'text-1'])
   const frozen = { actionId: input.actionId, ...prepared.arguments }

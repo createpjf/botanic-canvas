@@ -4492,6 +4492,15 @@ details.agent-timeline__thinking { display: block; width: 100%; }
 .agent-action-preview h4, .agent-action-preview p, .agent-action-preview ul { margin: 0; }
 .agent-action-preview h4 { color: #2f4936; font-size: 12px; }
 .agent-action-preview__summary { color: #637568; font-size: 11px; line-height: 1.45; }
+.agent-action-preview__graph { display: block; width: 100%; height: auto; max-height: 168px; overflow: visible; border: 1px solid #d8e4d7; border-radius: 7px; background: #fff; pointer-events: none; }
+.agent-action-preview__graph line { stroke: #789180; stroke-width: 1.5; }
+.agent-action-preview__graph line.is-movement { stroke-dasharray: 4 3; }
+.agent-action-preview__graph circle { fill: #fff; stroke: #789180; stroke-width: 2; }
+.agent-action-preview__graph .is-created circle, .agent-action-preview__graph .is-after circle { fill: #dcebdd; stroke: #52775b; }
+.agent-action-preview__graph .is-before circle { fill: #fff; stroke-dasharray: 2 2; opacity: 0.75; }
+.agent-action-preview__graph .is-removed circle { fill: #f7e3df; stroke: #985247; }
+.agent-action-preview__graph text { fill: #354c3b; font-size: 8px; font-weight: 650; }
+.agent-action-preview__graph .is-removed text { fill: #985247; text-decoration: line-through; }
 .agent-action-preview__group { display: grid; grid-template-columns: 42px minmax(0, 1fr); gap: 7px; font-size: 11px; }
 .agent-action-preview__group strong { color: #58705f; }
 .agent-action-preview__group ul { display: grid; gap: 3px; padding-left: 16px; color: #354c3b; overflow-wrap: anywhere; }

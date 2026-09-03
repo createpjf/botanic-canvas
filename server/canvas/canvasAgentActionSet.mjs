@@ -317,8 +317,9 @@ export function applyCanvasActionSet(document, raw, models, now = Date.now(), ar
 }
 
 function previewNode(node) {
-  return { id: node.id, type: node.type, label: node.data?.label ?? node.data?.name ?? node.id,
-    position: { x: Number(node.position?.x) || 0, y: Number(node.position?.y) || 0 } }
+  const x = Number(node.position?.x), y = Number(node.position?.y)
+  return { id: String(node.id).slice(0, 160), type: String(node.type).slice(0, 40), label: String(node.data?.label ?? node.data?.name ?? node.id).slice(0, 160),
+    position: { x: Number.isFinite(x) ? x : 0, y: Number.isFinite(y) ? y : 0 } }
 }
 
 /** 服务端在提案时重建前置条件并预演；返回值可直接冻结到 Proposal。 */
@@ -347,7 +348,10 @@ export function prepareCanvasActionSetProposal(document, raw, models, actionId, 
     const edge = applied.document.edges.find((item) => item.id === id)
     return { id, sourceNodeId: edge.source, targetNodeId: edge.target, role: edge.data?.role ?? 'reference' }
   })
-  const preview = { created, updated, removed, connections,
+  const changedIds = new Set([...applied.createdNodeIds, ...applied.updatedNodeIds, ...applied.removedNodeIds])
+  const contextIds = [...new Set(connections.flatMap((edge) => [edge.sourceNodeId, edge.targetNodeId]))].filter((id) => !changedIds.has(id)).sort()
+  const context = contextIds.map((id) => previewNode(after.get(id) ?? before.get(id)))
+  const preview = { context, created, updated, removed, connections,
     summary: { created: created.length, updated: updated.length, removed: removed.length, connected: connections.length } }
   return { arguments: argumentsValue, preview, previewHash: canonicalHash({ actionId, arguments: argumentsValue, preview }) }
 }
