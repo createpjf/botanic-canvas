@@ -185,6 +185,8 @@ export type BotanicAgentGenerationDraft =
       /** 回合模型结构化声明的变体；计划构建时直接展开，不再正则解析。 */
       structuredVariants?: Array<{ label: string; promptDelta: string }>
       variationAxisLabel?: string
+      /** 回合模型已综合本轮生成：未声明 variants 即单图，禁止正则隐式挖掘。 */
+      modelResolved?: boolean
       /** 追问卡必须带回下一轮的生成结论与 Prompt 来源。 */
       carryOver: { sourcePromptMessageId?: string; resolvedGeneration?: BotanicAgentResolvedGeneration }
     }
@@ -238,6 +240,8 @@ export function prepareBotanicAgentGenerationDraft(input: BotanicAgentGeneration
   const structuredVariants = !isVideo && !options.region && input.synthesizedVariants && input.synthesizedVariants.length >= 2
     ? input.synthesizedVariants
     : undefined
+  // 回合模型综合过本轮（synthesizedPrompt 存在）即语义已裁决：未声明 variants 就是单图。
+  const modelResolved = input.synthesizedPrompt !== undefined
   const pendingVariation = isVideo || options.region || structuredVariants ? undefined : botanicAgentPendingVariationClarification({
     instruction,
     locale: input.locale,
@@ -245,6 +249,7 @@ export function prepareBotanicAgentGenerationDraft(input: BotanicAgentGeneration
     clarificationAnswers: options.clarificationAnswers,
     brief: options.creativeBrief,
     assetGroup: input.variationAssetGroup,
+    modelResolved,
   })
   if (pendingVariation) {
     return { kind: 'ask', clarification: { ...pendingVariation, ...carryOver } }
@@ -312,6 +317,7 @@ export function prepareBotanicAgentGenerationDraft(input: BotanicAgentGeneration
     ...(!isVideo && input.synthesizedCount ? { outputCount: input.synthesizedCount } : {}),
     ...(structuredVariants ? { structuredVariants } : {}),
     ...(structuredVariants && input.synthesizedAxisLabel ? { variationAxisLabel: input.synthesizedAxisLabel } : {}),
+    ...(modelResolved ? { modelResolved } : {}),
     ...(sourcePromptMessageId ? { sourcePromptMessageId } : {}),
     carryOver,
   }
@@ -351,6 +357,7 @@ export function buildBotanicAgentInitialDraftPlan(
       fallbackPrompt: draft.prompt,
       structuredVariants: draft.structuredVariants,
       variationAxisLabel: draft.variationAxisLabel,
+      modelResolved: draft.modelResolved,
     })
   if (applied.kind === 'clarification') {
     return { kind: 'clarification', clarification: { ...applied.clarification, ...draft.carryOver } }

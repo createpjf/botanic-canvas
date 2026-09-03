@@ -103,6 +103,39 @@
       }
     },
     {
+      "name": "单图修改请求含风格一词且逗号并列不得切成伪变体",
+      "input": {
+        "instruction": "能不能做成一个横版的，claude 设计风格?",
+        "modelResolved": true
+      },
+      "expected": {
+        "kind": "none"
+      }
+    },
+    {
+      "name": "模型已裁决单图时短指令也不做隐式挖掘",
+      "input": {
+        "instruction": "做成横版的，claude设计风格",
+        "modelResolved": true
+      },
+      "expected": {
+        "kind": "none"
+      }
+    },
+    {
+      "name": "模型已裁决但用户有显式批量语言仍追问取值",
+      "input": {
+        "instruction": "多来几个场景的版本",
+        "modelResolved": true
+      },
+      "expected": {
+        "kind": "ask",
+        "fieldIds": [
+          "variation_values"
+        ]
+      }
+    },
+    {
       "name": "换模特肤色一个白人一个黑人按肤色轴展开两张",
       "input": {
         "instruction": "模特换肤色，一个白人一个黑人"
