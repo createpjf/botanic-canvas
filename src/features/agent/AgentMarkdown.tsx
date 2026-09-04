@@ -1,85 +1,63 @@
-import { Fragment, useState } from 'react'
+import { Children, useMemo } from 'react'
+import type { ReactNode } from 'react'
 import type { BotanicAgentMentionCatalog } from '../../domain/agentMentions'
 import {
   localizeAgentSourceLabel,
-  parseAgentMarkdown,
   splitAgentMessageSources,
-  stripAgentMarkdownHashes,
-  type AgentMarkdownBlock,
 } from '../../domain/agentMarkdown'
-import { CopyIcon } from '../../components/BotanicIcons'
+import {
+  MessageResponse,
+  type MessageResponseProps,
+} from '../../components/ai-elements/message'
 import { AgentRichText } from './AgentMentionText'
 import { useProductI18n } from '../../i18n/react'
 
-const inlinePattern = /(\*\*[^*\n]+\*\*|__[^_\n]+__|`[^`\n]+`|\*[^*\n]+\*|_[^_\n]+_|https?:\/\/[^\s<]+)/g
-
-function renderInline(text: string, catalogs?: BotanicAgentMentionCatalog) {
-  const safe = stripAgentMarkdownHashes(text)
-  const parts = safe.split(inlinePattern)
-  return parts.map((part, index) => {
-    if (!part) return null
-    if (/^\*\*.*\*\*$|^__.*__$/.test(part)) return <strong key={index}>{part.slice(2, -2)}</strong>
-    if (/^`.*`$/.test(part)) return <code key={index}>{part.slice(1, -1)}</code>
-    if (/^\*.*\*$|^_.*_$/.test(part)) return <em key={index}>{part.slice(1, -1)}</em>
-    if (/^https?:\/\//.test(part)) return <a key={index} href={part} target="_blank" rel="noreferrer">{part}</a>
-    return <Fragment key={index}>{part.split('\n').map((line, lineIndex) => <Fragment key={lineIndex}>{lineIndex ? <br /> : null}{catalogs ? <AgentRichText text={line} catalogs={catalogs} /> : line}</Fragment>)}</Fragment>
-  })
+const agentMarkdownUrlTransform: NonNullable<MessageResponseProps['urlTransform']> = (url, key) => {
+  if (key !== 'href') return null
+  try {
+    const parsed = new URL(url)
+    return parsed.protocol === 'https:' ? parsed.href : null
+  } catch {
+    return null
+  }
 }
 
-function CopyableCode({ language, text }: { language?: string; text: string }) {
-  const { locale } = useProductI18n()
-  const [copied, setCopied] = useState(false)
-  const label = language || (locale === 'en' ? 'Code' : '代码')
-  const copyLabel = locale === 'en' ? 'Copy' : '复制'
-
-  const copyText = async () => {
-    if (!navigator.clipboard?.writeText) return
-    try {
-      await navigator.clipboard.writeText(text)
-      setCopied(true)
-    } catch {
-      setCopied(false)
-    }
-  }
-
-  return <div className="agent-markdown__code">
-    <header>
-      <small>{label}</small>
-      <button type="button" className="agent-prompt-output__copy" onClick={() => void copyText()} aria-label={`${copyLabel} ${label}`} title={`${copyLabel} ${label}`}>
-        <CopyIcon />
-        <span>{copied ? (locale === 'en' ? 'Copied' : '已复制') : copyLabel}</span>
-      </button>
-    </header>
-    <pre data-language={language}><code>{text}</code></pre>
-  </div>
+const zhStreamdownTranslations: NonNullable<MessageResponseProps['translations']> = {
+  close: '关闭',
+  copied: '已复制',
+  copyCode: '复制代码',
+  copyLink: '复制链接',
+  copyTable: '复制表格',
+  copyTableAsCsv: '复制为 CSV',
+  copyTableAsMarkdown: '复制为 Markdown',
+  copyTableAsTsv: '复制为 TSV',
+  downloadFile: '下载文件',
+  downloadTable: '下载表格',
+  downloadTableAsCsv: '下载 CSV',
+  downloadTableAsMarkdown: '下载 Markdown',
+  exitFullscreen: '退出全屏',
+  openExternalLink: '打开外部链接',
+  openLink: '打开链接',
+  tableFormatCsv: 'CSV',
+  tableFormatMarkdown: 'Markdown',
+  tableFormatTsv: 'TSV',
+  viewFullscreen: '全屏查看',
 }
 
-function renderBlock(block: AgentMarkdownBlock, index: number, catalogs?: BotanicAgentMentionCatalog) {
-  if (block.kind === 'heading') {
-    // 解析已把 #{4–6} 压到 3；这里再 clamp，避免脏数据落到非法标签。
-    const level = Math.min(3, Math.max(1, block.level)) as 1 | 2 | 3
-    const Heading = `h${level}` as 'h1' | 'h2' | 'h3'
-    return <Heading key={index}>{renderInline(block.text, catalogs)}</Heading>
-  }
-  if (block.kind === 'unordered-list') return <ul key={index}>{block.items.map((item, itemIndex) => <li key={itemIndex}>{renderInline(item, catalogs)}</li>)}</ul>
-  if (block.kind === 'ordered-list') return <ol key={index}>{block.items.map((item, itemIndex) => <li key={itemIndex}>{renderInline(item, catalogs)}</li>)}</ol>
-  if (block.kind === 'code') return <CopyableCode key={index} language={block.language} text={block.text} />
-  if (block.kind === 'table') {
-    return <div key={index} className="agent-markdown__table-wrap">
-      <table>
-        <thead>
-          <tr>{block.headers.map((header, headerIndex) => <th key={headerIndex}>{renderInline(header, catalogs)}</th>)}</tr>
-        </thead>
-        <tbody>
-          {block.rows.map((row, rowIndex) => <tr key={rowIndex}>
-            {row.map((cell, cellIndex) => <td key={cellIndex}>{renderInline(cell, catalogs)}</td>)}
-          </tr>)}
-        </tbody>
-      </table>
-    </div>
-  }
-  if (block.kind === 'rule') return <hr key={index} />
-  return <p key={index}>{renderInline(block.text, catalogs)}</p>
+const agentMarkdownControls: NonNullable<MessageResponseProps['controls']> = {
+  table: false,
+  code: { copy: true, download: false },
+}
+
+const agentMarkdownShikiTheme: NonNullable<MessageResponseProps['shikiTheme']> = [
+  'github-light-high-contrast',
+  'github-dark-high-contrast',
+]
+
+function renderMentionChildren(children: ReactNode, catalogs?: BotanicAgentMentionCatalog) {
+  return Children.map(children, (child) => typeof child === 'string'
+    ? <AgentRichText text={child} catalogs={catalogs} />
+    : child)
 }
 
 export function AgentMarkdownSources({ sources }: { sources: string[] }) {
@@ -100,9 +78,45 @@ export function AgentMarkdown({
   catalogs?: BotanicAgentMentionCatalog
   showSources?: boolean
 }) {
+  const { locale } = useProductI18n()
   const { body, sources } = splitAgentMessageSources(content)
+  const components = useMemo<NonNullable<MessageResponseProps['components']>>(() => ({
+    p: ({ children }) => <p>{renderMentionChildren(children, catalogs)}</p>,
+    li: ({ children }) => <li>{renderMentionChildren(children, catalogs)}</li>,
+    h1: ({ children }) => <h1>{renderMentionChildren(children, catalogs)}</h1>,
+    h2: ({ children }) => <h2>{renderMentionChildren(children, catalogs)}</h2>,
+    h3: ({ children }) => <h3>{renderMentionChildren(children, catalogs)}</h3>,
+    h4: ({ children }) => <h3>{renderMentionChildren(children, catalogs)}</h3>,
+    h5: ({ children }) => <h3>{renderMentionChildren(children, catalogs)}</h3>,
+    h6: ({ children }) => <h3>{renderMentionChildren(children, catalogs)}</h3>,
+    strong: ({ children }) => <strong>{renderMentionChildren(children, catalogs)}</strong>,
+    em: ({ children }) => <em>{renderMentionChildren(children, catalogs)}</em>,
+    table: ({ children }) => <div className="agent-markdown__table-wrap"><table>{children}</table></div>,
+    thead: ({ children }) => <thead>{children}</thead>,
+    tbody: ({ children }) => <tbody>{children}</tbody>,
+    tr: ({ children }) => <tr>{children}</tr>,
+    th: ({ children }) => <th>{renderMentionChildren(children, catalogs)}</th>,
+    td: ({ children }) => <td>{renderMentionChildren(children, catalogs)}</td>,
+    a: ({ children, href }) => href
+      ? <a href={href} target="_blank" rel="noopener noreferrer">{renderMentionChildren(children, catalogs)}</a>
+      : <>{renderMentionChildren(children, catalogs)}</>,
+    img: () => null,
+  }), [catalogs])
+
   return <div className="agent-markdown">
-    {parseAgentMarkdown(body).map((block, index) => renderBlock(block, index, catalogs))}
+    <MessageResponse
+      className="agent-markdown__response"
+      components={components}
+      controls={agentMarkdownControls}
+      dir="auto"
+      lineNumbers={false}
+      shikiTheme={agentMarkdownShikiTheme}
+      skipHtml
+      translations={locale === 'en' ? undefined : zhStreamdownTranslations}
+      urlTransform={agentMarkdownUrlTransform}
+    >
+      {body}
+    </MessageResponse>
     {showSources ? <AgentMarkdownSources sources={sources} /> : null}
   </div>
 }

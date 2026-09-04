@@ -3,6 +3,7 @@ import { networkInterfaces } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { defineConfig, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
+import tailwindcss from '@tailwindcss/vite'
 import { sentryVitePlugin } from '@sentry/vite-plugin'
 
 const localGenerationOrigin = 'http://127.0.0.1:8787'
@@ -57,6 +58,7 @@ function generationApiOrigin() {
 export default defineConfig({
   plugins: [
     react(),
+    tailwindcss(),
     botanicReleasePlugin(),
     ...(sentryUploadEnabled ? [sentryVitePlugin({
       authToken: process.env.SENTRY_AUTH_TOKEN,
@@ -70,6 +72,11 @@ export default defineConfig({
       sourcemaps: { filesToDeleteAfterUpload: ['dist/**/*.map'] },
     })] : []),
   ],
+  resolve: {
+    alias: {
+      '@': fileURLToPath(new URL('./src', import.meta.url)),
+    },
+  },
   build: {
     sourcemap: sentryUploadEnabled ? 'hidden' : false,
     rollupOptions: {

@@ -17,10 +17,10 @@ function message(partial: Partial<BotanicAgentMessage> & Pick<BotanicAgentMessag
   }
 }
 
-test('用户消息只留编辑，不评价也不复制', () => {
+test('用户消息可编辑和复制，但不评价', () => {
   assert.deepEqual(botanicAgentMessageUtilityActions(message({
     id: 'user-1', role: 'user', content: '换成海边',
-  })), { edit: true, feedback: false, copy: false })
+  })), { edit: true, feedback: false, copy: true })
   assert.deepEqual(botanicAgentMessageUtilityActions(message({
     id: 'user-empty', role: 'user', content: '  ',
   })), { edit: false, feedback: false, copy: false })
@@ -40,11 +40,11 @@ test('创作回复和方案卡可以评价、复制', () => {
   })), { edit: false, feedback: true, copy: true })
 })
 
-test('通知、任务、追问和计划不挂元操作', () => {
+test('通知、任务、追问和计划可复制，但不评价', () => {
   for (const kind of ['notice', 'run', 'question', 'plan'] as const) {
     assert.deepEqual(
       botanicAgentMessageUtilityActions(message({ id: kind, kind, content: '任务没有启动' })),
-      { edit: false, feedback: false, copy: false },
+      { edit: false, feedback: false, copy: true },
       kind,
     )
   }
@@ -53,7 +53,7 @@ test('通知、任务、追问和计划不挂元操作', () => {
 test('带 runId 的 text 是任务回执，方案卡除外', () => {
   assert.deepEqual(botanicAgentMessageUtilityActions(message({
     id: 'receipt', runId: 'run-1', content: '任务未完成，可调整后重试。',
-  })), { edit: false, feedback: false, copy: false })
+  })), { edit: false, feedback: false, copy: true })
   assert.equal(botanicAgentMessageUtilityActions(message({
     id: 'composition-run',
     kind: 'composition',

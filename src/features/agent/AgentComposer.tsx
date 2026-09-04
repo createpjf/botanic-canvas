@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState } from 'react'
-import type { ChangeEvent, ClipboardEvent, KeyboardEvent, RefObject } from 'react'
+import type { ChangeEvent, ClipboardEvent, FormEvent, KeyboardEvent, RefObject } from 'react'
 import { botanicAgentExecutionModeLabel, type BotanicAgentMentionQuery, type BotanicAgentSession } from '../../domain/agent'
 import type { AssetGroup } from '../../domain/canvas'
 import { imageUploadAccept } from '../../domain/mediaFormats'
@@ -15,6 +15,14 @@ import {
   sendStopPath,
   useGSAP,
 } from '../../components/gsapMotion'
+import {
+  PromptInput,
+  PromptInputBody,
+  PromptInputFooter,
+  PromptInputSubmit,
+  PromptInputTextarea,
+  PromptInputTools,
+} from '../../components/ai-elements/prompt-input'
 import { agentPlannerModelLabel, agentPlannerModelShortLabel } from '../../components/generationModelPresentation'
 import type { AgentContextItem, AgentSkillOption } from './agentWorkspace.types'
 import { AGENT_COMPOSER_QUEUE_LIMIT, agentQueuedInstructionPreview, type AgentQueuedInstruction } from './agentComposerQueue'
@@ -55,7 +63,6 @@ type AgentComposerProps = {
   modeMenuId: string
   plannerModel: string
   plannerModels: string[]
-  showRawReasoning: boolean
   groupId: string
   compatibleGroups: AssetGroup[]
   imageContextOptions: AgentContextItem[]
@@ -79,7 +86,6 @@ type AgentComposerProps = {
   onCloseContextMenu: () => void
   onToggleModeMenu: () => void
   onPlannerModelChange: (model: string) => void
-  onShowRawReasoningChange: (show: boolean) => void
   onGroupChange: (groupId: string) => void
   onSend: () => void
   onQueue: () => void
@@ -120,7 +126,6 @@ export function AgentComposer({
   modeMenuId,
   plannerModel,
   plannerModels,
-  showRawReasoning,
   groupId,
   compatibleGroups,
   imageContextOptions,
@@ -144,7 +149,6 @@ export function AgentComposer({
   onCloseContextMenu,
   onToggleModeMenu,
   onPlannerModelChange,
-  onShowRawReasoningChange,
   onGroupChange,
   onSend,
   onQueue,
@@ -157,10 +161,10 @@ export function AgentComposer({
   const { locale } = useProductI18n()
   const copy = useProductMessages({
     'zh-CN': {
-      input: 'Agent 输入', commands: '命令', referenced: '已引用', remove: '移除', mounted: '已挂载', callSkill: '挂载 Skill', systemSkill: '系统 Skill', projectSkill: '项目 Skill', createSkill: '创建项目 Skill', saveRules: '保存一组可复用规则', referenceCanvas: '引用画布节点或图片视频', description: '补充描述', asset: '素材', result: '结果', video: '视频', noMatch: '没有匹配项，按 Esc 关闭', noSkillMatch: '没有匹配的 Skill，按 Esc 关闭', placeholder: '例如：更冷的晨光，服装和商品保持', message: 'Agent 消息', promptField: '提示词', retry: '重试', addImages: '添加图像素材', executionMode: '执行模式', manual: '计划模式', auto: '自动模式', manualTitle: '计划模式：出图先给计划，确认后再提交', autoTitle: '自动模式：单张设置完整后直接提交，多张或外部行动仍需确认', model: 'Agent 模型', assetGroup: '素材组', single: '单张', group: '组', send: '发送给 Agent', stop: '停止', queue: '加入队列', queued: '已排队', editQueued: '编辑排队消息', removeQueued: '移除排队消息', closeImages: '关闭添加图像素材', chooseImages: '从电脑选择图片', dragHint: '也可以直接拖入 Agent 面板', noImages: '暂无图像素材，可从电脑选择或直接拖入。', manualHelp: '出图需确认后再提交', autoHelp: '单张可直接提交；多张仍需确认', rawReasoning: '模型推理原文（实验）', rawReasoningHelp: '当前会话 · 不保存 · 取决于模型支持', textKind: '文字',
+      input: 'Agent 输入', commands: '命令', referenced: '已引用', remove: '移除', mounted: '已挂载', callSkill: '挂载 Skill', systemSkill: '系统 Skill', projectSkill: '项目 Skill', createSkill: '创建项目 Skill', saveRules: '保存一组可复用规则', referenceCanvas: '引用画布节点或图片视频', description: '补充描述', asset: '素材', result: '结果', video: '视频', noMatch: '没有匹配项，按 Esc 关闭', noSkillMatch: '没有匹配的 Skill，按 Esc 关闭', placeholder: '例如：更冷的晨光，服装和商品保持', message: 'Agent 消息', promptField: '提示词', retry: '重试', addImages: '添加图像素材', executionMode: '执行模式', manual: '计划模式', auto: '自动模式', manualTitle: '计划模式：出图先给计划，确认后再提交', autoTitle: '自动模式：单张设置完整后直接提交，多张或外部行动仍需确认', model: 'Agent 模型', assetGroup: '素材组', single: '单张', group: '组', send: '发送给 Agent', stop: '停止', queue: '加入队列', queued: '已排队', editQueued: '编辑排队消息', removeQueued: '移除排队消息', closeImages: '关闭添加图像素材', chooseImages: '从电脑选择图片', dragHint: '也可以直接拖入 Agent 面板', noImages: '暂无图像素材，可从电脑选择或直接拖入。', manualHelp: '出图需确认后再提交', autoHelp: '单张可直接提交；多张仍需确认', textKind: '文字',
     },
     en: {
-      input: 'Agent input', commands: 'Commands', referenced: 'Referenced', remove: 'Remove', mounted: 'Mounted', callSkill: 'Mount Skill', systemSkill: 'System Skill', projectSkill: 'Project Skill', createSkill: 'Create project Skill', saveRules: 'Save a reusable set of rules', referenceCanvas: 'Reference canvas nodes or media', description: 'Description', asset: 'Asset', result: 'Result', video: 'Video', noMatch: 'No matches. Press Esc to close.', noSkillMatch: 'No matching Skill. Press Esc to close.', placeholder: 'e.g. Cooler morning light — keep clothes and product', message: 'Agent message', promptField: 'Prompt', retry: 'Retry', addImages: 'Add images', executionMode: 'Execution mode', manual: 'Plan mode', auto: 'Auto mode', manualTitle: 'Plan mode: review image plans before generating', autoTitle: 'Auto mode: submit one complete image job directly; batches and external actions still need confirmation', model: 'Agent model', assetGroup: 'Asset group', single: 'Single', group: 'Group', send: 'Send to Agent', stop: 'Stop', queue: 'Queue', queued: 'Queued', editQueued: 'Edit queued message', removeQueued: 'Remove queued message', closeImages: 'Close image picker', chooseImages: 'Choose images', dragHint: 'Or drop images into the Agent panel', noImages: 'No images yet. Choose files or drop them here.', manualHelp: 'Confirm image plans before submit', autoHelp: 'Single images submit directly; batches still need confirmation', rawReasoning: 'Model reasoning text (experimental)', rawReasoningHelp: 'Current session · not saved · model dependent', textKind: 'Text',
+      input: 'Agent input', commands: 'Commands', referenced: 'Referenced', remove: 'Remove', mounted: 'Mounted', callSkill: 'Mount Skill', systemSkill: 'System Skill', projectSkill: 'Project Skill', createSkill: 'Create project Skill', saveRules: 'Save a reusable set of rules', referenceCanvas: 'Reference canvas nodes or media', description: 'Description', asset: 'Asset', result: 'Result', video: 'Video', noMatch: 'No matches. Press Esc to close.', noSkillMatch: 'No matching Skill. Press Esc to close.', placeholder: 'e.g. Cooler morning light — keep clothes and product', message: 'Agent message', promptField: 'Prompt', retry: 'Retry', addImages: 'Add images', executionMode: 'Execution mode', manual: 'Plan mode', auto: 'Auto mode', manualTitle: 'Plan mode: review image plans before generating', autoTitle: 'Auto mode: submit one complete image job directly; batches and external actions still need confirmation', model: 'Agent model', assetGroup: 'Asset group', single: 'Single', group: 'Group', send: 'Send to Agent', stop: 'Stop', queue: 'Queue', queued: 'Queued', editQueued: 'Edit queued message', removeQueued: 'Remove queued message', closeImages: 'Close image picker', chooseImages: 'Choose images', dragHint: 'Or drop images into the Agent panel', noImages: 'No images yet. Choose files or drop them here.', manualHelp: 'Confirm image plans before submit', autoHelp: 'Single images submit directly; batches still need confirmation', textKind: 'Text',
     },
   })
   const composerErrorId = useId()
@@ -217,6 +221,7 @@ export function AgentComposer({
     ? `${suggestionListId}-option-${selectedSuggestionIndex}`
     : undefined
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.nativeEvent.isComposing) return
     if (event.key === 'Escape' && mentionQuery) {
       event.preventDefault()
       onDismissMention()
@@ -271,8 +276,7 @@ export function AgentComposer({
     }
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault()
-      if (planning) onQueue()
-      else onSend()
+      event.currentTarget.form?.requestSubmit()
     }
   }
   const handleTextPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
@@ -287,7 +291,13 @@ export function AgentComposer({
   }
 
   const canSend = Boolean(instruction.trim() || contextItems.length || mountedSkills.length)
-  const composerRef = useRef<HTMLDivElement>(null)
+  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (!canSend || !session || cancelling) return
+    if (planning) onQueue()
+    else onSend()
+  }
+  const composerRef = useRef<HTMLFormElement>(null)
   const chipFlipState = useRef<Flip.FlipState | undefined>(undefined)
   const chipSignature = [...queuedInstructions.map((item) => item.id), ...contextItems.map((item) => item.id), ...mountedSkills.map((skill) => skill.id)].join('|')
   const mentionMenuKey = mentionQuery?.trigger ?? ''
@@ -334,7 +344,7 @@ export function AgentComposer({
     gsap.from(menus, { autoAlpha: 0, y: 6, duration: botanicMotion.duration.toast })
   }, { scope: composerRef, dependencies: [mentionMenuKey] })
 
-  return <div ref={composerRef} className="agent-composer" role="group" aria-label={copy.input} aria-busy={planning}>
+  return <PromptInput ref={composerRef} className="agent-composer" aria-label={copy.input} aria-busy={planning} onSubmit={handleSubmit}>
     {queuedInstructions.length ? <div className="agent-composer__queue" aria-label={`${copy.queued} ${queuedInstructions.length}/${AGENT_COMPOSER_QUEUE_LIMIT}`}>
       <span className="agent-composer__attach-label">{`${copy.queued} ${queuedInstructions.length}/${AGENT_COMPOSER_QUEUE_LIMIT}`}</span>
       <div className="agent-composer__queue-list">{queuedInstructions.map((item) => <div key={item.id} data-flip-id={item.id} className="agent-composer__queue-chip">
@@ -382,31 +392,33 @@ export function AgentComposer({
     {canvasMenuOpen ? <div id={suggestionListId} className="agent-composer__mention-menu" role="listbox" aria-label={copy.referenceCanvas} onPointerDown={(event) => event.stopPropagation()}>
       {mentionOptions.length ? <div className="agent-composer__mention-section" role="group" aria-label={copy.referenceCanvas}><strong>{copy.referenceCanvas}</strong>{mentionOptions.map((item, index) => <button id={`${suggestionListId}-option-${index}`} key={item.id} type="button" role="option" tabIndex={-1} aria-selected={selectedSuggestionIndex === index} aria-label={`${copy.referenceCanvas} ${item.label}`} title={item.content ?? item.label} onMouseEnter={() => setActiveSuggestionIndex(index)} onMouseDown={(event) => event.preventDefault()} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onSelectMention(item) }}>{mentionBadge(item)}<b>{item.label}</b><small>{mentionMeta(item)}</small></button>)}</div> : <p>{copy.noMatch}</p>}
     </div> : null}
-    <textarea
-      ref={textareaRef}
-      value={instruction}
-      onChange={(event) => {
-        historyStateRef.current = initialAgentComposerHistoryState
-        onInstructionChange(event.target.value, event.target.selectionStart ?? event.target.value.length)
-      }}
-      onClick={(event) => onInstructionClick(event.currentTarget.selectionStart ?? instruction.length)}
-      onKeyDown={handleKeyDown}
-      onPaste={handleTextPaste}
-      placeholder={copy.placeholder}
-      role="combobox"
-      aria-autocomplete="list"
-      aria-haspopup="listbox"
-      aria-expanded={Boolean(mentionQuery)}
-      aria-controls={mentionQuery ? suggestionListId : undefined}
-      aria-activedescendant={mentionQuery ? activeSuggestionId : undefined}
-      aria-label={copy.promptField}
-      aria-invalid={Boolean(error)}
-      aria-describedby={error ? composerErrorId : undefined}
-    />
+    <PromptInputBody>
+      <PromptInputTextarea
+        ref={textareaRef}
+        value={instruction}
+        onChange={(event) => {
+          historyStateRef.current = initialAgentComposerHistoryState
+          onInstructionChange(event.target.value, event.target.selectionStart ?? event.target.value.length)
+        }}
+        onClick={(event) => onInstructionClick(event.currentTarget.selectionStart ?? instruction.length)}
+        onKeyDown={handleKeyDown}
+        onPaste={handleTextPaste}
+        placeholder={copy.placeholder}
+        role="combobox"
+        aria-autocomplete="list"
+        aria-haspopup="listbox"
+        aria-expanded={Boolean(mentionQuery)}
+        aria-controls={mentionQuery ? suggestionListId : undefined}
+        aria-activedescendant={mentionQuery ? activeSuggestionId : undefined}
+        aria-label={copy.promptField}
+        aria-invalid={Boolean(error)}
+        aria-describedby={error ? composerErrorId : undefined}
+      />
+    </PromptInputBody>
     {error ? <div id={composerErrorId} className="agent-composer__error" role="alert"><span>{error}</span>{canRetry ? <button type="button" onClick={onRetry} disabled={retrying}>{copy.retry}</button> : null}</div> : intentHint ? <p className="agent-composer__intent" role="status">{intentHint}</p> : null}
     <input ref={fileInputRef} className="asset-file-input" type="file" accept={imageUploadAccept()} multiple aria-label={copy.addImages} onChange={handleFiles} />
-    <div className="agent-composer__toolbar">
-      <div>
+    <PromptInputFooter className="agent-composer__toolbar">
+      <PromptInputTools>
         <button ref={contextMenuButtonRef} type="button" className="agent-composer__add" onClick={onToggleContextMenu} aria-controls={contextMenuId} aria-expanded={contextMenuOpen} aria-label={copy.addImages} title={copy.addImages}><PlusIcon /></button>
         <button ref={modeMenuButtonRef} type="button" className="agent-composer__mode" onClick={onToggleModeMenu} aria-controls={modeMenuId} aria-expanded={modeMenuOpen} aria-label={executionModeAriaLabel} title={session?.executionMode === 'auto' ? copy.autoTitle : copy.manualTitle}>
           {session?.executionMode === 'auto' ? <AutoRunIcon /> : <ChecklistIcon />}<span className="agent-composer__mode-label" aria-hidden="true">{executionModeLabel}</span><ChevronDownIcon className="agent-composer__mode-chevron" />
@@ -422,18 +434,21 @@ export function AgentComposer({
           renderOption={(option, selected) => <span className="agent-model-option"><span className="agent-model-option__main"><AgentPlannerProviderIcon model={option.value} /><span>{option.label}</span></span>{selected ? <b aria-hidden="true">✓</b> : null}</span>}
         />
         {compatibleGroups.length ? <BotanicSelect className="agent-composer__group-select" value={groupId} placeholder={copy.assetGroup} ariaLabel={copy.assetGroup} options={[{ value: '', label: copy.single }, ...compatibleGroups.map((group) => ({ value: group.id, label: `${group.name} · ${group.assetIds.length}` }))]} onChange={onGroupChange} renderTrigger={(selected) => <span className="agent-group-trigger" title={selected?.label ?? copy.single}><strong>{selected?.value ? copy.group : '1'}</strong></span>} /> : null}
-      </div>
+      </PromptInputTools>
       {planning && canSend ? <button type="button" className="agent-composer__queue-action" disabled={queuedInstructions.length >= AGENT_COMPOSER_QUEUE_LIMIT} aria-label={copy.queue} title={copy.queue} onClick={onQueue}><ListTodoIcon /></button> : null}
-      <ComposerSendButton
-        planning={planning}
-        cancelling={cancelling}
-        disabled={!canSend || !session}
-        sendLabel={copy.send}
-        stopLabel={copy.stop}
-        onSend={onSend}
-        onCancel={onCancelPlanning}
-      />
-    </div>
+      <PromptInputSubmit
+        className={planning ? `agent-composer__send is-stop${cancelling ? ' is-cancelling' : ''}` : 'agent-composer__send'}
+        status={cancelling ? 'submitted' : planning ? 'streaming' : 'ready'}
+        disabled={planning ? cancelling : !canSend || !session}
+        onStop={onCancelPlanning}
+        aria-label={planning ? `${copy.stop}${cancelling ? '…' : ''}` : copy.send}
+        title={planning ? `${copy.stop}${cancelling ? '…' : ''}` : copy.send}
+      >
+        {cancelling ? <span className="agent-composer__spinner" aria-hidden="true" /> : <svg width="1em" height="1em" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+          <path d={planning ? sendStopPath : sendArrowPath} />
+        </svg>}
+      </PromptInputSubmit>
+    </PromptInputFooter>
     {contextMenuOpen ? <div id={contextMenuId} className="agent-composer__context-menu" role="menu" aria-label={copy.addImages} onPointerDown={(event) => event.stopPropagation()}>
       <header><strong>{copy.addImages}</strong><button type="button" aria-label={copy.closeImages} onClick={onCloseContextMenu}><CloseIcon /></button></header>
       <div className="agent-composer__context-upload">
@@ -460,63 +475,6 @@ export function AgentComposer({
     {modeMenuOpen ? <div id={modeMenuId} className="agent-composer__mode-menu" role="group" aria-label={copy.executionMode}>
       <button type="button" aria-label={copy.manual} aria-pressed={session?.executionMode === 'manual'} className={session?.executionMode === 'manual' ? 'is-selected' : ''} title={copy.manualTitle} onClick={() => onExecutionModeChange('manual')}><ChecklistIcon /><span><strong>{copy.manual}</strong><small>{copy.manualHelp}</small></span></button>
       <button type="button" aria-label={copy.auto} aria-pressed={session?.executionMode === 'auto'} className={session?.executionMode === 'auto' ? 'is-selected' : ''} title={copy.autoTitle} onClick={() => onExecutionModeChange('auto')}><AutoRunIcon /><span><strong>{copy.auto}</strong><small>{copy.autoHelp}</small></span></button>
-      <label className="agent-composer__reasoning-toggle">
-        <input type="checkbox" checked={showRawReasoning} disabled={planning} onChange={(event) => onShowRawReasoningChange(event.target.checked)} />
-        <span><strong>{copy.rawReasoning}</strong><small>{copy.rawReasoningHelp}</small></span>
-      </label>
     </div> : null}
-  </div>
-}
-
-function ComposerSendButton({
-  planning,
-  cancelling,
-  disabled,
-  sendLabel,
-  stopLabel,
-  onSend,
-  onCancel,
-}: {
-  planning: boolean
-  cancelling: boolean
-  disabled: boolean
-  sendLabel: string
-  stopLabel: string
-  onSend: () => void
-  onCancel: () => void
-}) {
-  const buttonRef = useRef<HTMLButtonElement>(null)
-  const pathRef = useRef<SVGPathElement>(null)
-  const knownPlanning = useRef<boolean | undefined>(undefined)
-
-  useGSAP(() => {
-    const path = pathRef.current
-    const button = buttonRef.current
-    if (!path || !button) return
-    const nextPath = planning ? sendStopPath : sendArrowPath
-    if (knownPlanning.current === undefined || knownPlanning.current === planning || prefersReducedMotion()) {
-      gsap.set(path, { morphSVG: nextPath })
-      knownPlanning.current = planning
-      return
-    }
-    const tl = gsap.timeline({ defaults: { ease: botanicMotion.ease } })
-    tl.to(button, { scale: 0.92, duration: botanicMotion.duration.press }, 0)
-      .to(path, { morphSVG: nextPath, duration: botanicMotion.duration.chip }, 0)
-      .to(button, { scale: 1, duration: botanicMotion.duration.toast })
-    knownPlanning.current = planning
-  }, { scope: buttonRef, dependencies: [planning] })
-
-  return <button
-    ref={buttonRef}
-    type="button"
-    className={planning ? `agent-composer__send is-stop${cancelling ? ' is-cancelling' : ''}` : 'agent-composer__send'}
-    disabled={planning ? cancelling : disabled}
-    onClick={planning ? onCancel : onSend}
-    aria-label={planning ? `${stopLabel}${cancelling ? '…' : ''}` : sendLabel}
-    title={planning ? `${stopLabel}${cancelling ? '…' : ''}` : sendLabel}
-  >
-    {cancelling ? <span className="agent-composer__spinner" aria-hidden="true" /> : <svg width="1em" height="1em" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-      <path ref={pathRef} d={planning ? sendStopPath : sendArrowPath} />
-    </svg>}
-  </button>
+  </PromptInput>
 }

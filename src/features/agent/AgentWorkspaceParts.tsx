@@ -291,18 +291,18 @@ export function AgentFailureRecoveryActions({
 }) {
   const { locale } = useProductI18n()
   const recovery = locale === 'en' ? {
-    aria: `${branch.label} recovery actions`, retry: 'Retry current branch', retryTitle: 'Retry current branch · reuses the same task and does not create a duplicate', settings: 'Edit settings', settingsTitle: 'Edit settings · prefills the change request without submitting', model: 'Change model', modelTitle: 'Change model · prefills the model without submitting', select: 'Select recovery model', empty: 'No models available',
+    aria: `${branch.label} recovery actions`, retry: 'Retry', retrying: 'Retrying…', retryTitle: 'Retry current branch · reuses the same task and does not create a duplicate', settings: 'Edit settings', settingsTitle: 'Edit settings · prefills the change request without submitting', model: 'Change model', modelTitle: 'Change model · prefills the model without submitting', select: 'Select recovery model', empty: 'No models available',
   } : {
-    aria: `${branch.label} 恢复操作`, retry: '重试当前分支', retryTitle: '重试当前分支 · 复用同一任务，不会创建重复任务', settings: '修改参数', settingsTitle: '修改参数 · 只预填修改要求，不会立即提交', model: '更换模型', modelTitle: '更换模型 · 只预填模型，不会立即提交', select: '选择恢复模型', empty: '暂无可用模型',
+    aria: `${branch.label} 恢复操作`, retry: '重试', retrying: '重试中…', retryTitle: '重试当前分支 · 复用同一任务，不会创建重复任务', settings: '修改参数', settingsTitle: '修改参数 · 只预填修改要求，不会立即提交', model: '更换模型', modelTitle: '更换模型 · 只预填模型，不会立即提交', select: '选择恢复模型', empty: '暂无可用模型',
   }
   return (
     <div className="agent-recovery-actions" aria-label={recovery.aria}>
       <button type="button" className="is-retry" aria-label={recovery.retry} disabled={retrying} onClick={onRetry} title={recovery.retryTitle}>
-        {retrying ? <span className="agent-workspace__mini-spinner" /> : <RefreshIcon />}
+        {retrying ? <span className="agent-workspace__mini-spinner" /> : <RefreshIcon />}<span>{retrying ? recovery.retrying : recovery.retry}</span>
       </button>
-      <button type="button" aria-label={recovery.settings} onClick={() => onPrepare('settings')} title={recovery.settingsTitle}><EditIcon /></button>
+      <button type="button" aria-label={recovery.settings} onClick={() => onPrepare('settings')} title={recovery.settingsTitle}><EditIcon /><span>{recovery.settings}</span></button>
       <span className="agent-recovery-model-picker">
-        <button type="button" aria-label={recovery.model} aria-expanded={menuOpen} onClick={onToggleModelMenu} title={recovery.modelTitle}><SlidersIcon /></button>
+        <button type="button" aria-label={recovery.model} aria-expanded={menuOpen} onClick={onToggleModelMenu} title={recovery.modelTitle}><SlidersIcon /><span>{recovery.model}</span></button>
         {menuOpen ? <div className="agent-recovery-model-menu" role="group" aria-label={recovery.select} onPointerDown={(event) => event.stopPropagation()}>
           {generationModels.map((model) => <button key={model.id} type="button" onClick={() => onPrepare('model', model)}>
             <span>{modelProviderLogo(model) ? <img src={modelProviderLogo(model)} alt="" /> : null}<b>{modelDisplayLabel(model)}</b></span>

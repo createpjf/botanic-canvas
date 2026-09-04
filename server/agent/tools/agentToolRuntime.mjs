@@ -18,6 +18,7 @@ import { normalizeProviderUsage } from '../semantic/botanicAgentStream.mjs'
 import { withBotanicSpan } from '../../observability/executionTelemetry.mjs'
 import { normalizeAgentToolCallId } from './agentToolCallIdentity.mjs'
 import { AGENT_SEMANTIC_EVENT_NAMES, writeAgentSemanticEvent } from '../../observability/agentSemanticEvent.mjs'
+import { agentToolDisplayTrace as displayToolCall } from './agentToolDisplay.mjs'
 
 const TOOL_NAME = /^[a-z][a-z0-9_]{1,63}$/
 const TOOL_RECOVERY_MODES = new Set(['reexecute', 'receipt', 'never', 'journal'])
@@ -671,7 +672,7 @@ export async function runAgentToolLoop({
       const runningPresentation = toolEventPresentation(trace.name)
       if (emitEvents) {
         emit({
-          type: 'tool', step, toolCall: { ...trace, status: 'running' },
+          type: 'tool', step, toolCall: displayToolCall(entry, { ...trace, status: 'running' }),
           ...(runningPresentation ? { presentation: runningPresentation } : {}),
         })
       }
@@ -700,7 +701,7 @@ export async function runAgentToolLoop({
           serialized: entry.reuseEnvelope,
         })
         if (emitEvents) emit({
-          type: 'tool', step, toolCall: reused,
+          type: 'tool', step, toolCall: displayToolCall(entry, reused, { output: entry.reuseEnvelope }),
           ...(runningPresentation ? { presentation: runningPresentation } : {}),
         })
         continue
@@ -717,7 +718,7 @@ export async function runAgentToolLoop({
         appendToolOutput(entry, output)
         const recoveredPresentation = toolEventPresentation(trace.name, output)
         if (emitEvents) emit({
-          type: 'tool', step, toolCall: recovered,
+          type: 'tool', step, toolCall: displayToolCall(entry, recovered, { output }),
           ...(recoveredPresentation ? { presentation: recoveredPresentation } : {}),
         })
         continue
@@ -769,7 +770,7 @@ export async function runAgentToolLoop({
               const presentation = safeReportedToolPresentation(progress.presentation)
               emit({
                 type: 'tool', step,
-                toolCall: { ...trace, status: 'running', ...(progressSummary ? { summary: progressSummary } : {}) },
+                toolCall: displayToolCall(entry, { ...trace, status: 'running', ...(progressSummary ? { summary: progressSummary } : {}) }),
                 ...(presentation ? { presentation } : {}),
               })
             } : undefined,
@@ -789,14 +790,14 @@ export async function runAgentToolLoop({
           // aborted + BATCH_NOT_STARTED;已 completed 的 call 不改写。
           const failedNow = { ...trace, status: 'failed', error: terminalFailure instanceof Error ? terminalFailure.message : '工具执行失败。' }
           toolCalls.push(failedNow)
-          if (emitEvents) emit({ type: 'tool', step, toolCall: failedNow })
+          if (emitEvents) emit({ type: 'tool', step, toolCall: displayToolCall(entry, failedNow) })
           const failureKind = classifyAgentToolFailure(terminalFailure, { phase: 'execute', tool })
           emitHarness('tool', failureKind === 'outcome-unknown' ? 'unknown' : 'failed', { step, reason: typeof terminalFailure?.code === 'string' ? terminalFailure.code : undefined })
           const startedIndex = entries.indexOf(entry)
           for (const notStarted of entries.slice(startedIndex + 1)) {
             const abortedTrace = { ...notStarted.trace, status: 'aborted', error: 'BATCH_NOT_STARTED' }
             toolCalls.push(abortedTrace)
-            if (emitEvents) emit({ type: 'tool', step, toolCall: abortedTrace })
+            if (emitEvents) emit({ type: 'tool', step, toolCall: displayToolCall(notStarted, abortedTrace) })
             emitHarness('tool', 'aborted', { step, reason: 'BATCH_NOT_STARTED' })
           }
           throw terminalFailure
@@ -805,7 +806,7 @@ export async function runAgentToolLoop({
         const failed = { ...trace, status: 'failed', error }
         if (emitEvents) {
           emit({
-            type: 'tool', step, toolCall: failed,
+            type: 'tool', step, toolCall: displayToolCall(entry, failed),
             ...(runningPresentation ? { presentation: runningPresentation } : {}),
           })
         }
@@ -834,7 +835,7 @@ export async function runAgentToolLoop({
         : entry.descriptor
       if (emitEvents) {
         emit({
-          type: 'tool', step, toolCall: succeededTrace,
+          type: 'tool', step, toolCall: displayToolCall(entry, succeededTrace, { output }),
           ...(succeededPresentation ? { presentation: succeededPresentation } : {}),
         })
       }
@@ -874,7 +875,7 @@ export async function runAgentToolLoop({
           const error = '工具结果不符合持久化安全边界，已丢弃。'
           const failed = { ...trace, status: 'failed', error }
           toolCalls[toolCalls.length - 1] = failed
-          if (emitEvents) emit({ type: 'tool', step, toolCall: failed })
+          if (emitEvents) emit({ type: 'tool', step, toolCall: displayToolCall(entry, failed) })
           emitHarness('tool', 'failed', { step, reason: caught.code })
           appendToolOutput(entry, { ok: false, error, code: 'AGENT_TOOL_RESULT_REJECTED' })
           continue

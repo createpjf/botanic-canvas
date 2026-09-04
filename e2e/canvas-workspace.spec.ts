@@ -367,7 +367,7 @@ test('Agent 生成卡片默认收起已完成步骤与提示词差异，主内�
 
   await expect(page.getByText('提示词')).toBeVisible()
   const toolAccordion = page.locator('.agent-tool-accordion')
-  const toolTitle = toolAccordion.locator('.agent-tool-accordion__title')
+  const toolTitle = toolAccordion.getByRole('button', { name: /^推理摘要/ })
   const promptDiff = page.locator('details.agent-prompt-review__compare')
   await expect(toolAccordion).toBeVisible()
   await expect(promptDiff).toBeVisible()

@@ -5,6 +5,7 @@ import App from './App'
 import { ProductI18nProvider } from './i18n/react'
 import { initializeBrowserSentry, sentryReactErrorHandler } from './lib/sentry'
 import './styles.css'
+import './styles/ai-elements.css'
 
 const sentryEnabled = initializeBrowserSentry()
 const reportReactError = sentryReactErrorHandler()

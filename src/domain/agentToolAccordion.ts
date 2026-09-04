@@ -22,6 +22,7 @@ export type AgentToolAccordionRow = {
   id: string
   kind: TimelineStepKind
   toolName: string
+  label?: string
   verb: string
   detail: string
   status: AgentToolAccordionRowStatus
@@ -29,6 +30,12 @@ export type AgentToolAccordionRow = {
   target?: string
   durationMs?: number
   error?: string
+  why?: string
+  input?: unknown
+  output?: unknown
+  recovery?: AgentToolCallTrace['recovery']
+  receiptId?: string
+  recovered?: boolean
   callCount?: number
   calls?: AgentToolAccordionRow[]
 }
@@ -253,6 +260,7 @@ function quietReadSummaryRow(rows: AgentToolAccordionRow[], locale: string): Age
     id: `quiet-reads:${rows.map((row) => row.id).join('+')}`,
     kind: 'read',
     toolName: 'quiet_reads',
+    label: verb,
     verb,
     detail: verb,
     status: 'succeeded',
@@ -287,12 +295,19 @@ function buildToolAccordionRow(
     id: call.id,
     kind: presentation.kind,
     toolName: call.name,
+    label: call.label,
     verb,
     detail: toolAccordionDetail(call),
     status,
     ...(target ? { target } : {}),
     ...(durationMs !== undefined ? { durationMs } : {}),
     ...(call.error?.trim() ? { error: call.error.trim() } : {}),
+    ...(call.summary?.trim() ? { why: call.summary.trim() } : {}),
+    ...(call.input !== undefined ? { input: call.input } : {}),
+    ...(call.output !== undefined ? { output: call.output } : {}),
+    ...(call.recovery ? { recovery: call.recovery } : {}),
+    ...(call.receiptId?.trim() ? { receiptId: call.receiptId.trim() } : {}),
+    ...(call.recovered ? { recovered: true } : {}),
   }
 }
 

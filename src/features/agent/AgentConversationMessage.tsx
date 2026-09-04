@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import { botanicMotion, gsap, prefersReducedMotion, useGSAP } from '../../components/gsapMotion'
 import {
   BOTANIC_AGENT_MAX_SINGLE_OUTPUT,
@@ -42,8 +42,7 @@ import {
 import { BobCharacter } from '../../components/bob/BobCharacter'
 import { bobMessageAllowsSays, bobMessageIsLargeReply, bobReplyPresentation } from '../../domain/bobPresentation'
 import { useBobSaysPlays } from './useBobSaysPlays'
-import { AlertIcon, CheckIcon, ChevronDownIcon, ClockIcon, ContinueChatIcon, CopyIcon, EditIcon, FocusIcon, MoreIcon, PinNodeIcon, ThumbDownIcon, ThumbUpIcon } from '../../components/BotanicIcons'
-import { AgentThinkingOrb } from '../../components/AgentThinkingOrb'
+import { AlertIcon, CheckIcon, ChevronDownIcon, ContinueChatIcon, CopyIcon, EditIcon, FocusIcon, MoreIcon, PinNodeIcon, ThumbDownIcon, ThumbUpIcon } from '../../components/BotanicIcons'
 import { AgentToolOrb } from '../../components/AgentToolOrb'
 import { AgentWebSourcePills } from '../../components/AgentWebSourcePills'
 import { agentPlannerModelLabel, modelDisplayLabel, modelProviderLogo } from '../../components/generationModelPresentation'
@@ -74,6 +73,8 @@ import type { BotanicAgentRunReview } from '../../domain/agentReviewContract'
 import { agentTimelineOrbState, agentTimelineStepToolName, timelineStepShowsWebSources, timelineWebSourceHref, type AgentTimelineState, type TimelineBlock, type TimelineStepKind, type TimelineWebSource } from '../../domain/agentTimeline'
 import { agentTimelineHasRenderableContent, conversationTimelineStepTitle, presentAgentTimelineConversation, presentAgentToolAccordion, presentAgentToolAccordionFromCalls } from '../../domain/agentToolAccordion'
 import { AgentToolCallAccordion, AgentToolCallIcon } from './AgentActionCard'
+import { Reasoning, ReasoningContent, ReasoningTrigger } from '../../components/ai-elements/reasoning'
+import { Sources, SourcesContent, SourcesTrigger } from '../../components/ai-elements/sources'
 import { AgentAttachment, AgentAttachmentHoverPreview, AgentAttachmentInfo, AgentAttachmentPreview, AgentAttachments, attachmentFromArtifact, attachmentFromContextItem } from './AgentAttachment'
 /** 单条任务消息内联展示的结果上限；更多结果去结果面板看，避免对话被结果流冲垮。 */
 const inlineRunResultLimit = 4
@@ -202,7 +203,6 @@ function AgentMessageUtilities({
   message,
   sessionId,
   actions,
-  isLatestEvaluable,
   open,
   onOpenChange,
   locale,
@@ -213,7 +213,6 @@ function AgentMessageUtilities({
   message: BotanicAgentMessage
   sessionId?: string
   actions: BotanicAgentMessageUtilityActions
-  isLatestEvaluable: boolean
   open: boolean
   onOpenChange: (open: boolean) => void
   locale: ProductLocale
@@ -237,8 +236,12 @@ function AgentMessageUtilities({
 
   const copy = async () => {
     if (!navigator.clipboard?.writeText) return
+    const copyText = message.composition
+      ? formatBotanicAgentCompositionMessage(message.composition, locale)
+      : message.content.trim() || message.prompt?.trim() || message.plan?.summary.trim() || message.question?.question.trim() || ''
+    if (!copyText) return
     try {
-      await navigator.clipboard.writeText(message.composition ? formatBotanicAgentCompositionMessage(message.composition, locale) : message.content)
+      await navigator.clipboard.writeText(copyText)
     } catch {
       return
     }
@@ -258,7 +261,7 @@ function AgentMessageUtilities({
     }}
   >
     {actions.feedback && message.feedback ? <span className="agent-message__utility-mark" aria-hidden="true">{message.feedback === 'positive' ? <ThumbUpIcon /> : <ThumbDownIcon />}</span> : null}
-    {isLatestEvaluable && (actions.feedback || actions.copy) ? <button type="button" className="agent-message__utility-more" aria-expanded={open} aria-haspopup="true" aria-label={t('消息操作', 'Message actions')} title={t('消息操作', 'Message actions')} onClick={() => onOpenChange(!open)}><MoreIcon /></button> : null}
+    {actions.edit || actions.feedback || actions.copy ? <button type="button" className="agent-message__utility-more" aria-expanded={open} aria-haspopup="true" aria-label={t('消息操作', 'Message actions')} title={t('消息操作', 'Message actions')} onClick={() => onOpenChange(!open)}><MoreIcon /></button> : null}
     <div className="agent-message__utilities">
       {actions.edit ? <button type="button" aria-label={t('编辑消息', 'Edit message')} title={t('编辑消息', 'Edit message')} onClick={() => onEdit(message.content)}><EditIcon /></button> : null}
       {actions.feedback && sessionId ? <>
@@ -352,56 +355,32 @@ function AgentTimelineSearchStep({
   toolItems: AgentToolCallTrace[]
   error: ReactNode
 }) {
-  const rootRef = useRef<HTMLDivElement>(null)
-  const panelRef = useRef<HTMLDivElement>(null)
-  const readyRef = useRef(false)
   const [open, setOpen] = useState(false)
   const sourceCount = block.sources?.length ?? 0
   const accessibleLabel = `${title}${block.summary ? `, ${block.summary}` : ''}, ${statusLabel}`
 
-  useGSAP(() => {
-    const panel = panelRef.current
-    if (!panel) return
-    const duration = prefersReducedMotion() ? 0 : botanicMotion.duration.panel
-    if (!readyRef.current) {
-      readyRef.current = true
-      gsap.set(panel, open
-        ? { height: 'auto', autoAlpha: 1, y: 0 }
-        : { height: 0, autoAlpha: 0, y: 0 })
-      return
-    }
-    gsap.to(panel, {
-      height: open ? 'auto' : 0,
-      autoAlpha: open ? 1 : 0,
-      y: open || prefersReducedMotion() ? 0 : -4,
-      duration,
-      ease: botanicMotion.ease,
-    })
-  }, { dependencies: [open, sourceCount], scope: rootRef })
-
-  return <div ref={rootRef} className={`agent-timeline__search is-${block.status}${open ? ' is-open' : ''}`}>
+  return <Sources open={open} onOpenChange={setOpen} className={`agent-timeline__search mb-0 is-${block.status}${open ? ' is-open' : ''}`}>
+    <SourcesTrigger count={sourceCount} asChild>
     <button
       type="button"
       className={`agent-timeline__step agent-timeline__search-toggle is-${block.status}`}
-      aria-expanded={open}
       aria-label={accessibleLabel}
-      onClick={() => setOpen((value) => !value)}
     >
       <span className="agent-timeline__step-icon" aria-hidden="true"><TimelineStepMarker block={block} toolItems={toolItems} /></span>
       <span className="agent-timeline__step-copy"><strong>{title}</strong>{block.summary ? <span>{block.summary}</span> : null}</span>
       <small>{statusLabel}</small>
       <ChevronDownIcon />
     </button>
-    <div
-      ref={panelRef}
-      className="agent-timeline__search-panel"
+    </SourcesTrigger>
+    <SourcesContent
+      className="agent-timeline__search-panel mt-0 w-full"
       aria-hidden={!open}
       inert={!open ? true : undefined}
     >
       <AgentWebSourcePills sources={timelineSearchPills(block.sources ?? [])} />
-    </div>
+    </SourcesContent>
     {error}
-  </div>
+  </Sources>
 }
 
 function timelineStepTitle(block: Extract<TimelineBlock, { type: 'step' }>, locale: ProductLocale) {
@@ -449,23 +428,21 @@ function AgentMessageTimeline({
 
   const renderBlock = (block: TimelineBlock) => {
     if (block.type === 'thinking') {
-      // accordion 已有「已处理」；有正文的思考过程仍可展开，空思考不占行。
+      // 原始推理只来自服务端+用户双开关的 live 通道，不进入 Turn 持久化。
       if (!block.text.trim()) return null
-      if (liveAccordion) {
-        return <details key={block.id} className={`agent-timeline__thinking is-${block.status}`}>
-          <summary><ClockIcon /><span>{locale === 'en' ? 'Thinking' : '思考过程'}</span><ChevronDownIcon /></summary>
-          <p>{block.text}</p>
-        </details>
-      }
       const label = timelineElapsedLabel(block.startedAt, block.endedAt ?? now, locale)
-      const marker = block.status === 'running'
-        ? <AgentThinkingOrb label={label} />
-        : <ClockIcon />
-      const summary = <>{marker}<span>{label}</span><small>{locale === 'en' ? 'Thinking' : '思考过程'}</small><ChevronDownIcon /></>
-      return <details key={block.id} className={`agent-timeline__thinking is-${block.status}`}>
-        <summary>{summary}</summary>
-        <p>{block.text}</p>
-      </details>
+      return <Reasoning
+        key={block.id}
+        className={`agent-timeline__thinking is-${block.status}`}
+        isStreaming={block.status === 'running'}
+        duration={Math.max(0, Math.round(((block.endedAt ?? now) - block.startedAt) / 1_000))}
+      >
+        <ReasoningTrigger getThinkingMessage={() => <>
+          <span>{locale === 'en' ? 'Raw reasoning · live only' : '原始推理 · 仅本轮'}</span>
+          <small>{label}</small>
+        </>} />
+        <ReasoningContent>{block.text}</ReasoningContent>
+      </Reasoning>
     }
     if (block.type === 'narration') return <p key={block.id} className="agent-timeline__narration">{block.text}</p>
     if (block.type === 'step') {
@@ -1006,8 +983,9 @@ export function AgentConversationMessage({
   const [feedbackMemoryKind, setFeedbackMemoryKind] = useState<BotanicAgentMemoryKind>('avoid')
   const [feedbackMemoryDraft, setFeedbackMemoryDraft] = useState('')
   const [feedbackMemorySaved, setFeedbackMemorySaved] = useState(false)
+  const feedbackMemoryId = useId()
   useEffect(() => {
-    setFeedbackMemoryOpen(Boolean(message.feedback))
+    setFeedbackMemoryOpen(false)
     setFeedbackMemoryKind(message.feedback === 'positive' ? 'approved' : 'avoid')
     setFeedbackMemoryDraft('')
     setFeedbackMemorySaved(false)
@@ -1061,7 +1039,7 @@ export function AgentConversationMessage({
     })
     : null
   const utilityActions = botanicAgentMessageUtilityActions(message)
-  const showUtilities = !timeline && !streaming && botanicAgentMessageHasUtilities(utilityActions)
+  const showUtilities = !streaming && botanicAgentMessageHasUtilities(utilityActions)
   // 结算后有图：正文 → 产物 → 过程；过程默认已折叠，不挡主阅读。
   const runResults = message.kind === 'run' && inlineRunResults.length
     ? <AgentAttachments variant="grid" className={`agent-run-message__results${!streaming ? ' is-featured' : ''}`} aria-label={t('本次任务结果', 'Task results')}>
@@ -1302,7 +1280,6 @@ export function AgentConversationMessage({
       message={message}
       sessionId={sessionId}
       actions={utilityActions}
-      isLatestEvaluable={isLatestEvaluable}
       open={utilitySurface.open}
       onOpenChange={utilitySurface.setOpen}
       locale={locale}
@@ -1310,7 +1287,8 @@ export function AgentConversationMessage({
       onEdit={onEdit}
       onFeedback={onFeedback}
     /> : null}
-    {message.role === 'assistant' && sessionId && message.feedback && onSaveAsMemory && feedbackMemoryOpen ? <form className="agent-feedback-memory" onSubmit={(event) => {
+    {message.role === 'assistant' && sessionId && message.feedback && onSaveAsMemory ? <button type="button" className="agent-feedback-memory__trigger" aria-expanded={feedbackMemoryOpen} aria-controls={feedbackMemoryId} onClick={() => setFeedbackMemoryOpen((open) => !open)}>{t('记住这个偏好', 'Remember this preference')}</button> : null}
+    {message.role === 'assistant' && sessionId && message.feedback && onSaveAsMemory && feedbackMemoryOpen ? <form id={feedbackMemoryId} className="agent-feedback-memory" onSubmit={(event) => {
       event.preventDefault()
       const content = feedbackMemoryDraft.trim()
       if (!content) return

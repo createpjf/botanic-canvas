@@ -1,9 +1,30 @@
 import type { Edge } from '@xyflow/react'
 import { botanicAgentNodeTitleLimit, clipBotanicAgentNodeTitle } from './agent.ts'
-import type { CanvasGenerationTaskStatus } from './canvas'
+import type { CanvasGenerationTaskStatus, CanvasNode, GenerateNodeData, ResultNodeData } from './canvas'
 import type { ProductLocale } from '../i18n/core'
 
 export type CanvasZoomMode = 'detail' | 'compact' | 'overview'
+
+const activeGenerationStatuses = new Set<CanvasGenerationTaskStatus>(['uploading', 'submission_unknown', 'queued', 'running'])
+
+/** 运行边只由 Generate 节点的任务状态派生，不把动画态写回画布文档。 */
+export function activeCanvasGenerationNodeIds(nodes: readonly Pick<CanvasNode, 'id' | 'type' | 'data'>[]) {
+  return new Set(nodes.flatMap((node) => (
+    node.type === 'generate' && activeGenerationStatuses.has((node.data as GenerateNodeData).status as CanvasGenerationTaskStatus)
+      ? [node.id]
+      : []
+  )))
+}
+
+export function activeCanvasResultNodeIds(nodes: readonly Pick<CanvasNode, 'id' | 'type' | 'data'>[]) {
+  return new Set(nodes.flatMap((node) => {
+    if (node.type !== 'result') return []
+    const result = node.data as ResultNodeData
+    return result.status === 'generating' || activeGenerationStatuses.has(result.taskStatus as CanvasGenerationTaskStatus)
+      ? [node.id]
+      : []
+  }))
+}
 
 type GenerationTaskResultLabelInput = {
   generationKind?: 'generation' | 'refinement'

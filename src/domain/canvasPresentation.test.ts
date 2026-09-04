@@ -1,7 +1,25 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { Edge } from '@xyflow/react'
-import { canvasZoomMode, displayGenerationResultLabel, generationJobErrorCopy, generationResultNodeLabel, generationTaskErrorMessage, generationTaskFeedback, generationTaskResultLabel, planResultGroupPresentation, traceCanvasLineage } from './canvasPresentation.ts'
+import { activeCanvasGenerationNodeIds, activeCanvasResultNodeIds, canvasZoomMode, displayGenerationResultLabel, generationJobErrorCopy, generationResultNodeLabel, generationTaskErrorMessage, generationTaskFeedback, generationTaskResultLabel, planResultGroupPresentation, traceCanvasLineage } from './canvasPresentation.ts'
+
+test('运行边只跟随活跃 Generate 任务状态', () => {
+  const nodes = ['uploading', 'submission_unknown', 'queued', 'running', 'succeeded', 'failed', 'cancelled'].map((status) => ({
+    id: `generate-${status}`,
+    type: 'generate' as const,
+    data: { kind: 'generate', status },
+  })) as unknown as Parameters<typeof activeCanvasGenerationNodeIds>[0]
+  assert.deepEqual([...activeCanvasGenerationNodeIds(nodes)], [
+    'generate-uploading',
+    'generate-submission_unknown',
+    'generate-queued',
+    'generate-running',
+  ])
+  assert.deepEqual([...activeCanvasResultNodeIds([
+    { id: 'result-running', type: 'result', data: { kind: 'result', status: 'generating', taskStatus: 'running' } },
+    { id: 'result-ready', type: 'result', data: { kind: 'result', status: 'ready', taskStatus: 'succeeded' } },
+  ] as unknown as Parameters<typeof activeCanvasResultNodeIds>[0])], ['result-running'])
+})
 
 test('canvasZoomMode applies stable semantic zoom bands', () => {
   assert.equal(canvasZoomMode(1), 'detail')

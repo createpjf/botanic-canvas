@@ -6,11 +6,11 @@ import {
   storedAgentTurnRequestBinding,
 } from './agentTurnRequestIdentity.mjs'
 import { validateAgentEntityReferences, validateAgentToolEntityReferences } from '../../agentEntityReferences.mjs'
-import { presentationWebSources } from '../tools/agentWebResearch.mjs'
 import { withBotanicSpan } from '../../observability/executionTelemetry.mjs'
 import { AGENT_SEMANTIC_EVENT_NAMES, writeAgentSemanticEvent } from '../../observability/agentSemanticEvent.mjs'
 import { registerAgentDiagnosticGauge } from '../../observability/agentRuntimeDiagnostics.mjs'
 import { createAgentTurnOutputPreview, agentTurnOutputPreviewEventPayload, normalizeAgentTurnOutputPreview } from './agentTurnOutputPreview.mjs'
+import { agentTurnToolEventPayload } from './agentTurnToolEvent.mjs'
 
 // completed Turn 仍可能拥有后续创建的 linked Run / Job；显式深取消必须能从
 // completed 进入 cancelling，才能撤销这些已授权但尚未完成的下游任务。
@@ -49,51 +49,6 @@ function persistedResult(result) {
     })
   }
   return safe
-}
-
-function safeDisplayText(value, maximumLength = 120) {
-  if (typeof value !== 'string') return undefined
-  const clean = value.replace(/[\u0000-\u001f\u007f]/gu, ' ').replace(/\s+/gu, ' ').trim()
-  if (!clean) return undefined
-  return clean.length > maximumLength ? `${clean.slice(0, maximumLength - 1)}…` : clean
-}
-
-function safeToolPresentation(value) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
-  const kind = safeDisplayText(value.kind, 40)
-  const title = safeDisplayText(value.title, 120)
-  const count = Number.isInteger(value.count) && value.count >= 0 && value.count <= 10_000
-    ? value.count
-    : undefined
-  if (!kind || !title) return undefined
-  const sources = presentationWebSources({ hits: value.sources }, 5)
-  return {
-    kind,
-    title,
-    ...(count !== undefined ? { count } : {}),
-    ...(sources.length ? { sources } : {}),
-  }
-}
-
-function eventPayload(event) {
-  if (event?.type !== 'tool') return undefined
-  const toolCall = event.toolCall ?? {}
-  const summary = safeDisplayText(toolCall.summary ?? toolCall.why, 120)
-  const label = safeDisplayText(toolCall.label, 120)
-  const presentation = safeToolPresentation(event.presentation)
-  return {
-    step: Number.isInteger(event.step) ? event.step : undefined,
-    toolName: typeof toolCall.name === 'string' ? toolCall.name.slice(0, 120) : undefined,
-    toolCallId: typeof toolCall.id === 'string' ? toolCall.id.slice(0, 160) : undefined,
-    status: typeof toolCall.status === 'string' ? toolCall.status : undefined,
-    ...(label ? { label } : {}),
-    ...(summary ? { summary } : {}),
-    ...(presentation ? { presentation } : {}),
-    // 记下该次调用实际适用的能力。恢复时据此判断可重放性，比事后按工具名查注册表
-    // 更准：工具的风险声明后来若被调整，历史事件仍反映它当时真正适用的风险。
-    // 这也让恢复不必构造需要运行时依赖的工具注册表。
-    risk: typeof toolCall.risk === 'string' ? toolCall.risk : undefined,
-  }
 }
 
 /**
@@ -580,7 +535,7 @@ export function createBotanicAgentTurnRuntime({
       const emit = (rawEvent) => {
         const persistLiveEvent = () => {
           const envelope = { ...clone(rawEvent), turnId: id, eventId: `turn_live_${randomUUID()}` }
-          const payload = eventPayload(rawEvent)
+          const payload = agentTurnToolEventPayload(rawEvent)
           const repeatedRunning = payload?.status === 'running'
             && payload.toolCallId
             && persistedRunningToolCallIds.has(payload.toolCallId)

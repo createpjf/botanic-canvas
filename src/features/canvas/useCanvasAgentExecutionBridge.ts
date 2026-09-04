@@ -301,10 +301,11 @@ export function useCanvasAgentExecutionBridge({
 
   const loadMoreArtifacts = useCallback(async () => {
     const cursor = artifactIndex.projectId === document.id ? artifactIndex.nextBefore : undefined
-    if (cursor === undefined || artifactIndex.status === 'loading-more') return
-    setArtifactIndex((current) => current.projectId === document.id ? { ...current, status: 'loading-more' } : current)
+    const retryingInitialLoad = artifactIndex.status === 'error'
+    if ((!retryingInitialLoad && cursor === undefined) || artifactIndex.status === 'loading-more') return
+    setArtifactIndex((current) => current.projectId === document.id ? { ...current, status: retryingInitialLoad ? 'loading' : 'loading-more' } : current)
     try {
-      const result = await listProjectAgentArtifacts(document.id, { limit: 100, before: cursor })
+      const result = await listProjectAgentArtifacts(document.id, { limit: 100, ...(cursor ? { before: cursor } : {}) })
       setArtifactIndex((current) => {
         if (current.projectId !== document.id) return current
         const merged = new Map(current.artifacts.map((artifact) => [artifact.id, artifact]))

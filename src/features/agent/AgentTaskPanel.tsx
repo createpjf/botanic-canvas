@@ -10,6 +10,7 @@ import {
 } from '../../domain/agent'
 import type { GenerationModelOption } from '../../domain/canvas'
 import { AlertIcon, CheckIcon, ChecklistIcon, ClockIcon } from '../../components/BotanicIcons'
+import { Task, TaskContent, TaskTrigger } from '../../components/ai-elements/task'
 import { botanicMotion, scrollElementIntoView } from '../../components/gsapMotion'
 import { localizeProductError } from '../../i18n/core'
 import { useProductI18n } from '../../i18n/react'
@@ -121,18 +122,20 @@ export function AgentTaskPanel({
         const expanded = expandedRunId === run.id
         const failedBranches = run.branches.filter((branch) => branch.status === 'failed' || branch.status === 'cancelled')
         const detailId = `agent-task-detail-${run.id}`
-        return <article
-          key={run.id}
-          ref={(node) => { if (node) nodesRef.current.set(run.id, node); else nodesRef.current.delete(run.id) }}
-          tabIndex={-1}
-          className={`is-${run.status} is-${feedback.tone}${focusedRunId === run.id ? ' is-located' : ''}`}
-        >
-          <button type="button" className="agent-task-panel__disclosure" aria-expanded={expanded} aria-controls={detailId} onClick={() => setExpandedRunId(expanded ? '' : run.id)}>
-            <span><strong>{presentBotanicAgentPlanSummary(run.plan.summary) || feedback.label}</strong><small>{feedback.label} · <time dateTime={new Date(run.updatedAt).toISOString()}>{new Intl.DateTimeFormat(locale, { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(run.updatedAt))}</time></small></span>
-            <b>{run.completedBranchCount}/{run.branches.length}</b><i aria-hidden="true">{expanded ? '−' : '＋'}</i>
-          </button>
-          {active ? <div className="agent-run-card__track" aria-hidden="true"><i style={{ width: `${run.branches.length ? Math.round(run.completedBranchCount / run.branches.length * 100) : 0}%` }} /></div> : null}
-          {expanded ? <div id={detailId} className="agent-task-panel__body" aria-label={copy.details}>
+        return <Task key={run.id} asChild open={expanded} onOpenChange={(open) => setExpandedRunId(open ? run.id : '')}>
+          <article
+            ref={(node) => { if (node) nodesRef.current.set(run.id, node); else nodesRef.current.delete(run.id) }}
+            tabIndex={-1}
+            className={`is-${run.status} is-${feedback.tone}${focusedRunId === run.id ? ' is-located' : ''}`}
+          >
+            <TaskTrigger title={presentBotanicAgentPlanSummary(run.plan.summary) || feedback.label}>
+              <button type="button" className="agent-task-panel__disclosure" aria-controls={detailId}>
+                <span><strong>{presentBotanicAgentPlanSummary(run.plan.summary) || feedback.label}</strong><small>{feedback.label} · <time dateTime={new Date(run.updatedAt).toISOString()}>{new Intl.DateTimeFormat(locale, { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(run.updatedAt))}</time></small></span>
+                <b>{run.completedBranchCount}/{run.branches.length}</b><i aria-hidden="true">{expanded ? '−' : '＋'}</i>
+              </button>
+            </TaskTrigger>
+            {active ? <div className="agent-run-card__track" aria-hidden="true"><i style={{ width: `${run.branches.length ? Math.round(run.completedBranchCount / run.branches.length * 100) : 0}%` }} /></div> : null}
+            <TaskContent id={detailId} aria-label={copy.details}><div className="agent-task-panel__body">
             <p className="agent-task-panel__feedback">{feedback.detail}</p>
             <div className="agent-task-panel__actions">
               {source ? <button type="button" onClick={() => onLocateSource(source)}>{copy.source}</button> : null}
@@ -154,8 +157,9 @@ export function AgentTaskPanel({
               onPrepare={(mode, model) => onPrepareRecovery(run, mode, model)}
               onRetry={() => { onRetryingBranchChange(branch.id); void onRetryBranch(run.id, branch.id).finally(() => onRetryingBranchChange('')) }}
             /></div>)}
-          </div> : null}
-        </article>
+            </div></TaskContent>
+          </article>
+        </Task>
       })}
       {!filtered.length ? <div className="agent-panel__empty">{timeline.length ? copy.noMatch : copy.empty}</div> : null}
     </div>

@@ -69,6 +69,13 @@ export type AgentToolCallTrace = {
   /** 模型自述的一句话调用目的。它是说给用户听的摘要，不是隐藏思维链，可展示也可持久化。 */
   summary?: string
   error?: string
+  /** 服务端脱敏、限长后的原始参数/输出投影；不含 why、密钥、媒体字节、Provider body 或隐藏推理。 */
+  input?: unknown
+  output?: unknown
+  /** Tool 定义声明的 durable 恢复策略；只用于解释，不参与浏览器执行。 */
+  recovery?: 'reexecute' | 'receipt' | 'never' | 'journal'
+  receiptId?: string
+  recovered?: boolean
   /** 仅由服务端显式工具 allowlist 派生；不含 URL、Prompt 或原始工具输出。 */
   entityReferences?: AgentEntityReference[]
 }
@@ -647,4 +654,3 @@ export function botanicAgentPreparedRetryIdempotencyKey(input: {
   })
   return `agent-action-manual-retry-${safeActionId}-${stableAgentPlanHash(fingerprint)}`
 }
-
