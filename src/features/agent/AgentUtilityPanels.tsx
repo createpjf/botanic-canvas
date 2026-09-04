@@ -61,7 +61,7 @@ const agentUtilityMessages = {
     remoteCanvasTitle: '画布有新的云端版本', remoteCanvasDetail: '本地草稿仍保留；选择云端将替换当前本地草稿。', remoteVersion: '云端版本', revisionCompare: (local?: number, remote?: number) => `本地基于 revision ${local ?? '未知'} · 云端 revision ${remote ?? '未知'}`,
     viewChanges: (count: number) => `查看 ${count} 项变更`, readingRemoteChanges: '正在读取云端变更…', keepLocal: '保留本地并重试', useRemote: '放弃本地，使用云端',
     readSyncFailed: '已读状态同步失败，点击重试', clearSyncFailed: '清空状态同步失败，点击重试', activitySyncFailed: '协作动态同步失败，点击重试',
-    markAllRead: '全部已读', clearHistory: '清空记录', noActivities: '还没有协作变更。', loadingActivities: '正在读取协作动态…', loading: '加载中…', loadEarlierActivities: '加载更早动态',
+    markAllRead: '全部已读', clearHistory: '清空记录', noActivities: '还没有协作变更。', loadingActivities: '正在读取协作动态…', loading: '加载中…', retry: '重试', loadEarlierActivities: '加载更早动态',
     activityCount: (count: number) => `${count} 条`, occurrenceCount: (count: number) => `${count} 次`, today: '今天', earlier: '更早', unreadActivities: (count: number) => `${count} 条未读动态`,
     comparePrompt: '对照 Prompt', copied: '已复制', copyPrompt: '复制 Prompt', generatedResult: '生成结果', toolArtifacts: '工具产物', generationBatch: '生成批次',
     detailAria: (label: string) => `${label} 详情`, backToResults: '返回结果', backfilled: '已放到画布', locateCanvas: '定位画布', continueEditing: '继续改', saved: '已入库', save: '入库', download: '下载', open: '打开',
@@ -94,7 +94,7 @@ const agentUtilityMessages = {
     remoteCanvasTitle: 'A newer canvas version is available', remoteCanvasDetail: 'Your local draft is preserved; choosing remote replaces the current local draft.', remoteVersion: 'Remote version', revisionCompare: (local?: number, remote?: number) => `Local base revision ${local ?? 'unknown'} · remote revision ${remote ?? 'unknown'}`,
     viewChanges: (count: number) => `View ${count} ${count === 1 ? 'change' : 'changes'}`, readingRemoteChanges: 'Reading remote changes…', keepLocal: 'Keep local and retry', useRemote: 'Discard local and use remote',
     readSyncFailed: 'Read status could not sync. Click to retry.', clearSyncFailed: 'Activity could not be cleared. Click to retry.', activitySyncFailed: 'Collaboration activity could not sync. Click to retry.',
-    markAllRead: 'Mark all as read', clearHistory: 'Clear activity', noActivities: 'No collaboration activity yet.', loadingActivities: 'Loading collaboration activity…', loading: 'Loading…', loadEarlierActivities: 'Load earlier activity',
+    markAllRead: 'Mark all as read', clearHistory: 'Clear activity', noActivities: 'No collaboration activity yet.', loadingActivities: 'Loading collaboration activity…', loading: 'Loading…', retry: 'Retry', loadEarlierActivities: 'Load earlier activity',
     activityCount: (count: number) => `${count} ${count === 1 ? 'update' : 'updates'}`, occurrenceCount: (count: number) => `${count} times`, today: 'Today', earlier: 'Earlier', unreadActivities: (count: number) => `${count} unread ${count === 1 ? 'update' : 'updates'}`,
     comparePrompt: 'Compare prompt', copied: 'Copied', copyPrompt: 'Copy prompt', generatedResult: 'Generated result', toolArtifacts: 'Tool outputs', generationBatch: 'Generation batch',
     detailAria: (label: string) => `${label} details`, backToResults: 'Back to results', backfilled: 'Added to canvas', locateCanvas: 'Locate on canvas', continueEditing: 'Continue editing', saved: 'Saved', save: 'Save', download: 'Download', open: 'Open',
@@ -388,7 +388,7 @@ export function AgentResultPanel({
   return <section className="agent-result-panel" aria-label={copy.resultsAria}>
     <p className="visually-hidden" role="status">{selectedBatch.artifacts.length ? copy.selectedCount(selectedBatch.artifacts.length) : copy.itemCount(filteredArtifacts.length)}</p>
     {artifactIndexStatus === 'loading' ? <div className="agent-result-panel__index-status" role="status">{copy.readingIndex}</div> : null}
-    {artifactIndexStatus === 'error' ? <div className="agent-result-panel__index-status is-warning" role="status">{copy.indexUnavailable}</div> : null}
+    {artifactIndexStatus === 'error' ? <div className="agent-result-panel__index-status is-warning" role="alert"><span>{copy.indexUnavailable}</span><button type="button" onClick={() => void onLoadMoreArtifacts()}>{copy.retry}</button></div> : null}
     {latestFeedback ? <div className={`agent-result-panel__run-status is-${latestFeedback.tone}`} role="status"><strong>{latestFeedback.label}</strong><span>{latestFeedback.detail}</span></div> : null}
     <div className="agent-result-panel__toolbar">
       <div className="agent-result-panel__tabs" role="group" aria-label={copy.resultsSections}>
@@ -466,7 +466,7 @@ export function AgentResultPanel({
           </AgentAttachments>
         </section>
       })}
-      {!filteredArtifacts.length ? <div className="agent-panel__empty">{tab === 'tool' ? copy.noToolArtifacts : copy.noGeneratedResults}</div> : null}
+      {!filteredArtifacts.length && artifactIndexStatus !== 'loading' ? <div className="agent-panel__empty">{tab === 'tool' ? copy.noToolArtifacts : copy.noGeneratedResults}</div> : null}
       {artifactIndexHasMore ? <button type="button" className="agent-result-panel__load-more" disabled={artifactIndexStatus === 'loading-more'} onClick={() => void onLoadMoreArtifacts()}>{artifactIndexStatus === 'loading-more' ? copy.loading : copy.loadEarlierResults}</button> : null}
     </div>
   </section>
@@ -605,6 +605,8 @@ export function BrandKitPanel({ projectId, onBindBrand }: {
   const [binding, setBinding] = useState(false)
   const [bindingError, setBindingError] = useState('')
   const [section, setSection] = useState<'effective' | 'pending' | 'overridden'>('effective')
+  const [reloadEpoch, setReloadEpoch] = useState(0)
+  const [libraryReloadEpoch, setLibraryReloadEpoch] = useState(0)
   const bindingOperations = useMemo(() => createLatestOperation(), [])
 
   useEffect(() => {
@@ -623,7 +625,7 @@ export function BrandKitPanel({ projectId, onBindBrand }: {
       })
       .catch(() => { if (active) setStatus('error') })
     return () => { active = false }
-  }, [bindingOperations, projectId])
+  }, [bindingOperations, projectId, reloadEpoch])
 
   useEffect(() => {
     if (status !== 'ready' || kit) return
@@ -637,7 +639,7 @@ export function BrandKitPanel({ projectId, onBindBrand }: {
       })
       .catch(() => { if (active) setLibraryStatus('error') })
     return () => { active = false }
-  }, [kit, status])
+  }, [kit, libraryReloadEpoch, status])
 
   useEffect(() => {
     if (!availableKits.length) return
@@ -674,11 +676,11 @@ export function BrandKitPanel({ projectId, onBindBrand }: {
   return <section className="agent-brand-panel" aria-label={copy.brandAria} aria-busy={status === 'loading'}>
     <details className="agent-panel__about"><summary>{copy.brandAbout}</summary><p>{copy.brandDescription}</p></details>
     {status === 'loading' ? <div className="agent-panel__empty" role="status">{copy.brandLoading}</div> : null}
-    {status === 'error' ? <div className="agent-panel__empty" role="alert">{copy.brandUnavailable}</div> : null}
+    {status === 'error' ? <div className="agent-panel__empty" role="alert"><span>{copy.brandUnavailable}</span><button type="button" onClick={() => setReloadEpoch((value) => value + 1)}>{copy.retry}</button></div> : null}
     {/* 未绑定品牌与「绑定了但没有规则」是两回事；后者说得出「0 条生效」，前者要说没绑定。 */}
     {status === 'ready' && !kit ? <div className="agent-panel__empty">{copy.brandUnbound}</div> : null}
     {status === 'ready' && !kit && libraryStatus === 'loading' ? <div className="agent-panel__empty" role="status">{copy.brandLibraryLoading}</div> : null}
-    {status === 'ready' && !kit && libraryStatus === 'error' ? <div className="agent-panel__empty" role="alert">{copy.brandLibraryUnavailable}</div> : null}
+    {status === 'ready' && !kit && libraryStatus === 'error' ? <div className="agent-panel__empty" role="alert"><span>{copy.brandLibraryUnavailable}</span><button type="button" onClick={() => setLibraryReloadEpoch((value) => value + 1)}>{copy.retry}</button></div> : null}
     {status === 'ready' && !kit && libraryStatus === 'ready' && !availableKits.length ? <div className="agent-panel__empty">{copy.brandLibraryEmpty}</div> : null}
     {status === 'ready' && !kit && availableKits.length && canBindBrand ? <div className="agent-brand-panel__binding">
       <BotanicSelect
@@ -822,7 +824,7 @@ export function AgentReviewPanel({ runId, projectId }: {
   return <section className="agent-review-panel" aria-label={copy.reviewAria} aria-busy={status === 'loading'}>
     <p>{copy.reviewDescription}</p>
     {status === 'loading' ? <div className="agent-panel__empty" role="status">{copy.reviewLoading}</div> : null}
-    {status === 'error' ? <div className="agent-panel__empty" role="alert">{copy.reviewUnavailable} <button type="button" onClick={() => setReloadEpoch((value) => value + 1)}>{locale === 'en' ? 'Retry' : '重试'}</button></div> : null}
+    {status === 'error' ? <div className="agent-panel__empty" role="alert"><span>{copy.reviewUnavailable}</span><button type="button" onClick={() => setReloadEpoch((value) => value + 1)}>{copy.retry}</button></div> : null}
     {status === 'ready' && !tasks.length ? <div className="agent-panel__empty">{copy.noReviewTasks}</div> : null}
     <p className={`agent-review-panel__notice is-${noticeTone}${notice ? '' : ' visually-hidden'}`} role={noticeTone === 'error' ? 'alert' : 'status'}>{notice}</p>
     {tasks.map((task) => {

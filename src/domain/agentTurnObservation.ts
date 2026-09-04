@@ -440,6 +440,7 @@ export function monotonicAgentTurnEventDecision(
 
 const toolRisks: ReadonlySet<string> = new Set(AGENT_TOOL_CALL_PUBLIC_RISK_VALUES)
 const toolStatuses: ReadonlySet<string> = new Set(AGENT_TOOL_CALL_PUBLIC_STATUS_VALUES)
+const toolRecoveryModes: ReadonlySet<string> = new Set(['reexecute', 'receipt', 'never', 'journal'])
 const presentationKinds = new Set<TimelineStepKind>(['search', 'fetch', 'read_skill', 'connect_runtime', 'subagent', 'no_progress', 'read', 'write', 'other'])
 
 function stringValue(value: unknown, fallback = '') {
@@ -449,6 +450,17 @@ function stringValue(value: unknown, fallback = '') {
 function boundedStringValue(value: unknown, maximumLength: number, fallback = '') {
   const normalized = stringValue(value)
   return normalized && normalized.length <= maximumLength ? normalized : fallback
+}
+
+function boundedToolDisplayValue(value: unknown) {
+  if (value === undefined) return undefined
+  try {
+    const serialized = JSON.stringify(value)
+    if (serialized === undefined || serialized.length > 12_000) return undefined
+    return JSON.parse(serialized) as unknown
+  } catch {
+    return undefined
+  }
 }
 
 function safePresentation(value: unknown): TimelineToolPresentation | undefined {
@@ -480,6 +492,12 @@ export function agentTurnEventAsStreamEvent(event: BotanicAgentTurnEventRecord):
   const status = payload.status as AgentToolCallTrace['status']
   const summary = boundedStringValue(payload.summary, 120)
   const presentation = safePresentation(payload.presentation)
+  const input = boundedToolDisplayValue(payload.inputPreview)
+  const output = boundedToolDisplayValue(payload.outputPreview)
+  const recovery = toolRecoveryModes.has(payload.recovery as string)
+    ? payload.recovery as AgentToolCallTrace['recovery']
+    : undefined
+  const receiptId = boundedStringValue(payload.receiptId, 160)
   return {
     type: 'tool',
     step: Number.isInteger(payload.step) && Number(payload.step) >= 0 && Number(payload.step) <= 64 ? Number(payload.step) : 0,
@@ -492,6 +510,11 @@ export function agentTurnEventAsStreamEvent(event: BotanicAgentTurnEventRecord):
       status,
       requiresConfirmation: false,
       ...(summary ? { summary } : {}),
+      ...(input !== undefined ? { input } : {}),
+      ...(output !== undefined ? { output } : {}),
+      ...(recovery ? { recovery } : {}),
+      ...(receiptId ? { receiptId } : {}),
+      ...(payload.recovered === true ? { recovered: true } : {}),
     },
     ...(presentation ? { presentation } : {}),
   }

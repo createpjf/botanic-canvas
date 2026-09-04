@@ -260,7 +260,7 @@ test('SSE 推送失败不回滚已持久化事件，续读也不重跑 Provider'
   assert.equal(store.events.get(id).filter((entry) => entry.type === 'turn.tool').length, 1)
 })
 
-test('持久化工具事件只保留可 reattach 的人话展示字段，不带参数、输出或 reasoning', async () => {
+test('持久化工具事件保留脱敏 Activity 参数/输出，不带 Provider body 或 reasoning', async () => {
   const store = fakeStore()
   const runtime = createBotanicAgentTurnRuntime({ productStore: store })
   const id = 'turn-safe-tool-presentation'
@@ -272,6 +272,7 @@ test('持久化工具事件只保留可 reattach 的人话展示字段，不带�
         toolCall: {
           id: 'tool-search', name: 'web_search', label: '搜索品牌参考', risk: 'read', status: 'succeeded',
           summary: `核对公开品牌资料${'。'.repeat(150)}`,
+          input: { query: '公开品牌资料', apiKey: 'provider-secret' },
           arguments: { query: '机密检索词' },
           output: { url: 'https://private.example/result' },
           reasoning: '完整隐藏推理',
@@ -299,7 +300,9 @@ test('持久化工具事件只保留可 reattach 的人话展示字段，不带�
     count: 3,
     sources: [{ hostname: 'www.andlight.cn', url: 'https://www.andlight.cn/', title: '和光' }],
   })
-  assert.doesNotMatch(JSON.stringify(payload), /机密检索词|private\.example|完整隐藏推理|不得持久化/u)
+  assert.deepEqual(payload.inputPreview, { query: '公开品牌资料', apiKey: '[REDACTED]' })
+  assert.deepEqual(payload.outputPreview, { url: '[REDACTED_URL]' })
+  assert.doesNotMatch(JSON.stringify(payload), /provider-secret|机密检索词|private\.example|完整隐藏推理|不得持久化/u)
   assert.equal('arguments' in payload, false)
   assert.equal('output' in payload, false)
   assert.equal('reasoning' in payload, false)

@@ -1,3 +1,5 @@
+import { Source } from './ai-elements/sources'
+
 export type AgentWebSourcePillItem = {
   hostname: string
   href?: string
@@ -27,16 +29,15 @@ export function AgentWebSourcePills({ sources }: { sources: AgentWebSourcePillIt
         return (
           <li key={source.hostname}>
             {source.href ? (
-              <a
+              <Source
                 className="agent-timeline-search-source"
                 href={source.href}
                 target="_blank"
                 rel="noopener noreferrer"
-                title={accessibleLabel}
                 aria-label={accessibleLabel}
               >
                 {content}
-              </a>
+              </Source>
             ) : (
               <span
                 className="agent-timeline-search-source agent-timeline-search-source--static"

@@ -10,7 +10,7 @@ import {
 } from '@xyflow/react'
 import { beginCanvasFileDrag, endCanvasFileDrag, hasFileDragPayload } from '../../domain/canvasFileDrag'
 import { layoutCanvasNodes } from '../../domain/canvasNodeLayout'
-import { canvasZoomMode } from '../../domain/canvasPresentation'
+import { activeCanvasGenerationNodeIds, activeCanvasResultNodeIds, canvasZoomMode } from '../../domain/canvasPresentation'
 import type {
   AssetNodeData,
   AssetRecord,
@@ -361,6 +361,9 @@ export function useCanvasInteractionCoordinator({
     return { stroke: '#4f805b', strokeWidth: 1.6 }
   }, [document.nodes, isVideoConnection])
 
+  const activeGenerateNodeIds = useMemo(() => activeCanvasGenerationNodeIds(document.nodes), [document.nodes])
+  const activeResultNodeIds = useMemo(() => activeCanvasResultNodeIds(document.nodes), [document.nodes])
+
   const renderedEdges = useMemo(() => document.edges.map((edge) => {
     const ends = displayEdgeEnds(edge, document.nodes, document.edges, hiddenNodeIds)
     const remappedTarget = ends.target !== edge.target
@@ -376,13 +379,14 @@ export function useCanvasInteractionCoordinator({
         : edge.targetHandle,
       hidden: Boolean(edge.hidden || ends.hidden || hiddenResultNodeIds.has(ends.source) || hiddenResultNodeIds.has(ends.target)),
       className: [
-        edge.className ?? '',
+        edge.className?.replace(/\btask-edge--active\b/gu, '').trim() ?? '',
+        activeGenerateNodeIds.has(edge.target) || (activeGenerateNodeIds.has(edge.source) && activeResultNodeIds.has(edge.target)) ? 'task-edge--active' : '',
         isVideoConnection(edge) ? 'media-edge--video' : '',
         hasLineageFocus ? focusedLineageEdgeIds.has(edge.id) ? 'is-lineage' : 'is-lineage-muted' : '',
       ].filter(Boolean).join(' '),
       style: { ...edge.style, ...graphEdgeStyle(edge) },
     }
-  }), [document.edges, document.nodes, focusedLineageEdgeIds, graphEdgeStyle, hasLineageFocus, hiddenNodeIds, hiddenResultNodeIds, isVideoConnection])
+  }), [activeGenerateNodeIds, activeResultNodeIds, document.edges, document.nodes, focusedLineageEdgeIds, graphEdgeStyle, hasLineageFocus, hiddenNodeIds, hiddenResultNodeIds, isVideoConnection])
 
   const resolveConnectionToGenerate = useCallback((connection: Connection) => {
     const targetId = connection.target

@@ -152,13 +152,13 @@ export function createTaskFlow(
       if (!nodeIds.has(reference.nodeId)) continue
       taskEdges.push({
         ...migrationInputEdge(`task-asset-generate-${flowKey}-${reference.nodeId}`, reference.nodeId, taskNodeIds.generateNodeId, undefined, 'asset-output'),
-        className: 'task-edge task-edge--active',
+        className: 'task-edge',
       })
     }
     if (textNodeId) {
       taskEdges.push({
         ...migrationInputEdge(`task-text-generate-${flowKey}`, textNodeId, taskNodeIds.generateNodeId),
-        className: 'task-edge task-edge--active',
+        className: 'task-edge',
       })
     }
   }
@@ -171,7 +171,7 @@ export function createTaskFlow(
       targetHandle: 'input',
       type: 'default',
       style: { stroke: '#7e9785', strokeWidth: 1.2, strokeDasharray: '4 3' },
-      className: 'task-edge task-edge--active',
+      className: 'task-edge',
     })
   }
 
@@ -183,7 +183,7 @@ export function createTaskFlow(
       target: resultNode.id,
       type: 'default',
       style: { stroke: '#2a5238', strokeWidth: 1.7 },
-      className: 'task-edge task-edge--active',
+      className: 'task-edge',
       data: { system: true, role: 'output' },
       reconnectable: false,
     })
@@ -250,16 +250,7 @@ export function updateTaskNodes(
     }
     return node
   }) as CanvasNode[]
-  const taskResultNodeIds = new Set(nodes
-    .filter((node) => node.type === 'result' && ((node.data as ResultNodeData).taskGroupId === taskNodeIds.resultNodeId || node.id === taskNodeIds.resultNodeId))
-    .map((node) => node.id))
-  const isActive = status === 'uploading' || status === 'queued' || status === 'running' || status === 'submission_unknown'
-  const edges = document.edges.map((edge) => {
-    const belongsToTask = edge.target === taskNodeIds.generateNodeId || edge.source === taskNodeIds.generateNodeId || taskResultNodeIds.has(edge.target)
-    if (!belongsToTask || !edge.className?.includes('task-edge')) return edge
-    return { ...edge, className: isActive ? 'task-edge task-edge--active' : 'task-edge' }
-  })
-  return { ...document, nodes, edges }
+  return { ...document, nodes }
 }
 
 

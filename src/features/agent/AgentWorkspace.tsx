@@ -183,6 +183,7 @@ import {
   BookmarkIcon,
   CheckIcon,
   ChecklistIcon,
+  ChevronDownIcon,
   ClockIcon,
   CloseIcon,
   DismissIcon,
@@ -461,8 +462,6 @@ export default function AgentWorkspace({
     : preview
   const [intent, setIntent] = useState<BotanicAgentIntent | undefined>(undefined)
   const [groupId, setGroupId] = useState('')
-  const [rawReasoningSessions, setRawReasoningSessions] = useState<Record<string, boolean>>({})
-  const showRawReasoning = session ? rawReasoningSessions[session.id] === true : false
   const plannerModel = plannerModels.includes(session?.plannerModel ?? '')
     ? session!.plannerModel!
     : plannerModels[0] ?? defaultAgentPlannerModels[0]
@@ -526,6 +525,7 @@ export default function AgentWorkspace({
   const [historyQuery, setHistoryQuery] = useState('')
   const [historyFilter, setHistoryFilter] = useState<BotanicAgentSessionTimelineFilter>('all')
   const [readingRestoreNotice, setReadingRestoreNotice] = useState(false)
+  const [showJumpToLatest, setShowJumpToLatest] = useState(false)
   const [focusedTaskRunId, setFocusedTaskRunId] = useState('')
   const clearFocusedTaskRun = useCallback(() => setFocusedTaskRunId(''), [])
   const skillPanelOpen = activeUtilityPanel === 'skill'
@@ -1110,6 +1110,7 @@ export default function AgentWorkspace({
     followLatestMessagesRef.current = true
     lastReadingAnchorRef.current = latestMessageId
     setReadingRestoreNotice(false)
+    setShowJumpToLatest(false)
     scrollToLatestConversation()
     onUpdateReadingAnchor(session.id, latestMessageId)
   }, [onUpdateReadingAnchor, scrollToLatestConversation, session])
@@ -1117,6 +1118,7 @@ export default function AgentWorkspace({
     const viewport = messagesViewportRef.current
     if (!viewport) return
     if (!followingScrollTweenRef.current?.isActive()) followLatestMessagesRef.current = isFollowingLatest(viewport)
+    setShowJumpToLatest(!followLatestMessagesRef.current)
     if (!readingPositionRestoredRef.current || utilityPanelOpen || !session?.id) return
     if (readingAnchorTimerRef.current !== null) window.clearTimeout(readingAnchorTimerRef.current)
     readingAnchorTimerRef.current = window.setTimeout(() => {
@@ -1371,6 +1373,7 @@ export default function AgentWorkspace({
       lastReadingAnchorRef.current = anchorId ?? ''
       lastAnimatedMessageIdRef.current = session.messages.at(-1)?.id ?? ''
       setReadingRestoreNotice(Boolean(restored && anchorId !== session.messages.at(-1)?.id))
+      setShowJumpToLatest(Boolean(restored && anchorId !== session.messages.at(-1)?.id))
       readingPositionRestoredRef.current = true
     })
     return () => cancelAnimationFrame(frame)
@@ -2199,7 +2202,6 @@ export default function AgentWorkspace({
           inputMessage: turnInputMessage,
           locale,
           plannerModel: instructionExecutionContext.plannerModel,
-          ...(showRawReasoning ? { showRawReasoning: true } : {}),
           mountedSkillIds: instructionExecutionContext.mountedSkillIds,
           contextNodeIds,
           hasTarget: Boolean(instructionTarget),
@@ -3467,7 +3469,7 @@ export default function AgentWorkspace({
   return (
     <aside
       ref={workspaceRef}
-      className={`agent-workspace nopan nowheel${fromEmptyGuide ? ' is-from-guide' : ''}`}
+      className={`agent-workspace botanic-agent-shell nopan nowheel${fromEmptyGuide ? ' is-from-guide' : ''}`}
       data-flip-id={fromEmptyGuide ? 'empty-agent-open' : undefined}
       aria-label="Botanic Agent"
       onDragOver={handleImageDragOver}
@@ -3812,6 +3814,7 @@ export default function AgentWorkspace({
         </div> : null}
         <div ref={messageEndRef} />
       </div>
+      {!utilityPanelOpen && showJumpToLatest && !readingRestoreNotice ? <button type="button" className="agent-scroll-latest" onClick={jumpToLatestConversation}><ChevronDownIcon /><span>{flowCopy.jumpLatest}</span></button> : null}
       </div>
       {!utilityPanelOpen ? <AgentComposer
         session={session}
@@ -3834,7 +3837,6 @@ export default function AgentWorkspace({
         modeMenuId={modeMenuId}
         plannerModel={plannerModel}
         plannerModels={plannerModels}
-        showRawReasoning={showRawReasoning}
         groupId={groupId}
         compatibleGroups={compatibleGroups}
         imageContextOptions={imageContextOptions}
@@ -3858,10 +3860,6 @@ export default function AgentWorkspace({
         onCloseContextMenu={() => { setContextMenuOpen(false); requestAnimationFrame(() => contextMenuButtonRef.current?.focus()) }}
         onToggleModeMenu={() => setModeMenuOpen((open) => !open)}
         onPlannerModelChange={(model) => { if (session) onPlannerModelChange(session.id, model) }}
-        onShowRawReasoningChange={(show) => {
-          if (!session) return
-          setRawReasoningSessions((current) => ({ ...current, [session.id]: show }))
-        }}
         onGroupChange={setGroupId}
         onSend={() => void sendInstruction()}
         onQueue={instructionQueue.enqueue}
