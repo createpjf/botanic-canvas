@@ -35,18 +35,22 @@ function project(value, key, depth, seen) {
   if (typeof value !== 'object') return '[UNSUPPORTED]'
   if (seen.has(value)) return '[CIRCULAR]'
   seen.add(value)
-  if (Array.isArray(value)) {
-    return value.slice(0, MAX_ENTRIES)
-      .map((entry) => project(entry, '', depth + 1, seen))
-      .filter((entry) => entry !== undefined)
+  try {
+    if (Array.isArray(value)) {
+      return value.slice(0, MAX_ENTRIES)
+        .map((entry) => project(entry, '', depth + 1, seen))
+        .filter((entry) => entry !== undefined)
+    }
+    const projected = {}
+    for (const [childKey, childValue] of Object.entries(value).slice(0, MAX_ENTRIES)) {
+      const safe = project(childValue, childKey, depth + 1, seen)
+      const displayKey = safeText(childKey).slice(0, 160) || '[EMPTY_KEY]'
+      if (safe !== undefined) projected[displayKey] = safe
+    }
+    return projected
+  } finally {
+    seen.delete(value)
   }
-  const projected = {}
-  for (const [childKey, childValue] of Object.entries(value).slice(0, MAX_ENTRIES)) {
-    const safe = project(childValue, childKey, depth + 1, seen)
-    const displayKey = safeText(childKey).slice(0, 160) || '[EMPTY_KEY]'
-    if (safe !== undefined) projected[displayKey] = safe
-  }
-  return projected
 }
 
 /** UI 可见的 Tool 参数/输出：保留结构，但去掉密钥、媒体字节、Provider body 与隐藏推理。 */
@@ -58,7 +62,7 @@ export function safeAgentToolDisplayValue(value) {
     if (serialized === undefined || serialized.length <= MAX_CHARACTERS) return projected
     return {
       _botanicTruncation: { truncated: true, originalCharacters: serialized.length },
-      preview: serialized.slice(0, MAX_CHARACTERS - 120),
+      preview: serialized.slice(0, Math.floor((MAX_CHARACTERS - 120) / 2)),
     }
   } catch {
     // 展示投影永远不能改变工具执行结果。

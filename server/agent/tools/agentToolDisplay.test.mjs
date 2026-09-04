@@ -5,6 +5,7 @@ import { safeAgentToolDisplayValue } from './agentToolDisplay.mjs'
 test('Tool Activity 参数与输出保留结构，同时脱敏并限制大小', () => {
   const cyclic = { ok: true }
   cyclic.self = cyclic
+  const shared = { ok: true }
   const safe = safeAgentToolDisplayValue({
     prompt: '夏日海边',
     apiKey: 'provider-secret',
@@ -14,10 +15,12 @@ test('Tool Activity 参数与输出保留结构，同时脱敏并限制大小', 
     url: 'https://example.com/a?signature=private-signature&size=large',
     callback() {},
     cyclic,
+    sharedA: shared,
+    sharedB: shared,
   })
   const serialized = JSON.stringify(safe)
   const bounded = safeAgentToolDisplayValue({
-    wide: Object.fromEntries(Array.from({ length: 40 }, (_, index) => [`field${index}`, 'x'.repeat(2_000)])),
+    wide: Object.fromEntries(Array.from({ length: 40 }, (_, index) => [`field${index}`, '\\'.repeat(2_000)])),
   })
 
   assert.equal(safe.prompt, '夏日海边')
@@ -25,6 +28,8 @@ test('Tool Activity 参数与输出保留结构，同时脱敏并限制大小', 
   assert.equal(safe.imageBytes, '[REDACTED_MEDIA]')
   assert.equal(safe.reasoning_content, '[REDACTED_REASONING]')
   assert.equal(safe.cyclic.self, '[CIRCULAR]')
+  assert.deepEqual(safe.sharedA, { ok: true })
+  assert.deepEqual(safe.sharedB, { ok: true })
   assert.equal(safe.url, '[REDACTED_URL]')
   assert.equal(safe.callback, '[UNSUPPORTED]')
   assert.doesNotMatch(serialized, /provider-secret|private-signature|hidden chain|raw-media/u)
