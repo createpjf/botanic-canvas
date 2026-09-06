@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { generationCancelAssistantMessage, generationCancelMessage, type GenerationCancelOutcome } from './generationCancelCopy.ts'
+import { generationCancelAssistantMessage, generationCancelMessage, generationCancellationPending, type GenerationCancelOutcome } from './generationCancelCopy.ts'
 
 const outcome = (extra: Partial<GenerationCancelOutcome>): GenerationCancelOutcome => ({
   billing: 'possible', capability: 'local-abort-only', workerReleased: true, code: 'CANCELLED_RESULT_DISCARDED',
@@ -63,6 +63,12 @@ test('缺少判定时画布助手文案仍不臆测计费，但仍说明画布�
 })
 
 test('持久回执可以直接当判定用：刷新后仍照实说明费用', () => {
+  const pending = { requestedAt: 1, reason: 'agent-run', ...outcome({ workerReleased: false }), signalRequired: true }
+  assert.equal(generationCancellationPending(pending), true)
+  assert.equal(generationCancelMessage(pending), '正在停止…')
+  const acknowledged = { ...pending, workerReleased: true, signalAcknowledgedAt: 2 }
+  assert.equal(generationCancellationPending(acknowledged), false)
+  assert.match(generationCancelMessage(acknowledged), /费用可能已产生/)
   // 服务端把回执写在任务上，字段是判定的超集；界面不必再问一次接口。
   const record = { requestedAt: 1_700, reason: 'user', ...outcome({}) }
   assert.match(generationCancelAssistantMessage(record, 'zh-CN'), /费用可能已产生/u)

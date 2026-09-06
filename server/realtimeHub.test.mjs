@@ -586,6 +586,53 @@ test('编辑者的 CRDT 增量提交后 ACK，同一 mutation 重放只下发无
   assert.deepEqual(persistedGraph.nodes.map((node) => node.id).sort(), ['node-a', 'node-c'])
 })
 
+test('浏览器删除生成输出的 ACK 已包含持久删除意图，重启不会恢复候选', async (context) => {
+  const directory = mkdtempSync(join(tmpdir(), 'botanic-realtime-delete-'))
+  const dataPath = join(directory, 'product.json')
+  const store = createProductStore({ dataPath, bootstrapAccessToken: 'owner-token' })
+  const owner = store.authenticate('owner-token')
+  const outputs = [{ id: 'one', image: '/api/media/one' }, { id: 'two', image: '/api/media/two' }]
+  const nodes = outputs.map((output) => ({ id: output.id, type: 'result', position: { x: 0, y: 0 },
+    data: { kind: 'result', jobId: 'job-delete', candidateId: output.id, image: output.image } }))
+  store.writeProject(owner.id, { id: 'project-delete', name: '删除验收', nodes, edges: [],
+    generationJobs: [{ id: 'job-delete', status: 'succeeded', outputs, batchCount: 2 }], updatedAt: 1 })
+  const server = createServer((_request, response) => response.end())
+  const hub = createProjectRealtimeHub({ server, ticketSecret: 'test-secret', productStore: store })
+  await listen(server)
+  const socket = new WebSocket(`ws://127.0.0.1:${server.address().port}/api/realtime?projectId=project-delete&ticket=${encodeURIComponent(issueRealtimeTicket({ userId: owner.id, projectId: 'project-delete', origin: testOrigin, secret: 'test-secret' }))}`, { origin: testOrigin })
+  context.after(async () => { socket.close(); await hub.close(); await new Promise(resolve => server.close(resolve)) })
+  const initial = await nextMessages(socket, 2)
+  const client = new Y.Doc()
+  Y.applyUpdate(client, Buffer.from(initial.find(message => message.update).update, 'base64'))
+  // 与已握手工作区一致：恢复必须从已持久化的CRDT基线重放，而不是重新生成节点身份。
+  store.compactCanvasGraphUpdates(owner.id, 'project-delete', { snapshot: Buffer.from(Y.encodeStateAsUpdate(client)).toString('base64'), graph: { nodes, edges: [] } })
+  const vector = Y.encodeStateVector(client)
+  client.getMap('nodes').set('one', { deleted: true, order: -1 })
+  const updateDocument = store.updateProjectDocument.bind(store)
+  store.updateProjectDocument = () => { throw new Error('删除意图存储暂不可用') }
+  const rejected = nextMessageWithin(socket)
+  const deletion = JSON.stringify({ type: 'canvas.crdt.update', projectId: 'project-delete', mutationId: 'delete-one', update: Buffer.from(Y.encodeStateAsUpdate(client, vector)).toString('base64') })
+  socket.send(deletion)
+  await assert.rejects(rejected, /等待实时消息超时/, '旧协议不发送NACK，但保存失败时不得发送成功ACK')
+  assert.deepEqual(store.readProject(owner.id, 'project-delete').document.nodes.map(node => node.id), ['one', 'two'])
+  store.updateProjectDocument = updateDocument
+  const ack = nextMessage(socket)
+  socket.send(deletion)
+  assert.equal((await ack).type, 'canvas.crdt.committed')
+  const reloaded = createProductStore({ dataPath, bootstrapAccessToken: 'owner-token' })
+  const saved = reloaded.readProject(owner.id, 'project-delete').document
+  assert.deepEqual(saved.generationJobs[0].dismissedOutputIds, ['one'])
+  assert.deepEqual(saved.nodes.map(node => node.id), ['two'])
+  assert.deepEqual(saved.generationJobs[0].outputs.map(output => output.id), ['two'])
+  assert.deepEqual(outputs.map(output => output.id), ['one', 'two'])
+  const undoVector = Y.encodeStateVector(client)
+  client.getMap('nodes').set('one', { order: 0, value: nodes[0] })
+  const undoAck = nextMessage(socket)
+  socket.send(JSON.stringify({ type: 'canvas.crdt.update', projectId: 'project-delete', mutationId: 'undo-delete-one', update: Buffer.from(Y.encodeStateAsUpdate(client, undoVector)).toString('base64') }))
+  assert.equal((await undoAck).type, 'canvas.crdt.committed')
+  assert.deepEqual(store.readProject(owner.id, 'project-delete').document.nodes.map(node => node.id).sort(), ['one', 'two'])
+})
+
 test('API 重启后向新连接补发已持久化的 Yjs 状态', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'botanic-realtime-restart-'))
   const dataPath = join(directory, 'product.json')

@@ -2,6 +2,16 @@
   "$comment": "镜像一致性夹具：src/domain（agentVariations.ts + agent.ts）与 server/botanicAgentVariations.mjs 必须对同一输入给出相同结论。两侧测试都加载本文件；任何一侧单独改行为都会在这里失败。改行为时先改两侧实现，再用两侧实现重新生成期望。",
   "resolveCases": [
     {
+      "name": "模型已确定双图时比例和清晰度不是创作变体",
+      "input": { "instruction": "UAT生图：生成两张白底植物插画，3:4、2K。", "requestedIntent": "initial_generation", "modelResolved": true },
+      "expected": { "kind": "none" }
+    },
+    {
+      "name": "真实场景枚举保留但不混入输出规格",
+      "input": { "instruction": "海边、森林，3:4、2K，生成两张", "requestedIntent": "initial_generation", "modelResolved": true },
+      "expected": { "kind": "ready", "combine": false, "branchLabels": ["海边", "森林"] }
+    },
+    {
       "name": "普通单图指令不触发变体",
       "input": {
         "instruction": "生成一张极简风格的植物海报"

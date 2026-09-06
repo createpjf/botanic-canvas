@@ -5,6 +5,7 @@ import { resolveBotanicAgentTurn, validateBotanicAgentTurnInput } from './botani
 import { botanicAgentContextBriefing, buildBotanicAgentOntology } from '../semantic/botanicAgentOntology.mjs'
 import { resolveAgentModelContextPolicy } from '../model/agentModelContextPolicy.mjs'
 import { canonicalHash } from '../../canonicalHash.mjs'
+import { createAgentReferenceUsage, sampleWithAgentReferences } from '../semantic/botanicAgentReferenceUsage.mjs'
 
 const runtime = {
   flockApiKey: 'flock-secret',
@@ -1688,6 +1689,79 @@ test('目标图片无法读取时 fail closed，不调用文本模型生成编�
   assert.equal(providerCalls, 0)
 })
 
+test('引用采用事件对应实际原生视觉请求，保留失败/超限身份且不泄露媒体内容', async () => {
+  const events = []
+  let sampled
+  const ids = Array.from({ length: 5 }, (_, index) => `ref-${index}`)
+  await resolveBotanicAgentTurn({
+    projectId: 'project-turn', plannerModel: 'gemini-3.7-flash',
+    messages: [{ role: 'user', content: '概括引用图片' }], contextNodeIds: ids,
+    hasTarget: false, generationModels,
+  }, runtime, {
+    document: { ...document, nodes: ids.map((id) => ({ id, type: 'asset', data: { image: `/api/media/${id}` } })) },
+    onEvent: (event) => { events.push(event) },
+    resolveVisionMedia: async (id) => {
+      if (id === 'ref-1') throw Object.assign(new Error('private media denied'), { statusCode: 403 })
+      return { mimeType: 'image/png', buffer: Buffer.from(id) }
+    },
+    modelProvider: { sample: async (request) => {
+      sampled = request
+      return { choices: [{ message: { content: '已回答' } }] }
+    } },
+  })
+  const [prepared, sent] = events.filter((event) => event.type === 'references')
+  assert.equal(prepared.attemptId, 'vision')
+  assert.deepEqual(prepared.items.filter((item) => item.stage === 'prepared').map((item) => item.nodeId), ['ref-0', 'ref-2', 'ref-3'])
+  assert.deepEqual(sent.items.map((item) => [item.nodeId, item.stage, item.reason]), [
+    ['ref-0', 'submitted', undefined], ['ref-1', 'failed', 'forbidden'],
+    ['ref-2', 'submitted', undefined], ['ref-3', 'submitted', undefined], ['ref-4', 'omitted', 'limit'],
+  ])
+  const images = sampled.messages.flatMap((message) => Array.isArray(message.content)
+    ? message.content.filter((part) => part.type === 'image_url').map((part) => part.image_url.url) : [])
+  assert.deepEqual(images, ['ref-0', 'ref-2', 'ref-3'].map((id) => `data:image/png;base64,${Buffer.from(id).toString('base64')}`))
+  assert.doesNotMatch(JSON.stringify([prepared, sent]), /data:image|\/api\/media|private media|image_url/u)
+  const observation = createAgentReferenceUsage({ nodes: [{ id: 'ref-0', type: 'asset' }] }, ['ref-0'])
+  observation.prepared([{ nodeId: 'ref-0', part: { image_url: { url: images[0] } } }], 'image')
+  let omitted
+  await sampleWithAgentReferences({ sample: async () => 'done' }, { messages: [{ role: 'user', content: '已裁剪图片的实际请求' }] }, observation, (event) => { omitted = event })
+  assert.equal(omitted.items[0].stage, 'omitted')
+  assert.equal(omitted.items[0].reason, 'context_omitted', '准备成功不代表裁剪后的请求仍包含图片')
+})
+
+test('原生视觉的目标读取失败时，不得只带成功旁图继续当前编辑请求', async () => {
+  let providerCalls = 0
+  const events = []
+  await assert.rejects(resolveBotanicAgentTurn({
+    projectId: 'project-turn', plannerModel: 'gemini-3.7-flash',
+    messages: [{ role: 'user', content: '只修改选中的人物图，旁图仅作参考' }],
+    contextNodeIds: ['asset-mia-portrait'], hasTarget: true,
+    selectedResultNodeId: 'result-target', generationModels,
+  }, runtime, {
+    document: { ...document, nodes: [...document.nodes, {
+      id: 'result-target', type: 'result', data: { image: '/api/media/missing-target', mediaKind: 'image' },
+    }] },
+    requireTargetVision: true,
+    onEvent: (event) => events.push(event),
+    resolveVisionMedia: async (id) => {
+      if (id === 'missing-target') throw Object.assign(new Error('forbidden'), { statusCode: 403 })
+      return { mimeType: 'image/png', buffer: Buffer.from('reference-only') }
+    },
+    fetchImpl: async () => {
+      providerCalls++
+      return new Response(JSON.stringify({ choices: [{ message: { content: '不应处理旁图' } }] }), { status: 200 })
+    },
+  }), (caught) => caught.code === 'AGENT_TARGET_VISION_UNAVAILABLE')
+  assert.equal(providerCalls, 0)
+  assert.equal(events[0]?.type, 'attempt')
+  const feedback = events.find((event) => event.type === 'references')
+  assert.equal(feedback?.attemptId, 'vision')
+  assert.deepEqual(feedback.items.find((item) => item.nodeId === 'result-target'), {
+    nodeId: 'result-target', stage: 'failed', mode: 'none', reason: 'forbidden',
+  })
+  assert.equal(feedback.items.find((item) => item.nodeId === 'asset-mia-portrait').stage, 'prepared')
+  assert.equal(feedback.items.some((item) => item.stage === 'submitted'), false)
+})
+
 test('视觉流吐出前缀后截断回退文本 attempt,事件携带新 attempt 供客户端清除废弃前缀', async () => {
   const visionDocument = {
     ...document,
@@ -1722,6 +1796,8 @@ test('视觉流吐出前缀后截断回退文本 attempt,事件携带新 attempt
   assert.equal(result.kind, 'chat')
   assert.equal(result.answer, '最终文本答案')
   assert.deepEqual(events.filter((event) => event.type === 'attempt').map((event) => event.attemptId), ['vision', 'text'])
+  assert.deepEqual(events.filter((event) => event.type === 'references' && event.items[0]?.stage === 'submitted')
+    .map((event) => [event.attemptId, event.items[0].mode]), [['vision', 'image'], ['text', 'description']])
   assert.deepEqual(events.filter((event) => event.type === 'answer').map((event) => [event.attemptId, event.delta]), [
     ['vision', '废弃视觉前缀'], ['text', '最终文本答案'],
   ])

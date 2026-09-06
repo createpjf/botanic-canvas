@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { encodeRgbaPng, decodeRgbaImage } from '../../media/imageOverlay.mjs'
 import {
   botanicAgentVisionBriefing,
   botanicAgentVisionCandidates,
@@ -12,6 +13,34 @@ const runtimeConfig = {
   flockApiKey: 'flock-secret',
   agentVisionModel: 'gemini-flash',
 }
+
+test('原生看图与 caption 使用较小副本，引用身份、原图和像素尺寸不变', async () => {
+  const rgba = Buffer.alloc(512 * 512 * 4)
+  let seed = 42
+  for (let i = 0; i < rgba.length; i++) {
+    seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0
+    rgba[i] = i % 4 === 3 ? 255 : seed >>> 24
+  }
+  const image = `data:image/png;base64,${encodeRgbaPng({ width: 512, height: 512, rgba }).toString('base64')}`
+  const doc = { nodes: [{ id: 'second', type: 'result', data: { image, label: '第二张' } }] }
+  const [part] = await resolveBotanicAgentVisionParts({ document: doc, contextNodeIds: ['second'] })
+  assert.equal(part.nodeId, 'second')
+  assert.ok(part.part.image_url.url.startsWith('data:image/jpeg;base64,'), '大 PNG 应使用 JPEG 看图副本')
+  assert.ok(part.part.image_url.url.length < image.length / 2)
+  const decoded = decodeRgbaImage(Buffer.from(part.part.image_url.url.split(',')[1], 'base64'))
+  assert.deepEqual([decoded.width, decoded.height], [512, 512])
+  let sampled
+  await describeBotanicAgentContextImages({ document: doc, contextNodeIds: ['second'], runtimeConfig, cache: new Map(),
+    fetchImpl: async (_url, init) => { sampled = JSON.parse(init.body); return visionResponse('第二张图') },
+  })
+  assert.equal(sampled.messages[1].content[1].image_url.url, part.part.image_url.url)
+  assert.equal(doc.nodes[0].data.image, image)
+  // 透明图不能因看图优化丢掉透明语义；解码不了也不能替换成另一张图。
+  rgba[3] = 0
+  doc.nodes[0].data.image = `data:image/png;base64,${encodeRgbaPng({ width: 512, height: 512, rgba }).toString('base64')}`
+  const [transparent] = await resolveBotanicAgentVisionParts({ document: doc, contextNodeIds: ['second'] })
+  assert.equal(transparent.part.image_url.url, doc.nodes[0].data.image)
+})
 
 const document = {
   id: 'project-vision',
@@ -36,6 +65,26 @@ test('看图候选只认当前画布上可解析的图片素材与结果', () =>
   ])
   assert.deepEqual(candidates.map((item) => item.nodeId), ['asset-mia', 'asset-inline', 'result-1'])
   assert.equal(candidates[0].role, '模特')
+})
+
+test('结果节点图片字段缺失时从已成功任务的精确候选输出恢复', () => {
+  const recoveredDocument = {
+    ...document,
+    nodes: document.nodes.map((node) => node.id === 'result-1'
+      ? { ...node, data: { ...node.data, image: undefined, jobId: 'job-result-1', candidateId: 'candidate-result-1' } }
+      : node),
+    generationJobs: [{
+      id: 'job-result-1', status: 'succeeded', resultNodeId: 'result-1',
+      outputs: [{ id: 'candidate-result-1', mediaKind: 'image', image: 'data:image/png;base64,QUJD' }],
+    }],
+  }
+  const candidates = botanicAgentVisionCandidates(recoveredDocument, ['result-1'])
+  assert.equal(candidates[0].image, 'data:image/png;base64,QUJD')
+  recoveredDocument.generationJobs[0].dismissedOutputIds = ['candidate-result-1']
+  assert.deepEqual(botanicAgentVisionCandidates(recoveredDocument, ['result-1']), [])
+  recoveredDocument.generationJobs[0].dismissedOutputIds = []
+  recoveredDocument.generationJobs[0].projectionDismissedAt = 1
+  assert.deepEqual(botanicAgentVisionCandidates(recoveredDocument, ['result-1']), [])
 })
 
 test('识别引用图片：项目媒体经归属校验解析，内联图直通，主轮之外不发多余请求', async () => {

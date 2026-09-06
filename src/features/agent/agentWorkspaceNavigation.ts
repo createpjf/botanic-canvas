@@ -1,3 +1,5 @@
+import { useLayoutEffect, useRef, type RefObject } from 'react'
+
 /**
  * Agent 工作台的层级消解规则。
  *
@@ -37,4 +39,22 @@ export type AgentOpenLayers = Record<AgentDismissLayer, boolean>
  */
 export function agentEscapeDismissTarget(open: Partial<AgentOpenLayers>): AgentDismissTarget {
   return AGENT_DISMISS_PRIORITY.find((layer) => open[layer]) ?? 'workspace'
+}
+
+/** 各面板使用独立的 DOM 滚动容器，切换时恢复各自位置；不写入任务或会话事实。 */
+export function useAgentPanelScroll(viewportRef: RefObject<HTMLElement | null>, panel: string | null, scope: string) {
+  const positions = useRef({ scope, values: new Map<string, number>() })
+  useLayoutEffect(() => {
+    const viewport = viewportRef.current
+    if (!viewport) return
+    if (positions.current.scope !== scope) positions.current = { scope, values: new Map() }
+    const saved = positions.current.values
+    const key = panel ?? 'conversation'
+    const top = saved.get(key)
+    if (top !== undefined) viewport.scrollTop = top
+    else if (panel) viewport.scrollTop = 0
+    const remember = () => saved.set(key, viewport.scrollTop)
+    viewport.addEventListener('scroll', remember, { passive: true })
+    return () => viewport.removeEventListener('scroll', remember)
+  }, [panel, scope, viewportRef])
 }

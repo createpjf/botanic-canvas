@@ -11,6 +11,7 @@ import {
   resolveBotanicAgentVisionParts,
 } from './botanicAgentVision.mjs'
 import { captionAgentVisionModel, nativeAgentVisionModel } from './botanicAgentVisionCapability.mjs'
+import { createAgentReferenceUsage, publishAgentReferencePreparationFailure, sampleWithAgentReferences } from './botanicAgentReferenceUsage.mjs'
 import { botanicAgentContextToolSourceLabels, createBotanicAgentReadToolDefinitions } from '../tools/botanicAgentContextTools.mjs'
 import { BOTANIC_AGENT_MOUNTED_SKILL_LIMIT, botanicAgentMountedSkillBriefing, botanicAgentSearchableSkills, pinnedBotanicAgentProjectSkills, resolveBotanicAgentMountedSkills } from '../tools/botanicAgentTools.mjs'
 import { canonicalHash } from '../../canonicalHash.mjs'
@@ -161,7 +162,7 @@ function chatModelContextBinding(options, model) {
   }
 }
 
-async function executeChatAttempt({ input, config, model, system, messages, registry, mountedSkills, attemptId, options, allowRawReasoning, emitEvent, streaming }) {
+async function executeChatAttempt({ input, config, model, system, messages, registry, mountedSkills, attemptId, options, allowRawReasoning, emitEvent, streaming, references }) {
   const hasWebSearch = Boolean(registry.get('web_search'))
   const hasWebFetch = Boolean(registry.get('web_fetch'))
   // 传输差异由 Model Provider 拥有;超时仍按单次模型调用计,与 Turn 链路同一语义。
@@ -185,6 +186,7 @@ async function executeChatAttempt({ input, config, model, system, messages, regi
   }
   const emitAttemptEvent = (event) => emitEvent({ ...event, attemptId })
   if (streaming) await emitAttemptEvent({ type: 'attempt', action: 'start' })
+  await references?.publish(emitAttemptEvent)
   try {
     const result = await runAgentToolLoop({
       registry,
@@ -207,7 +209,7 @@ async function executeChatAttempt({ input, config, model, system, messages, regi
       maxOutputTokens: input.mode === 'prompt' ? 2200 : 3000,
       signal: options.signal,
       deadlineAt: options.deadlineAt,
-      callModel: ({ messages: turnMessages, tools, tool_choice, step }, { signal: runtimeSignal } = {}) => provider.sample({
+      callModel: ({ messages: turnMessages, tools, tool_choice, step }, { signal: runtimeSignal } = {}) => sampleWithAgentReferences(provider, {
         model,
         messages: turnMessages,
         tools,
@@ -225,7 +227,7 @@ async function executeChatAttempt({ input, config, model, system, messages, regi
               if (event.type === 'answer') emitAttemptEvent({ type: 'answer', step, delta: event.delta, chunkIndex: event.chunkIndex })
             }
           : undefined,
-      }),
+      }, references, emitAttemptEvent),
     })
     if (typeof result.output !== 'string' || !result.output.trim()) {
       throw new BotanicAgentChatError(502, 'INVALID_PROVIDER_RESPONSE', 'Agent 没有返回有效回答。')
@@ -339,6 +341,7 @@ export async function chatWithBotanicAgent(input, runtimeConfig, options = {}) {
         },
       }
     : options
+  const references = createAgentReferenceUsage(options.document, input.contextNodeIds)
   const attemptShared = {
     input,
     config,
@@ -348,15 +351,17 @@ export async function chatWithBotanicAgent(input, runtimeConfig, options = {}) {
     allowRawReasoning,
     emitEvent,
     streaming,
+    references,
   }
 
   // 原生多模态只跟 Composer 所选走：所选模型能看图才把图片附给它。
   // 失败且尚未发出任何流事件时回退 caption + 所选文本模型。
   const nativeVisionModel = nativeAgentVisionModel(config.model)
   const captionVisionModel = captionAgentVisionModel(runtimeConfig)
-  const optionalVisionResult = (caught) => {
+  const optionalVisionResult = async (caught, attemptId) => {
     if (options.signal?.aborted) throw new BotanicAgentChatError(499, 'REQUEST_CANCELLED', 'Agent 对话请求已取消。')
     if (caught?.code === 'AGENT_VISION_BYTES_EXCEEDED') {
+      await publishAgentReferencePreparationFailure(references, options, attemptId)
       throw new BotanicAgentChatError(caught.statusCode ?? 413, caught.code, caught.message)
     }
     return []
@@ -367,9 +372,11 @@ export async function chatWithBotanicAgent(input, runtimeConfig, options = {}) {
       contextNodeIds: input.contextNodeIds,
       resolveMedia: options.resolveVisionMedia,
       signal: options.signal,
-    }).catch(optionalVisionResult)
+      onFailure: references.failed,
+    }).catch((caught) => optionalVisionResult(caught, resumeAttemptId ?? (nativeVisionModel ? 'chat_vision' : 'chat_text')))
     : []
   if (visionParts.length && nativeVisionModel && resumeAttemptId !== 'chat_text') {
+    references.prepared(visionParts, 'image')
     try {
       return await executeChatAttempt({
         ...attemptShared,
@@ -395,6 +402,7 @@ export async function chatWithBotanicAgent(input, runtimeConfig, options = {}) {
   }
 
   // 降级路径：看图失败不弄坏整轮对话；识别结果只进当轮系统提示，不进任何持久化实体。
+  references.prepared([], 'description')
   const visionDescriptions = await describeBotanicAgentContextImages({
     document: options.document,
     contextNodeIds: input.contextNodeIds,
@@ -402,8 +410,10 @@ export async function chatWithBotanicAgent(input, runtimeConfig, options = {}) {
     resolveMedia: options.resolveVisionMedia,
     fetchImpl: options.visionFetchImpl ?? fetch,
     signal: options.signal,
+    onFailure: references.failed,
     ...(options.visionCache ? { cache: options.visionCache } : {}),
-  }).catch(optionalVisionResult)
+  }).catch((caught) => optionalVisionResult(caught, 'chat_text'))
+  references.prepared(visionDescriptions, 'description')
   return executeChatAttempt({
     ...attemptShared,
     attemptId: 'chat_text',

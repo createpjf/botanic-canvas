@@ -10,11 +10,32 @@ export function isAgentTurnPublicStatus(value: unknown): value is AgentTurnPubli
   return typeof value === 'string' && AgentTurnPublicStatusSet.has(value)
 }
 
-export type AgentStreamEventType = 'attempt' | 'accepted' | 'handoff' | 'reasoning' | 'answer' | 'answer_snapshot' | 'tool' | 'done' | 'error'
-export const AGENT_STREAM_EVENT_TYPE_VALUES = Object.freeze(['attempt', 'accepted', 'handoff', 'reasoning', 'answer', 'answer_snapshot', 'tool', 'done', 'error']) as readonly AgentStreamEventType[]
+export type AgentStreamEventType = 'attempt' | 'accepted' | 'handoff' | 'reasoning' | 'answer' | 'answer_snapshot' | 'references' | 'tool' | 'done' | 'error'
+export const AGENT_STREAM_EVENT_TYPE_VALUES = Object.freeze(['attempt', 'accepted', 'handoff', 'reasoning', 'answer', 'answer_snapshot', 'references', 'tool', 'done', 'error']) as readonly AgentStreamEventType[]
 const AgentStreamEventTypeSet: ReadonlySet<string> = new Set(AGENT_STREAM_EVENT_TYPE_VALUES)
 export function isAgentStreamEventType(value: unknown): value is AgentStreamEventType {
   return typeof value === 'string' && AgentStreamEventTypeSet.has(value)
+}
+
+export type AgentReferenceStage = 'prepared' | 'submitted' | 'failed' | 'omitted'
+export const AGENT_REFERENCE_STAGE_VALUES = Object.freeze(['prepared', 'submitted', 'failed', 'omitted']) as readonly AgentReferenceStage[]
+const AgentReferenceStageSet: ReadonlySet<string> = new Set(AGENT_REFERENCE_STAGE_VALUES)
+export function isAgentReferenceStage(value: unknown): value is AgentReferenceStage {
+  return typeof value === 'string' && AgentReferenceStageSet.has(value)
+}
+
+export type AgentReferenceMode = 'image' | 'description' | 'none'
+export const AGENT_REFERENCE_MODE_VALUES = Object.freeze(['image', 'description', 'none']) as readonly AgentReferenceMode[]
+const AgentReferenceModeSet: ReadonlySet<string> = new Set(AGENT_REFERENCE_MODE_VALUES)
+export function isAgentReferenceMode(value: unknown): value is AgentReferenceMode {
+  return typeof value === 'string' && AgentReferenceModeSet.has(value)
+}
+
+export type AgentReferenceReason = 'unavailable' | 'forbidden' | 'unsupported' | 'limit' | 'too_large' | 'network' | 'not_configured' | 'description_failed' | 'context_omitted'
+export const AGENT_REFERENCE_REASON_VALUES = Object.freeze(['unavailable', 'forbidden', 'unsupported', 'limit', 'too_large', 'network', 'not_configured', 'description_failed', 'context_omitted']) as readonly AgentReferenceReason[]
+const AgentReferenceReasonSet: ReadonlySet<string> = new Set(AGENT_REFERENCE_REASON_VALUES)
+export function isAgentReferenceReason(value: unknown): value is AgentReferenceReason {
+  return typeof value === 'string' && AgentReferenceReasonSet.has(value)
 }
 
 export type AgentToolCallPublicStatus = 'pending' | 'running' | 'awaiting_confirmation' | 'succeeded' | 'failed' | 'aborted'

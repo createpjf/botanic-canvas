@@ -1,9 +1,11 @@
 import type { AssetGroup, AssetNodeData, AssetRecord, CanvasDocument, CanvasNode, GenerateNodeData, GenerationJob, GenerationModelOption, GenerationRecipe, GenerationSettings, ResultNodeData } from './canvas.ts'
+import { agentArtifactTargetNodeIds } from './agentArtifactTargets.ts'
 import type { BotanicAgentClarification, BotanicCreativeBrief } from './agentCreativeBrief.ts'
 import type { BotanicAgentBranchVariation, BotanicAgentVariationSpec } from './agentVariations.ts'
 import type { BotanicAgentComposition } from './agentCreativeComposition.ts'
 import type { BotanicAgentMessageMention } from './agentMentions.ts'
 import type { BotanicCanvasActionPreview } from './agentActionPreview.ts'
+import { generationResultOutputId } from './generationOutputPlacement.ts'
 export type {
   BotanicAgentComposerSubmission,
   BotanicAgentMentionCatalog,
@@ -643,25 +645,6 @@ export function botanicAgentNextIterationTargetId(
 }
 
 /**
- * 导演回看：自动模式下值得自动重试一次的失败分支。只认首次失败（attempt 0），
- * 重试一次仍失败就停手交还用户，绝不无限循环；用户主动取消的分支不算失败。
- * 只处理当前会话里挂着的任务，不把其他会话的历史任务拉进来。
- */
-export function botanicAgentAutoRetryTargets(
-  runs: Array<Pick<BotanicAgentRun, 'id' | 'branches'>>,
-  sessionRunIds: ReadonlySet<string>,
-): Array<{ runId: string; branchId: string }> {
-  return runs.flatMap((run) => {
-    if (!sessionRunIds.has(run.id)) return []
-    return run.branches.flatMap((branch) => (
-      branch.status === 'failed' && (branch.attempt ?? 0) === 0
-        ? [{ runId: run.id, branchId: branch.id }]
-        : []
-    ))
-  })
-}
-
-/**
  * 用户已确认后，Run 会先持久化，再幂等提交生成任务。如果页面在
  * 两步之间关闭，恢复器只对“仍排队且从未绑定 Job”的 Run 补做
  * 幂等执行；已绑定 Job 的正常排队任务不会重复提交。
@@ -691,6 +674,7 @@ export type BotanicAgentRunBranch = {
 export type BotanicAgentRunSnapshot = {
   id: string
   projectId: string
+  turnId?: string
   status: Exclude<BotanicAgentRunStatus, 'awaiting_confirmation' | 'executing'>
   lineage?: BotanicAgentRunLineage
   plan?: Omit<BotanicAgentPlan, 'references' | 'rootRecipe' | 'actions'>
@@ -930,7 +914,7 @@ export type BotanicAgentMessage = {
   turnId?: string
   /** 稳定 Turn 助手投影的服务端派生业务引用；客户端 PUT 不拥有该字段。 */
   entityReferences?: AgentEntityReference[]
-  /** 产生该稳定助手投影的用户 Message；保存 Memory 时不得回读当前 UI 上下文。 */
+  /** 产生助手投影或确认答案的原用户 Message；保存 Memory 时不得回读当前 UI 上下文。 */
   sourceMessageId?: string
   /** 产生该稳定助手投影时冻结的画布上下文。 */
   sourceNodeIds?: string[]
@@ -938,7 +922,7 @@ export type BotanicAgentMessage = {
   targetArtifactVersionId?: string
   /** 若该投影已经关联编译计划，则记录服务端计划指纹。 */
   planFingerprint?: string
-  /** 用户已要求停止该 Turn；独立 Message 持久化后可跨刷新继续深取消。 */
+  /** 用户已要求停止该 Turn/计划；独立 Message 持久化后可跨刷新接续取消，不代表停止已确认。 */
   turnCancellationRequestedAt?: number
   /**
    * Turn 还没有到达服务端时的可恢复请求快照。Message 先进离线队列，
@@ -1015,6 +999,7 @@ export function pendingBotanicAgentAutoSubmission(
       if (message.role !== 'assistant'
         || message.kind !== 'plan'
         || message.status !== 'pending'
+        || Number.isFinite(message.turnCancellationRequestedAt)
         || !message.turnId?.trim()
         || !message.plan
         || message.plan.turnId !== message.turnId) return false
@@ -1343,6 +1328,7 @@ export function mergeBotanicAgentArtifactIndex(
     ])
     if (!artifacts.has(artifact.id)) artifacts.set(artifact.id, {
       ...artifact,
+      ...(artifact.url ? {} : localArtifact?.url ? { url: localArtifact.url } : {}),
       // 索引条目的时间落进 metadata，读模型才有统一可排序的时间戳。
       metadata: { createdAt: artifact.createdAt, ...artifact.metadata },
       provenance: { ...artifact.provenance, sourceNodeIds },
@@ -1350,6 +1336,12 @@ export function mergeBotanicAgentArtifactIndex(
   }
   for (const artifact of localArtifacts) {
     if (!artifacts.has(artifact.id)) artifacts.set(artifact.id, artifact)
+    else {
+      const existing = artifacts.get(artifact.id)!
+      artifacts.set(artifact.id, { ...existing, provenance: { ...existing.provenance,
+        sourceNodeIds: uniqueIds([...(existing.provenance.sourceNodeIds ?? []), ...(artifact.provenance.sourceNodeIds ?? [])]),
+      } })
+    }
   }
   return [...artifacts.values()]
 }
@@ -1373,7 +1365,7 @@ export function collectBotanicAgentResults(input: {
     if (result.status !== 'ready' || !result.image || !result.jobId) return []
     const job = jobs.get(result.jobId)
     if (!job?.agentRun) return []
-    const candidateId = result.candidateId ?? node.id
+    const candidateId = generationResultOutputId(result, job.outputs) ?? node.id
     const mediaKind = result.mediaKind ?? 'image'
     // 结果的提示词来自节点配方，不需要额外持久化字段就能在结果面板还原“图 + prompt”。
     const prompt = result.generationRecipe?.prompt?.trim() || result.rootRecipe?.prompt?.trim()
@@ -1403,7 +1395,7 @@ export function collectBotanicAgentResults(input: {
       },
     }]
   })
-  return [...generationArtifacts.sort((left, right) => {
+  return [...mergeBotanicAgentArtifactIndex([], generationArtifacts).sort((left, right) => {
     const leftTime = Number(left.metadata?.createdAt ?? 0)
     const rightTime = Number(right.metadata?.createdAt ?? 0)
     return rightTime - leftTime
@@ -1448,7 +1440,7 @@ export function resolveBotanicAgentResultSelection(
     mediaArtifacts: selectedArtifacts.filter((artifact) =>
       Boolean(artifact.url) && (artifact.kind === 'image' || artifact.kind === 'video')
     ),
-    sourceNodeIds: uniqueIds(selectedArtifacts.flatMap((artifact) => artifact.provenance.sourceNodeIds ?? [])),
+    sourceNodeIds: uniqueIds(selectedArtifacts.flatMap(agentArtifactTargetNodeIds)),
   }
 }
 
@@ -2053,88 +2045,6 @@ export function createBotanicAgentRun(
     completedBranchCount: 0,
     failedBranchCount: 0,
   }
-}
-
-export function mergeBotanicAgentRunSnapshot(
-  run: BotanicAgentRun,
-  snapshot: BotanicAgentRunSnapshot,
-): BotanicAgentRun {
-  if (run.id !== snapshot.id) return run
-  // Realtime 与 4 秒恢复轮询可能同时返回同一快照；旧快照也不能回退
-  // 已显示的进度。返回原对象让 Store 跳过无意义的持久化写入。
-  // 例外：本地 updatedAt 可能被本机挂钟写过而领先服务端；非终态 → 终态的
-  // 权威快照必须收下，否则 Run 永远显示活跃、4 秒恢复轮询永不停止。
-  const activeStatuses: BotanicAgentRunStatus[] = ['awaiting_confirmation', 'queued', 'executing', 'running']
-  const settlesActiveRun = activeStatuses.includes(run.status) && !activeStatuses.includes(snapshot.status)
-  if (snapshot.updatedAt <= run.updatedAt && !settlesActiveRun) return run
-  return {
-    ...run,
-    status: snapshot.status,
-    branches: snapshot.branches,
-    completedBranchCount: snapshot.completedBranchCount,
-    failedBranchCount: snapshot.failedBranchCount,
-    updatedAt: snapshot.updatedAt,
-    error: snapshot.status === 'failed'
-      ? snapshot.branches.find((branch) => branch.error)?.error
-      : undefined,
-  }
-}
-
-export function upsertBotanicAgentRunSnapshot(
-  runs: BotanicAgentRun[],
-  snapshot: BotanicAgentRunSnapshot,
-  rootRecipe?: GenerationRecipe,
-): BotanicAgentRun[] {
-  const existing = runs.find((run) => run.id === snapshot.id)
-  if (existing) {
-    const merged = mergeBotanicAgentRunSnapshot(existing, snapshot)
-    if (merged === existing) return runs
-    return runs.map((run) => run.id === snapshot.id ? merged : run)
-      .sort((a, b) => b.updatedAt - a.updatedAt)
-  }
-  if (!snapshot.plan) return runs
-  const initialGeneration = snapshot.plan.intent === 'initial_generation'
-  const recipe = initialGeneration ? undefined : rootRecipe ?? {
-      references: [],
-      prompt: snapshot.plan.prompt,
-      batchCount: Math.max(1, snapshot.plan.output.candidatesPerItem),
-      settings: snapshot.plan.settings,
-    }
-  const references: AgentReferenceBinding[] = initialGeneration
-    ? botanicAgentImageContext(snapshot.plan.contextSnapshot)
-        .map((item) => ({
-          source: 'context_node', id: item.nodeId, label: item.label,
-          ...(item.role ? { role: item.role } : {}),
-        }))
-    : [
-        ...(snapshot.plan.selectedResultNodeId
-          ? [{ source: 'selected_result' as const, id: snapshot.plan.selectedResultNodeId, label: '父结果' }]
-          : []),
-        ...(recipe?.references ?? []).map((reference) => ({
-          source: 'root_recipe' as const,
-          id: reference.nodeId,
-          label: reference.name,
-          role: reference.role,
-        })),
-      ]
-  const restored: BotanicAgentRun = {
-    id: snapshot.id,
-    status: snapshot.status,
-    plan: {
-      ...snapshot.plan,
-      references,
-      ...(recipe ? { rootRecipe: recipe } : {}),
-    },
-    branches: snapshot.branches,
-    completedBranchCount: snapshot.completedBranchCount,
-    failedBranchCount: snapshot.failedBranchCount,
-    createdAt: snapshot.createdAt,
-    updatedAt: snapshot.updatedAt,
-    error: snapshot.status === 'failed'
-      ? snapshot.branches.find((branch) => branch.error)?.error
-      : undefined,
-  }
-  return [restored, ...runs].sort((a, b) => b.updatedAt - a.updatedAt)
 }
 
 export function updateBotanicAgentRun(

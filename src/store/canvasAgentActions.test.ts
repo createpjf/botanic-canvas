@@ -25,7 +25,7 @@ function emptyDocument(): CanvasDocument {
   }
 }
 
-function createDelayedPersistenceHarness({ revision = 1, graphRevision = 1 } = {}) {
+function createDelayedPersistenceHarness({ revision = 1, graphRevision = 1, retryBranch = async () => { throw new Error('测试未调用远程分支重试') } } = {}) {
   let state = { document: emptyDocument(), persistenceStatus: 'saving' } as CanvasStore
   const pendingDocuments: CanvasDocument[] = []
   const localMirrors: CanvasDocument[] = []
@@ -37,7 +37,7 @@ function createDelayedPersistenceHarness({ revision = 1, graphRevision = 1 } = {
     get: () => state,
     commitDocument: async (document) => { pendingDocuments.push(document) },
     persistentAgentRunApi: {
-      retryBranch: async () => { throw new Error('测试未调用远程分支重试') },
+      retryBranch,
       cancelRun: async () => { throw new Error('测试未调用远程任务取消') },
     },
     persistAcknowledgedRemotePatch: async () => {},
@@ -74,6 +74,20 @@ test('首次打开 Agent 时连续确保会话、添加上下文和消息仍落�
   assert.equal(latestDocument.agentSessions.length, 1)
   assert.deepEqual(latestDocument.agentSessions[0].contextNodeIds, ['asset-hero'])
   assert.deepEqual(getState().document.agentSessions[0].messages.map((message) => message.id), ['message-first-frame'])
+})
+
+test('补图命令拒绝已完成分支和重复点击，不绕过当前任务身份', async () => {
+  let calls = 0
+  const h = createDelayedPersistenceHarness({ retryBranch: async () => { calls += 1; await new Promise(resolve => setTimeout(resolve, 5)); throw new Error('测试保留失败') } })
+  const run = { id: 'run-1', status: 'completed', branches: [{ id: 'branch-1', status: 'succeeded', attempt: 0, jobIds: ['job-1'], activeJobId: 'job-1' }] } as CanvasDocument['agentRuns'][number]
+  h.getState().document.agentRuns = [run]
+  assert.equal(await h.actions.retryAgentBranch(run.id, 'branch-1'), false)
+  assert.equal(calls, 0)
+  run.status = 'failed'; run.branches[0].status = 'failed'
+  const first = h.actions.retryAgentBranch(run.id, 'branch-1')
+  assert.equal(await h.actions.retryAgentBranch(run.id, 'branch-1'), false)
+  assert.equal(calls, 1)
+  assert.equal(await first, false)
 })
 
 test('Agent 阅读位置先更新本地会话，不触发整份画布文档写入', () => {
@@ -152,6 +166,59 @@ test('Agent Message 独立实体更新不回写整份画布文档', () => {
   assert.equal(getState().document.agentSessions[0].messages[0].id, 'message-independent')
 })
 
+test('取消依赖服务端ACK；同版本画布刷新不误报失败，缺少回执仍保留恢复入口', async () => {
+  let state = { document: emptyDocument() } as CanvasStore
+  const failures = [{ code: 'GENERATION_JOB_CANCEL_ACK_PENDING' }]
+  let refreshed = true
+  let cancellation: { failures: { code: string }[] } | undefined
+  const actions = createCanvasAgentActions({
+    get: () => state, set: (patch) => { state = { ...state, ...patch } },
+    commitDocument: async () => {}, persistAcknowledgedRemotePatch: async () => {},
+    persistentAgentRunApi: {
+      retryBranch: async () => { throw new Error('不能重新生成') },
+      cancelRun: async () => ({ run: { id: 'run-1', status: 'cancelled' } as never, cancellation }),
+    },
+  })
+  state = { ...state, ...actions, applyAgentRunSnapshot: () => {}, refreshDocumentFromRemote: async () => refreshed }
+  cancellation = { failures }
+  assert.equal(await actions.cancelAgentRun('run-1'), false)
+  refreshed = false
+  assert.equal(await actions.cancelAgentRun('run-1'), false)
+  cancellation = { failures: [] }
+  assert.equal(await actions.cancelAgentRun('run-1'), true, '权威取消已确认；未应用同版本画布不是取消失败')
+  cancellation = undefined
+  assert.equal(await actions.cancelAgentRun('run-1'), false, '兼容旧服务缺少ACK时不能只凭HTTP成功')
+  refreshed = true
+  assert.equal(await actions.cancelAgentRun('run-1'), false, '画布刷新成功本身不能证明停止已确认')
+})
+
+test('取消回包丢失后只读核对同一Run，迟到ACK更新状态但不再次提交取消', async () => {
+  const branch = { id: 'branch', status: 'cancelled', activeJobId: 'job', jobIds: ['job'], updatedAt: 2 }
+  const run = { id: 'run', plan: {}, status: 'cancelled', branches: [branch], updatedAt: 2 } as CanvasDocument['agentRuns'][number]
+  let job = { id: 'job', status: 'cancelled', updatedAt: 2, cancel: { requestedAt: 1, signalRequired: true, workerReleased: false } } as CanvasDocument['generationJobs'][number]
+  let state = { document: { ...emptyDocument(), agentRuns: [{ ...run, status: 'running' }], generationJobs: [job] } } as CanvasStore
+  let cancellations = 0
+  const actions = createCanvasAgentActions({
+    get: () => state, set: patch => { state = { ...state, ...patch } },
+    commitDocument: async () => {}, persistAcknowledgedRemotePatch: async () => {},
+    persistentAgentRunApi: {
+      retryBranch: async () => { throw new Error('不能生成') },
+      cancelRun: async () => { cancellations++; await new Promise(resolve => setTimeout(resolve, 5)); throw new Error('cancel response lost') },
+      readCancellation: async () => ({ run: run as never, jobs: [job] }),
+    },
+  })
+  state = { ...state, ...actions, refreshDocumentFromRemote: async () => false }
+  assert.deepEqual(await Promise.all([actions.cancelAgentRun('run'), actions.cancelAgentRun('run')]), [false, false])
+  assert.match(state.assistantMessage, /待确认/)
+  assert.equal(await actions.cancelAgentRun('run'), false, 'Worker确认迟到只读核对，不重发已经发出的停止请求')
+  assert.equal(cancellations, 1)
+  job = { ...job, updatedAt: 3, cancel: { ...job.cancel!, workerReleased: true, signalAcknowledgedAt: 3 } }
+  assert.equal(await actions.checkAgentRunStop('run'), true)
+  assert.equal(state.document.generationJobs[0].cancel?.workerReleased, true)
+  assert.equal(await actions.cancelAgentRun('run'), true, '迟到的计划回包不能再次提交已确认停止的任务')
+  assert.equal(cancellations, 1)
+})
+
 test('Message deliveryStatus 只更新本地展示，不推高领域时间或写回云端文档', () => {
   const { actions, pendingDocuments, getState } = createDelayedPersistenceHarness()
   const sessionId = actions.ensureAgentSession()
@@ -159,16 +226,18 @@ test('Message deliveryStatus 只更新本地展示，不推高领域时间或写
     id: 'message-delivery', role: 'user', kind: 'text', content: '离线消息',
     createdAt: 10, updatedAt: 10, deliveryStatus: 'queued',
   })
+  const otherSessionId = actions.startNewAgentSession()
   const writesBefore = pendingDocuments.length
-  const sessionBefore = getState().document.agentSessions[0]
+  const sessionBefore = getState().document.agentSessions.find((item) => item.id === sessionId)!
 
   actions.updateAgentMessage(sessionId, 'message-delivery', { deliveryStatus: 'syncing' })
 
-  const sessionAfter = getState().document.agentSessions[0]
+  const sessionAfter = getState().document.agentSessions.find((item) => item.id === sessionId)!
   assert.equal(pendingDocuments.length, writesBefore)
   assert.equal(sessionAfter.updatedAt, sessionBefore.updatedAt)
   assert.equal(sessionAfter.messages[0].updatedAt, 10)
   assert.equal(sessionAfter.messages[0].deliveryStatus, 'syncing')
+  assert.equal(getState().document.activeAgentSessionId, otherSessionId, '后台送达状态不能抢切当前会话')
 })
 
 test('Agent 工作流回执立即补入 prompt、生成节点与连线，且不重复写回服务端', async () => {

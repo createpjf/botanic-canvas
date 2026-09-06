@@ -107,7 +107,7 @@ export type CanvasStore = {
   undoAction: UndoAction | null
   undoSnapshot: CanvasDocument | null
   hydrate: () => Promise<void>
-  openDocument: (documentId: string) => Promise<boolean>
+  openDocument: (documentId: string, signal?: AbortSignal) => Promise<boolean>
   refreshDocumentFromRemote: (options?: { preserveCanvasGraph?: boolean }) => Promise<boolean>
   recoverGenerationResultsFromRemote: () => Promise<boolean>
   recoverUnknownGenerationSubmission: () => Promise<boolean>
@@ -159,6 +159,7 @@ export type CanvasStore = {
   applyAgentRunSnapshot: (snapshot: BotanicAgentRunSnapshot) => void
   applyAgentWorkflowPatch: (patch: NonNullable<BotanicAgentActionResult['canvasPatch']>) => Promise<boolean>
   retryAgentBranch: (runId: string, branchId: string) => Promise<boolean>
+  checkAgentRunStop: (runId: string) => Promise<boolean>
   cancelAgentRun: (runId: string) => Promise<boolean>
   retryBatchVariationItem: (runId: string, itemId: string) => Promise<boolean>
   updateAgentRunStatus: (runId: string, status: BotanicAgentRunStatus, error?: string) => void

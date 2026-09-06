@@ -14,6 +14,7 @@ import {
   readAgentComposerDraft,
   reduceAgentComposerStates,
   resolveAgentComposerMention,
+  resolveAgentPersistedExecutionSnapshot,
   resolveAgentRetrySourceMessage,
   writeAgentComposerDraft,
 } from './agentComposerState.ts'
@@ -29,6 +30,19 @@ test('同文本失败重试只按 sourceMessageId 复用原 Message', () => {
   assert.equal(resolveAgentRetrySourceMessage(messages, 'message-b')?.id, 'message-b')
   assert.equal(resolveAgentRetrySourceMessage(messages, 'missing'), undefined)
   assert.equal(resolveAgentRetrySourceMessage(messages, undefined), undefined)
+})
+
+test('恢复只使用原请求快照；缺少必要执行条件时拒绝借用当前选择', () => {
+  const snapshot = { locale: 'zh-CN' as const, plannerModel: 'original', executionMode: 'manual' as const, contextNodeIds: [], hasTarget: false, selectedResultNodeId: null }
+  const input = { sourceMessage: { turnRequestSnapshot: snapshot }, contextOptions: [], plannerModel: 'changed', session: { executionMode: 'auto' as const, mountedSkillIds: ['new-skill'] } }
+  const restored = resolveAgentPersistedExecutionSnapshot(input)
+  assert.equal(restored?.plannerModel, 'original')
+  assert.equal(restored?.executionMode, 'manual')
+  assert.deepEqual(restored?.mountedSkillIds, [])
+  assert.equal(restored?.targetNodeId, null)
+  assert.equal(resolveAgentPersistedExecutionSnapshot({ ...input, sourceMessage: { turnRequestSnapshot: { ...snapshot, plannerModel: undefined } } }), undefined)
+  assert.equal(resolveAgentPersistedExecutionSnapshot({ ...input, sourceMessage: { turnRequestSnapshot: { ...snapshot, executionMode: undefined } } }), undefined)
+  assert.equal(resolveAgentPersistedExecutionSnapshot({ ...input, sourceMessage: { turnRequestSnapshot: { ...snapshot, hasTarget: true } } }), undefined)
 })
 
 test('建议菜单可用方向键选到第二项，并公开 combobox/listbox 语义', () => {

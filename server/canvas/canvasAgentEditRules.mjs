@@ -38,7 +38,7 @@ function assertCompatibleGenerateSettings(merged, models) {
 function replacedNode(document, next, now) {
   return { ...document, nodes: document.nodes.map((node) => (node.id === next.id ? next : node)), updatedAt: now }
 }
-function generationJobsAfterNodeDeletion(document, removedNodes, now) {
+export function generationJobsAfterNodeDeletion(document, removedNodes, now) {
   return (document.generationJobs ?? []).map((job) => {
     const related = removedNodes.filter((node) => node.data?.jobId === job.id || job.promptNodeId === node.id
       || job.generateNodeId === node.id || job.resultNodeId === node.id)

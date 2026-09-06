@@ -1,12 +1,11 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
+import { agentArtifactTargetNodeIds } from '../../domain/agentArtifactTargets'
 import {
   botanicAgentArtifactModel,
   botanicAgentArtifactPrompt,
   botanicAgentArtifactTimestamp,
-  botanicAgentResultGroupTitle,
   botanicAgentSkillBody,
   botanicAgentSkillSummary,
-  clipBotanicAgentNodeTitle,
   resolveBotanicAgentResultSelection,
   type BotanicAgentArtifact,
   type BotanicAgentMemoryItem,
@@ -22,6 +21,7 @@ import { createLatestOperation } from '../../domain/latestOperation'
 import { downloadMedia } from '../../lib/mediaDownload'
 import { agentArtifactKindLabel, agentMemoryKindLabel, agentRunFeedback, AgentPanelBackButton } from './AgentWorkspaceParts'
 import { AgentMarkdown } from './AgentMarkdown'
+import { agentArtifactDisplayName, agentTaskDisplayName } from './agentDisplayNames'
 import { AgentAttachment, AgentAttachmentPreview, AgentAttachments, attachmentFromArtifact } from './AgentAttachment'
 import {
   agentReviewCandidateRows,
@@ -51,7 +51,7 @@ import {
   memorySubjectDescription,
   memorySubjectLabel,
 } from '../../domain/agentMemoryComparison'
-import type { AgentArtifactIndexState, AgentContextItem } from './agentWorkspace.types'
+import { isMediaArtifact, type AgentArtifactIndexState, type AgentContextItem } from './agentWorkspace.types'
 import { useProductI18n, useProductMessages } from '../../i18n/react'
 import { formatProductDateTime, type ProductLocale } from '../../i18n/core'
 
@@ -68,7 +68,7 @@ const agentUtilityMessages = {
     artifactEyebrow: '产物', resultsAria: 'Agent 结果与文件', resultsEyebrow: '结果', resultsTitle: '结果与文件', readingIndex: '正在读取历史结果…', indexUnavailable: '历史结果暂不可用，已显示当前画布结果。', resultsSections: '结果分区', mediaResults: '生成结果', resultFilter: '结果筛选',
     all: '全部', images: '图片', videos: '视频', libraryFilter: '按入库状态筛选', anyLibraryStatus: '不限入库', unsaved: '未入库', modelFilter: '按生成模型筛选', allModels: '全部模型',
     batchActions: '批量操作', selectedCount: (count: number) => `已选 ${count} 项`, startNextRound: '创建下一轮', cancel: '取消', itemCount: (count: number) => `${count} 项`, notBackfilled: '未入画布', sourceConversation: '来源对话', selectAll: '全选', clearSelection: '取消全选', select: '选择', deselect: '取消选择', view: '查看',
-    noToolArtifacts: '还没有 Skill / MCP 产物。', noGeneratedResults: '还没有该条件下的生成结果。', loadEarlierResults: '加载更早结果',
+    noToolArtifacts: '还没有 Skill / MCP 产物。', noGeneratedResults: '还没有该条件下的生成结果。', loadEarlierResults: '加载更早结果', mediaUnavailable: '媒体暂不可用',
     memoryAria: '项目创作记忆', memoryEyebrow: '记忆', memoryTitle: '项目记忆', memoryDescription: '仅用于当前项目的后续规划；保存品牌规则、认可方向与禁区。', memoryType: '记忆类型', longTermRule: '长期规则', approvedDirection: '已确认方向', avoid: '避免事项', memoryPlaceholder: '例如：商品包装与品牌色不可改变', memoryScope: '适用范围', memoryScopeValue: '适用取值', memoryScopeValuePlaceholder: '例如 tmall', memoryContent: '项目记忆内容', saveMemory: '保存记忆', addMemory: '添加记忆', cancelMemory: '取消', memoryFilters: '筛选项目记忆', noMemoryMatches: '当前筛选下没有记忆。', memorySaved: '记忆已保存。', locateMemory: (content: string) => `在画布定位记忆 ${content}`, locate: '在画布定位', deleteMemory: (content: string) => `删除记忆 ${content}`, deleteMemoryTitle: '删除记忆', noMemory: '还没有项目记忆。', memoryCount: (count: number) => `${count} 条`,
     system: '系统', project: '项目', invoke: '可用', mount: '添加', mounted: '已挂载', unmount: '移除',
     brandAria: '品牌规则', brandEyebrow: '品牌', brandTitle: '品牌规则', brandDescription: '生成前会把这些规则编译进执行提示词，生成后逐条复核。规则分全局品牌、项目 Creative Spec、本次运行覆盖三层，同一槽位由更靠近本次运行的那一层生效。', brandAbout: '规则如何生效', brandSections: '品牌规则分区', brandEmptySection: '该分区暂无规则。',
@@ -101,7 +101,7 @@ const agentUtilityMessages = {
     artifactEyebrow: 'Output', resultsAria: 'Agent results and files', resultsEyebrow: 'Results', resultsTitle: 'Results & files', readingIndex: 'Loading historical results…', indexUnavailable: 'Historical results are unavailable. Showing results from the current canvas.', resultsSections: 'Result sections', mediaResults: 'Generated results', resultFilter: 'Filter results',
     all: 'All', images: 'Images', videos: 'Videos', libraryFilter: 'Filter by library status', anyLibraryStatus: 'Any library status', unsaved: 'Not saved', modelFilter: 'Filter by generation model', allModels: 'All models',
     batchActions: 'Batch actions', selectedCount: (count: number) => `${count} selected`, startNextRound: 'Start next round', cancel: 'Cancel', itemCount: (count: number) => `${count} ${count === 1 ? 'item' : 'items'}`, notBackfilled: 'Not on canvas', sourceConversation: 'Source conversation', selectAll: 'Select all', clearSelection: 'Clear selection', select: 'Select', deselect: 'Deselect', view: 'View',
-    noToolArtifacts: 'No Skill or MCP outputs yet.', noGeneratedResults: 'No generated results match these filters.', loadEarlierResults: 'Load earlier results',
+    noToolArtifacts: 'No Skill or MCP outputs yet.', noGeneratedResults: 'No generated results match these filters.', loadEarlierResults: 'Load earlier results', mediaUnavailable: 'Media unavailable',
     memoryAria: 'Project creative memory', memoryEyebrow: 'Memory', memoryTitle: 'Project memory', memoryDescription: 'Use project memory in future planning to preserve brand rules, approved directions, and boundaries.', memoryType: 'Memory type', longTermRule: 'Long-term rule', approvedDirection: 'Approved direction', avoid: 'Avoid', memoryPlaceholder: 'For example: Keep the product packaging and brand colors unchanged', memoryScope: 'Applies to', memoryScopeValue: 'Value', memoryScopeValuePlaceholder: 'e.g. tmall', memoryContent: 'Project memory content', saveMemory: 'Save memory', addMemory: 'Add memory', cancelMemory: 'Cancel', memoryFilters: 'Filter project memory', noMemoryMatches: 'No memory matches these filters.', memorySaved: 'Memory saved.', locateMemory: (content: string) => `Locate memory on canvas: ${content}`, locate: 'Locate on canvas', deleteMemory: (content: string) => `Delete memory: ${content}`, deleteMemoryTitle: 'Delete memory', noMemory: 'No project memory yet.', memoryCount: (count: number) => `${count} ${count === 1 ? 'entry' : 'entries'}`,
     brandAria: 'Brand rules', brandEyebrow: 'Brand', brandTitle: 'Brand rules', brandDescription: 'These rules are compiled into the execution prompt before generation and checked one by one afterwards. They come from three layers — global brand, project creative spec, and this run’s override — and for any one slot the layer closest to this run wins.', brandAbout: 'How rules take effect', brandSections: 'Brand rule sections', brandEmptySection: 'No rules in this section.',
     brandLoading: 'Loading brand rules…', brandUnavailable: 'Brand rules are unavailable right now. Try again shortly.',
@@ -206,10 +206,6 @@ export function AgentCollaborationPanel({
   </section>
 }
 
-function isMediaArtifact(artifact: BotanicAgentArtifact) {
-  return (artifact.kind === 'image' || artifact.kind === 'video') && Boolean(artifact.url)
-}
-
 function AgentResultPrompt({ prompt }: { prompt: string }) {
   const copy = useProductMessages(agentUtilityMessages)
   const [copied, setCopied] = useState(false)
@@ -221,10 +217,6 @@ function AgentResultPrompt({ prompt }: { prompt: string }) {
       void navigator.clipboard.writeText(prompt).then(() => setCopied(true)).catch(() => setCopied(false))
     }}><CopyIcon /><span>{copied ? copy.copied : copy.copyPrompt}</span></button>
   </details>
-}
-
-function artifactShortLabel(artifact: BotanicAgentArtifact, fallback: string) {
-  return clipBotanicAgentNodeTitle(artifact.label) || artifact.label || fallback
 }
 
 export function AgentResultPanel({
@@ -291,10 +283,8 @@ export function AgentResultPanel({
     for (const artifact of filteredArtifacts) {
       const runId = artifact.provenance.runId
       const id = runId ?? `action:${artifact.provenance.actionId}`
-      const plan = runId ? runs.find((run) => run.id === runId)?.plan : undefined
-      const label = runId
-        ? locale === 'en' ? plan?.title?.trim() || copy.generationBatch : botanicAgentResultGroupTitle(plan)
-        : copy.toolArtifacts
+      const run = runId ? runs.find((run) => run.id === runId) : undefined
+      const label = run ? agentTaskDisplayName(run, locale) : runId ? copy.generationBatch : copy.toolArtifacts
       const group = grouped.get(id) ?? { id, label, artifacts: [], updatedAt: 0 }
       group.artifacts.push(artifact)
       group.updatedAt = Math.max(group.updatedAt, botanicAgentArtifactTimestamp(artifact))
@@ -310,7 +300,7 @@ export function AgentResultPanel({
 
   const selectedBatch = useMemo(() => resolveBotanicAgentResultSelection(artifacts, selectedIds), [artifacts, selectedIds])
   const availableNodeIds = useMemo(() => new Set(contextOptions.map((item) => item.id)), [contextOptions])
-  const resultNodeIds = useMemo(() => new Set(contextOptions.filter((item) => item.kind === '结果').map((item) => item.id)), [contextOptions])
+  const resultNodeIds = useMemo(() => new Set(contextOptions.filter((item) => item.kind === '结果' && item.image).map((item) => item.id)), [contextOptions])
   const selectedResultNodeIds = selectedBatch.sourceNodeIds.filter((nodeId) => resultNodeIds.has(nodeId))
   const latestFeedback = latestRun
     ? agentRunFeedback(latestRun, artifacts, availableNodeIds, locale)
@@ -351,12 +341,13 @@ export function AgentResultPanel({
   const showMediaFilters = tab === 'media' && mediaArtifacts.length > 0 && (showKindFilter || showLibraryFilter || modelOptions.length > 1)
 
   if (preview) {
-    const locatableNodeId = preview.provenance.sourceNodeIds?.find((nodeId) => availableNodeIds.has(nodeId))
+    const locatableNodeId = agentArtifactTargetNodeIds(preview).find((nodeId) => availableNodeIds.has(nodeId))
     const media = isMediaArtifact(preview)
-    const canContinue = Boolean(locatableNodeId || media)
+    const canPreview = media && Boolean(preview.url)
+    const canContinue = media ? canPreview : Boolean(locatableNodeId)
     const prompt = botanicAgentArtifactPrompt(preview)
     const model = botanicAgentArtifactModel(preview)
-    const shortLabel = artifactShortLabel(preview, copy.generatedResult)
+    const shortLabel = agentArtifactDisplayName(preview, runs.find(run => run.id === preview.provenance.runId), locale)
     const modelLabel = model
       ? modelDisplayLabel(generationModels.find((option) => option.id === model)) || model
       : preview.provenance.toolName
@@ -366,9 +357,9 @@ export function AgentResultPanel({
         <h2>{shortLabel}</h2>
       </header>
       <div className="agent-result-panel__detail">
-        {media ? <div className="agent-result-panel__hero">
+        {canPreview ? <div className="agent-result-panel__hero">
           {preview.kind === 'image' ? <img src={preview.url} alt={shortLabel} /> : <video src={preview.url} controls playsInline />}
-        </div> : <div className="agent-result-panel__document is-detail is-rich"><span>{preview.kind === 'workflow' ? '⌘' : 'Aa'}</span><AgentMarkdown content={preview.content ?? preview.label} showSources={false} /></div>}
+        </div> : media ? <p className="agent-panel__empty" role="status">{copy.mediaUnavailable}</p> : <div className="agent-result-panel__document is-detail is-rich"><span>{preview.kind === 'workflow' ? '⌘' : 'Aa'}</span><AgentMarkdown content={preview.content ?? preview.label} showSources={false} /></div>}
         <p className="agent-result-panel__detail-meta">
           {agentArtifactKindLabel(preview, locale)}
           {modelLabel ? ` · ${modelLabel}` : ''}
@@ -377,8 +368,8 @@ export function AgentResultPanel({
         <div className="agent-result-panel__detail-actions">
           {locatableNodeId ? <button type="button" onClick={() => onLocateNode(locatableNodeId)}>{copy.locateCanvas}</button> : null}
           {canContinue ? <button type="button" className="is-primary" onClick={() => onContinue(preview)}>{copy.continueEditing}</button> : null}
-          {media ? <button type="button" disabled={preview.metadata?.savedToLibrary === true} onClick={() => onSaveArtifact(preview)}>{preview.metadata?.savedToLibrary === true ? copy.saved : copy.save}</button> : null}
-          {media ? <button type="button" onClick={() => void downloadMedia(preview.url!, preview.label, preview.kind === 'video' ? 'video' : 'image')}>{copy.download}</button> : preview.url ? <a href={preview.url} target="_blank" rel="noreferrer">{copy.open}</a> : null}
+          {canPreview ? <button type="button" disabled={preview.metadata?.savedToLibrary === true} onClick={() => onSaveArtifact(preview)}>{preview.metadata?.savedToLibrary === true ? copy.saved : copy.save}</button> : null}
+          {canPreview ? <button type="button" onClick={() => void downloadMedia(preview.url!, shortLabel, preview.kind === 'video' ? 'video' : 'image')}>{copy.download}</button> : !media && preview.url ? <a href={preview.url} target="_blank" rel="noreferrer">{copy.open}</a> : null}
         </div>
         {prompt ? <AgentResultPrompt prompt={prompt} /> : null}
       </div>
@@ -388,7 +379,7 @@ export function AgentResultPanel({
   return <section className="agent-result-panel" aria-label={copy.resultsAria}>
     <p className="visually-hidden" role="status">{selectedBatch.artifacts.length ? copy.selectedCount(selectedBatch.artifacts.length) : copy.itemCount(filteredArtifacts.length)}</p>
     {artifactIndexStatus === 'loading' ? <div className="agent-result-panel__index-status" role="status">{copy.readingIndex}</div> : null}
-    {artifactIndexStatus === 'error' ? <div className="agent-result-panel__index-status is-warning" role="alert"><span>{copy.indexUnavailable}</span><button type="button" onClick={() => void onLoadMoreArtifacts()}>{copy.retry}</button></div> : null}
+    {artifactIndexStatus === 'error' || artifactIndexStatus === 'error-more' ? <div className="agent-result-panel__index-status is-warning" role="alert"><span>{artifactIndexStatus === 'error-more' ? locale === 'en' ? 'Unable to load earlier results' : '更早结果读取失败' : copy.indexUnavailable}</span><button type="button" onClick={() => void onLoadMoreArtifacts()}>{copy.retry}</button></div> : null}
     {latestFeedback ? <div className={`agent-result-panel__run-status is-${latestFeedback.tone}`} role="status"><strong>{latestFeedback.label}</strong><span>{latestFeedback.detail}</span></div> : null}
     <div className="agent-result-panel__toolbar">
       <div className="agent-result-panel__tabs" role="group" aria-label={copy.resultsSections}>
@@ -441,7 +432,7 @@ export function AgentResultPanel({
     </div> : null}
     <div className="agent-result-panel__groups" aria-busy={artifactIndexStatus === 'loading' || artifactIndexStatus === 'loading-more'}>
       {groups.map((group) => {
-        const backfilled = group.artifacts.some((artifact) => artifact.provenance.sourceNodeIds?.some((nodeId) => availableNodeIds.has(nodeId)))
+        const backfilled = group.artifacts.some((artifact) => agentArtifactTargetNodeIds(artifact).some((nodeId) => availableNodeIds.has(nodeId)))
         return <section key={group.id} className="agent-result-group">
           <header>
             <span><h3>{group.label}</h3><small>{copy.itemCount(group.artifacts.length)}</small></span>
@@ -453,12 +444,12 @@ export function AgentResultPanel({
             {group.artifacts.map((artifact) => {
               const media = isMediaArtifact(artifact)
               const selected = selectedIds.includes(artifact.id)
-              const shortLabel = artifactShortLabel(artifact, copy.generatedResult)
-              return <AgentAttachment key={artifact.id} data={attachmentFromArtifact(artifact)} selected={selected} className="agent-result-panel__item">
+              const shortLabel = agentArtifactDisplayName(artifact, runs.find(run => run.id === artifact.provenance.runId), locale)
+              return <AgentAttachment key={artifact.id} data={attachmentFromArtifact({ ...artifact, label: shortLabel })} selected={selected} className="agent-result-panel__item">
                 <button type="button" className="agent-result-panel__select" aria-pressed={selected} aria-label={`${selected ? copy.deselect : copy.select} ${shortLabel}`} title={selected ? copy.deselect : copy.select} onClick={() => toggleSelection(artifact.id)}>{selected ? '✓' : ''}</button>
                 <button type="button" className="agent-result-panel__open" aria-label={`${copy.view} ${shortLabel}`} onClick={() => setPreviewId(artifact.id)}>
                   {media
-                    ? <AgentAttachmentPreview />
+                    ? artifact.url ? <AgentAttachmentPreview /> : <span className="agent-panel__empty" role="status">{copy.mediaUnavailable}</span>
                     : <span className="agent-result-panel__document"><span>{artifact.kind === 'workflow' ? '⌘' : 'Aa'}</span><b>{shortLabel}</b></span>}
                 </button>
               </AgentAttachment>
@@ -466,8 +457,8 @@ export function AgentResultPanel({
           </AgentAttachments>
         </section>
       })}
-      {!filteredArtifacts.length && artifactIndexStatus !== 'loading' ? <div className="agent-panel__empty">{tab === 'tool' ? copy.noToolArtifacts : copy.noGeneratedResults}</div> : null}
-      {artifactIndexHasMore ? <button type="button" className="agent-result-panel__load-more" disabled={artifactIndexStatus === 'loading-more'} onClick={() => void onLoadMoreArtifacts()}>{artifactIndexStatus === 'loading-more' ? copy.loading : copy.loadEarlierResults}</button> : null}
+      {!filteredArtifacts.length && artifactIndexStatus === 'ready' ? <div className="agent-panel__empty">{artifactIndexHasMore ? locale === 'en' ? 'Results not loaded yet' : '结果尚未载入' : tab === 'tool' ? copy.noToolArtifacts : copy.noGeneratedResults}</div> : null}
+      {artifactIndexHasMore && artifactIndexStatus !== 'error' && artifactIndexStatus !== 'error-more' ? <button type="button" className="agent-result-panel__load-more" disabled={artifactIndexStatus === 'loading' || artifactIndexStatus === 'loading-more'} onClick={() => void onLoadMoreArtifacts()}>{artifactIndexStatus === 'loading-more' ? copy.loading : copy.loadEarlierResults}</button> : null}
     </div>
   </section>
 }

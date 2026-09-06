@@ -5,6 +5,7 @@ import {
   attachmentFromArtifact,
   attachmentFromContextItem,
   attachmentFromSkill,
+  isMediaArtifact,
 } from './agentWorkspace.types.ts'
 
 test('附件类别投影：视频优先于图片，文字为文档，无媒体节点为画布节点', () => {
@@ -27,4 +28,14 @@ test('Artifact 投影：仅媒体类带预览 URL，文档类 URL 不当图片�
   assert.equal(doc.category, 'document')
   assert.equal(doc.image, undefined)
   assert.equal(doc.content, '正文')
+})
+
+test('缺失媒体地址不改变产物种类，也不制造可用的预览地址', () => {
+  for (const kind of ['image', 'video'] as const) {
+    const artifact = { id: 'missing-media', label: '历史结果', kind }
+    assert.equal(isMediaArtifact(artifact), true)
+    assert.equal(attachmentFromArtifact(artifact).category, kind)
+    assert.equal(attachmentFromArtifact(artifact).image, undefined)
+  }
+  assert.equal(isMediaArtifact({ kind: 'document' }), false)
 })

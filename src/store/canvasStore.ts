@@ -30,6 +30,7 @@ import {
   writeCanvasDocument,
 } from '../lib/db'
 import { cancelPersistentBotanicAgentRun, retryPersistentBotanicAgentBranch, submitPersistentBotanicAgentSession } from '../lib/agentApi'
+import { readAgentRunCancellation } from '../lib/agentRunCancellation'
 import { ProductApiError, serverPersistenceEnabled } from '../lib/productSession'
 import type { CanvasStore, GenerationRequest } from './canvasStore.types'
 import { createCanvasAgentActions } from './canvasAgentActions'
@@ -306,6 +307,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => {
     persistentAgentRunApi: {
       retryBranch: retryPersistentBotanicAgentBranch,
       cancelRun: cancelPersistentBotanicAgentRun,
+      readCancellation: readAgentRunCancellation,
     },
     persistAcknowledgedRemotePatch: persistAcknowledgedRemoteCanvasPatch,
     readAppliedRemoteRevision: appliedRemoteRevision,

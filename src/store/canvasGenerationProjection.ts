@@ -1,6 +1,6 @@
 import type { Edge, XYPosition } from '@xyflow/react'
 import { generationResultNodeLabel, generationTaskResultLabel } from '../domain/canvasPresentation.ts'
-import { planGenerationOutputPlacement } from '../domain/generationOutputPlacement.ts'
+import { generationResultOutputId, planGenerationOutputPlacement } from '../domain/generationOutputPlacement.ts'
 import { cloneGenerationRecipe, cloneGenerationSettings } from '../domain/generationRecipe.ts'
 import type { BatchVariationRun, CanvasDocument, CanvasGenerationTaskStatus, CanvasNode, GenerationCandidate, GenerationJob, GenerationSettings, GenerateNodeData, ResultNodeData } from '../domain/canvas.ts'
 import { migrationInputEdge, nextTaskFlowStartX } from './canvasDocumentMigration.ts'
@@ -464,7 +464,7 @@ export function materializeGenerationOutputs(document: CanvasDocument, job: Gene
         return {
           id: node.id,
           jobId: result.jobId,
-          candidateId: result.candidateId,
+          candidateId: result.jobId === job.id ? generationResultOutputId(result, job.outputs) : result.candidateId,
           hasImage: Boolean(result.image),
         }
       }),

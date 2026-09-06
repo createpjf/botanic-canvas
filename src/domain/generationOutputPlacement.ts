@@ -1,3 +1,13 @@
+import type { GenerationOutput, ResultNodeData } from './canvas.ts'
+
+/** 仅在同一 Job 内用唯一媒体匹配恢复缺失的输出身份；歧义时不猜测。 */
+export function generationResultOutputId(result: Pick<ResultNodeData, 'candidateId' | 'image'>, outputs: readonly GenerationOutput[] = []) {
+  if (result.candidateId) return result.candidateId
+  if (!result.image) return undefined
+  const matches = outputs.filter((output) => output.image === result.image)
+  return matches.length === 1 ? matches[0].id : undefined
+}
+
 export type GenerationResultNodeIdentity = {
   id: string
   jobId?: string

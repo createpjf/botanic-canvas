@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { WebSocket, WebSocketServer } from 'ws'
 import { createCanvasCollaborationRoom } from './canvas/canvasCollaborationRoom.mjs'
+import { persistCanvasGenerationDeletion } from './canvas/canvasGraphCommitService.mjs'
 import { verifyRealtimeTicket } from './auth/realtimeTicket.mjs'
 import { collaborationChangeFromDocuments } from './collaborationActivityPersistence.mjs'
 import { canvasMutationConflictCode, canvasSyncEpochStaleError } from './store/productStoreContract.mjs'
@@ -161,6 +162,9 @@ export function createProjectRealtimeHub({
         entry.room = createCanvasCollaborationRoom({
           state,
           reload: async (actorId) => productStore.loadCanvasCollaboration?.(actorId, projectId) ?? state,
+          beforeAppend: ({ previousGraph, graph }, actorId) => persistCanvasGenerationDeletion({
+            productStore, userId: actorId, projectId, previousGraph, graph,
+          }),
           append: async (payload, actorId) => {
             const saved = await productStore.appendCanvasGraphUpdate?.(actorId, projectId, payload)
               ?? {

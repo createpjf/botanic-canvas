@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
+import { agentArtifactTargetNodeIds } from '../../domain/agentArtifactTargets'
 import {
   buildBotanicAgentPromptDiff,
   botanicAgentRunFeedback,
@@ -13,13 +14,15 @@ import {
 } from '../../domain/agent'
 import {
   botanicAgentClarificationAnswersComplete,
+  botanicAgentClarificationFields,
   botanicAgentCustomDirectionPlaceholder,
 } from '../../domain/agentCreativeBrief'
 import type { GenerationModelOption } from '../../domain/canvas'
 import { modelDisplayLabel, modelProviderLogo } from '../../components/generationModelPresentation'
 import { AlertIcon, CheckIcon, ChevronLeftIcon, ClockIcon, CloseIcon, EditIcon, RefreshIcon, SlidersIcon } from '../../components/BotanicIcons'
 import { useProductI18n, useProductMessages } from '../../i18n/react'
-import type { ProductLocale } from '../../i18n/core'
+import { generationCancellationPending, generationCancelMessage, type GenerationCancelRecord } from '../../domain/generationCancelCopy'
+import { localizeProductError, type ProductLocale } from '../../i18n/core'
 
 export function agentToolStatusLabel(status: NonNullable<BotanicAgentPlan['toolCalls']>[number]['status'], locale: ProductLocale = 'zh-CN') {
   if (status === 'succeeded') return locale === 'en' ? 'Completed' : '已完成'
@@ -92,7 +95,7 @@ export function agentRunArtifacts(run: BotanicAgentRun, artifacts: BotanicAgentA
 }
 
 export function agentRunCanvasOutputCount(run: BotanicAgentRun, artifacts: BotanicAgentArtifact[], nodeIds: Set<string>) {
-  return agentRunArtifacts(run, artifacts).filter((artifact) => artifact.provenance.sourceNodeIds?.some((nodeId) => nodeIds.has(nodeId))).length
+  return agentRunArtifacts(run, artifacts).filter((artifact) => agentArtifactTargetNodeIds(artifact).some((nodeId) => nodeIds.has(nodeId))).length
 }
 
 export function agentRunFeedback(
@@ -100,6 +103,8 @@ export function agentRunFeedback(
   artifacts: BotanicAgentArtifact[],
   nodeIds: Set<string>,
   locale: ProductLocale = 'zh-CN',
+  cancellation?: GenerationCancelRecord,
+  stopUnconfirmed = false,
 ) {
   const outputCount = agentRunOutputCount(run, artifacts)
   const result = botanicAgentRunFeedback(run.status, outputCount, run.error, {
@@ -107,6 +112,16 @@ export function agentRunFeedback(
     canvasOutputCount: agentRunCanvasOutputCount(run, artifacts, nodeIds),
     activeBranchCount: run.branches.filter((branch) => branch.status === 'queued' || branch.status === 'running').length,
   })
+  if (generationCancellationPending(cancellation) || stopUnconfirmed) return {
+    ...result, label: locale === 'en' ? 'Stopping…' : '正在停止…', detail: generationCancellationPending(cancellation)
+      ? generationCancelMessage(cancellation, locale) : locale === 'en' ? 'Stop not confirmed yet.' : '停止状态待确认。',
+    terminal: false, tone: 'progress' as const, action: 'view_task' as const, actionLabel: locale === 'en' ? 'View task' : '查看任务',
+  }
+  if (cancellation && (run.status === 'cancelled' || run.status === 'partial' && run.branches.some((branch) => branch.status === 'cancelled'))) return { ...result,
+    label: run.status === 'partial' ? locale === 'en' ? 'Partially completed' : '部分完成' : locale === 'en' ? 'Cancelled' : '已取消',
+    detail: `${outputCount ? locale === 'en' ? `${outputCount} results kept. ` : `已保留 ${outputCount} 项结果。` : ''}${generationCancelMessage(cancellation, locale)}`,
+    action: 'view_task' as const, actionLabel: locale === 'en' ? 'View task' : '查看任务',
+  }
   if (locale !== 'en') return result
   const labels = { awaiting_confirmation: 'Awaiting approval', queued: 'Queued', executing: 'Generating', running: 'Generating', completed: 'Completed', partial: 'Partially completed', failed: /timeout|timed out/i.test(run.error ?? '') ? 'Timed out' : 'Generation failed', cancelled: 'Cancelled' } as const
   const actionLabels = { view_task: 'View task', view_results: 'View results', adjust: 'Adjust and retry', none: '' } as const
@@ -124,44 +139,58 @@ export function AgentClarificationCard({
   clarification,
   generationModels,
   state,
+  busy = false,
+  onShowTask,
+  onRestart,
   onSubmit,
 }: {
   clarification: BotanicAgentClarification
   generationModels: GenerationModelOption[]
-  state: 'idle' | 'submitting' | 'completed'
-  onSubmit: (answers: Record<string, string>) => void
+  state: 'idle' | 'submitting' | 'completed' | 'historical' | 'unavailable'
+  busy?: boolean
+  onShowTask?: () => void
+  onRestart?: () => void
+  onSubmit: (answers: Record<string, string>) => Promise<void>
 }) {
   const { locale } = useProductI18n()
   const copy = useProductMessages({
-    'zh-CN': { recommended: '推荐', confirmedAria: '已确认的创作设置', confirmed: '创作设置已确认', aria: '创作设置确认', title: '确认创作设置', custom: '自定义优化方向', planning: '正在规划…', continue: '继续规划' },
-    en: { recommended: 'Recommended', confirmedAria: 'Confirmed creative settings', confirmed: 'Creative settings confirmed', aria: 'Creative settings confirmation', title: 'Confirm creative settings', custom: 'Custom direction', planning: 'Planning…', continue: 'Continue planning' },
+    'zh-CN': { recommended: '推荐', confirmedAria: '已确认的创作设置', confirmed: '创作设置已确认', aria: '创作设置确认', title: '确认创作设置', custom: '自定义优化方向', planning: '提交中…', continue: '继续规划' },
+    en: { recommended: 'Recommended', confirmedAria: 'Confirmed creative settings', confirmed: 'Creative settings confirmed', aria: 'Creative settings confirmation', title: 'Confirm creative settings', custom: 'Custom direction', planning: 'Submitting…', continue: 'Continue planning' },
   })
   const [answers, setAnswers] = useState<Record<string, string>>(() => Object.fromEntries(
     clarification.fields.flatMap((field) => field.defaultValue ? [[field.id, field.defaultValue]] : []),
   ))
-  const selectedModel = generationModels.find((model) => model.id === answers.model)
-  const fields = clarification.fields.map((field) => {
-    const values = field.id === 'aspect_ratio' && selectedModel?.aspectRatios?.length
-      ? selectedModel.aspectRatios
-      : field.id === 'resolution' && selectedModel?.resolutions?.length
-        ? selectedModel.resolutions
-        : undefined
-    const options = values
-      ? values.map((value) => ({ value, label: value, description: value === field.defaultValue ? copy.recommended : undefined }))
-      : field.options
-    return { ...field, options }
-  })
+  const submittingRef = useRef(false)
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState('')
+  const [unavailable, setUnavailable] = useState(false)
+  const savedAnswers = Object.fromEntries(clarification.fields.flatMap((field) => field.defaultValue ? [[field.id, field.defaultValue]] : []))
+  const displayAnswers = state === 'completed' ? savedAnswers : answers
+  const fields = botanicAgentClarificationFields(clarification.fields, generationModels, displayAnswers)
   const complete = botanicAgentClarificationAnswersComplete(fields, answers)
-  const customDirection = answers.custom_direction?.trim()
+  const customDirection = (state === 'completed' ? clarification.brief?.creative.customDirection : answers.custom_direction)?.trim()
   const selectionSummary = [
     ...fields.map((field) => field.control === 'text'
-      ? answers[field.id]?.trim()
-      : field.options.find((option) => option.value === answers[field.id])?.label),
+      ? displayAnswers[field.id]?.trim()
+      : field.options.find((option) => option.value === displayAnswers[field.id])?.label),
     fields.some((field) => field.id === 'custom_direction') ? undefined : customDirection,
   ].filter(Boolean)
     .join(' · ')
   const asksCustomText = fields.some((field) => field.id === 'custom_direction')
-  const disabled = state === 'submitting'
+  const disabled = busy || submitting || state === 'submitting'
+  const submit = async () => {
+    if (disabled || submittingRef.current || unavailable || state === 'historical' || state === 'unavailable') return
+    submittingRef.current = true
+    setSubmitting(true)
+    setError('')
+    try { await onSubmit(answers) }
+    catch (caught) {
+      setUnavailable(caught instanceof Error && 'code' in caught && caught.code === 'AGENT_CLARIFICATION_UNAVAILABLE')
+      setError(localizeProductError(caught, locale, { 'zh-CN': '提交失败，请重试。', en: 'Unable to continue. Try again.' }))
+    }
+    finally { submittingRef.current = false; setSubmitting(false) }
+  }
+  const errorMessage = error ? <p role="alert">{error}</p> : null
   const selectOption = (fieldId: BotanicAgentClarificationField['id'], value: string) => {
     setAnswers((current: Record<string, string>) => {
       const next: Record<string, string> = { ...current, [fieldId]: value }
@@ -189,14 +218,24 @@ export function AgentClarificationCard({
       {field.id !== 'prompt_direction' && option.description ? <small>{option.description}</small> : null}
     </button>
   )
+  if (state === 'historical' || state === 'unavailable' || unavailable) {
+    return <section className="agent-clarification-card is-complete" aria-label={locale === 'en' ? 'Previous settings' : '历史设置'}>
+      <span className="agent-clarification-card__complete-copy"><strong>{locale === 'en' ? 'Previous settings' : '历史设置'}</strong></span>
+      {errorMessage}
+      {onShowTask ? <button type="button" className="agent-clarification-card__submit" onClick={onShowTask}>{locale === 'en' ? 'View task' : '查看任务'}</button> : null}
+      {(state === 'unavailable' || unavailable) && onRestart ? <button type="button" className="agent-clarification-card__submit" disabled={busy} onClick={onRestart} title={locale === 'en' ? 'Review the original request in the composer before sending again' : '将原请求放回输入框，检查设置后再发送'}>{locale === 'en' ? 'Use as new draft' : '重新填写'}</button> : null}
+    </section>
+  }
   if (state === 'completed') {
     return (
       <section className="agent-clarification-card is-complete" aria-label={copy.confirmedAria} aria-live="polite">
         <span className="agent-clarification-card__complete-mark" aria-hidden="true"><CheckIcon /></span>
         <span className="agent-clarification-card__complete-copy">
           <strong>{copy.confirmed}</strong>
-          {selectionSummary ? <small>{selectionSummary}</small> : null}
+          {selectionSummary ? <details><summary>{locale === 'en' ? 'Saved settings' : '已保存设置'}</summary><small>{selectionSummary}</small></details> : null}
+          {errorMessage}
         </span>
+        <button type="button" className="agent-clarification-card__submit" disabled={disabled} onClick={() => void submit()}>{disabled ? copy.planning : locale === 'en' ? 'Continue' : '继续处理'}</button>
       </section>
     )
   }
@@ -250,9 +289,10 @@ export function AgentClarificationCard({
           </fieldset>
         })}
       </div>
+      {errorMessage}
       <footer className={`agent-clarification-card__footer${clarification.helper ? '' : ' is-actions-only'}`}>
         {clarification.helper ? <small className="agent-clarification-card__helper">{clarification.helper}</small> : null}
-        <button type="button" className="agent-clarification-card__submit" disabled={disabled || !complete} onClick={() => onSubmit(answers)}>{disabled ? copy.planning : copy.continue}</button>
+        <button type="button" className="agent-clarification-card__submit" disabled={disabled || !complete} onClick={() => void submit()}>{disabled ? copy.planning : error ? (locale === 'en' ? 'Retry' : '重试') : copy.continue}</button>
       </footer>
     </section>
   )
@@ -276,6 +316,7 @@ export function AgentFailureRecoveryActions({
   branch,
   generationModels,
   retrying,
+  disabled = false,
   menuOpen,
   onToggleModelMenu,
   onRetry,
@@ -284,6 +325,7 @@ export function AgentFailureRecoveryActions({
   branch: BotanicAgentRun['branches'][number]
   generationModels: GenerationModelOption[]
   retrying: boolean
+  disabled?: boolean
   menuOpen: boolean
   onToggleModelMenu: () => void
   onRetry: () => void
@@ -297,14 +339,14 @@ export function AgentFailureRecoveryActions({
   }
   return (
     <div className="agent-recovery-actions" aria-label={recovery.aria}>
-      <button type="button" className="is-retry" aria-label={recovery.retry} disabled={retrying} onClick={onRetry} title={recovery.retryTitle}>
+      <button type="button" className="is-retry" aria-label={recovery.retry} disabled={retrying || disabled} onClick={onRetry} title={recovery.retryTitle}>
         {retrying ? <span className="agent-workspace__mini-spinner" /> : <RefreshIcon />}<span>{retrying ? recovery.retrying : recovery.retry}</span>
       </button>
-      <button type="button" aria-label={recovery.settings} onClick={() => onPrepare('settings')} title={recovery.settingsTitle}><EditIcon /><span>{recovery.settings}</span></button>
+      <button type="button" aria-label={recovery.settings} disabled={retrying || disabled} onClick={() => onPrepare('settings')} title={recovery.settingsTitle}><EditIcon /><span>{recovery.settings}</span></button>
       <span className="agent-recovery-model-picker">
-        <button type="button" aria-label={recovery.model} aria-expanded={menuOpen} onClick={onToggleModelMenu} title={recovery.modelTitle}><SlidersIcon /><span>{recovery.model}</span></button>
+        <button type="button" aria-label={recovery.model} aria-expanded={menuOpen} disabled={retrying || disabled} onClick={onToggleModelMenu} title={recovery.modelTitle}><SlidersIcon /><span>{recovery.model}</span></button>
         {menuOpen ? <div className="agent-recovery-model-menu" role="group" aria-label={recovery.select} onPointerDown={(event) => event.stopPropagation()}>
-          {generationModels.map((model) => <button key={model.id} type="button" onClick={() => onPrepare('model', model)}>
+          {generationModels.map((model) => <button key={model.id} type="button" disabled={retrying || disabled} onClick={() => onPrepare('model', model)}>
             <span>{modelProviderLogo(model) ? <img src={modelProviderLogo(model)} alt="" /> : null}<b>{modelDisplayLabel(model)}</b></span>
           </button>)}
           {!generationModels.length ? <small>{recovery.empty}</small> : null}

@@ -106,7 +106,18 @@ export function AgentAttachmentRemove({ label }: { label?: string } = {}) {
     className="agent-attachment__remove"
     aria-label={text}
     title={text}
-    onClick={(event) => { event.stopPropagation(); onRemove() }}
+    onClick={(event) => {
+      event.stopPropagation()
+      const button = event.currentTarget
+      const form = button.closest('form')
+      const buttons = Array.from((form ?? button.closest('.agent-attachments'))?.querySelectorAll<HTMLButtonElement>('.agent-attachment__remove') ?? [])
+      const index = buttons.indexOf(button)
+      const next = buttons[index + 1] ?? buttons[index - 1] ?? form?.querySelector<HTMLButtonElement>('.agent-composer__add')
+      onRemove()
+      requestAnimationFrame(() => {
+        if (!button.isConnected && next?.isConnected && (!document.activeElement || document.activeElement === document.body)) next.focus()
+      })
+    }}
   ><CloseIcon /></button>
 }
 

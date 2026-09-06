@@ -85,6 +85,26 @@ test('真实拖拽帧与 URI 前缀文案编辑并发时两者都保留', () => 
   right.destroy()
 })
 
+test('远端几何段被清空时保留已有位置，不向画布交付无 position 的节点', () => {
+  const original = node('node-position', 1380)
+  let visible = { nodes: [original], edges: [] as Edge[] }
+  const receiver = createCollaborativeGraph({ initialGraph: visible, onUpdate() {}, onRemoteGraph(graph) { visible = graph } })
+  const remote = new Y.Doc()
+  remote.getMap('nodes').set(original.id, { order: 0, value: original })
+  remote.getMap('node-geometries').set(original.id, { order: 0, value: { position: original.position } })
+  receiver.applyRemoteUpdate(Y.encodeStateAsUpdate(remote))
+  for (const remove of [false, true]) {
+    const vector = receiver.stateVector()
+    if (remove) remote.getMap('node-geometries').delete(original.id)
+    else remote.getMap('node-geometries').set(original.id, { order: 0, value: {} })
+    receiver.applyRemoteUpdate(Y.encodeStateAsUpdate(remote, vector))
+    assert.deepEqual(visible.nodes[0].position, original.position)
+    assert.deepEqual(visible.nodes[0].data, original.data)
+  }
+  receiver.destroy()
+  remote.destroy()
+})
+
 test('选择态属于本机 UI，不进入协作更新', () => {
   const initial = { nodes: [node('node-a', 10)], edges: [] as Edge[] }
   const updates: Uint8Array[] = []

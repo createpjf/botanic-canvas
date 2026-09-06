@@ -6,6 +6,13 @@ const messageSource = readFileSync(new URL('./AgentConversationMessage.tsx', imp
 const runtimeTraceSource = readFileSync(new URL('./useAgentRuntimeTrace.ts', import.meta.url), 'utf8')
 const workspaceSource = readFileSync(new URL('./AgentWorkspace.tsx', import.meta.url), 'utf8')
 
+test('Shimmer 的颜色别名在 Agent 主题中真实存在，不只声明为编译期 token', () => {
+  const styles = readFileSync(new URL('../../styles/ai-elements.css', import.meta.url), 'utf8')
+  const shell = styles.match(/\.botanic-agent-shell\s*\{([^}]+)\}/u)?.[1] ?? ''
+  assert.match(shell, /--color-background:\s*var\(--background\)/u)
+  assert.match(shell, /--color-muted-foreground:\s*var\(--muted-foreground\)/u)
+})
+
 test('用户消息只在同步失败时显示可重试提示', () => {
   assert.doesNotMatch(messageSource, /等待联网|等待同步|正在同步/u)
   assert.match(messageSource, /同步失败/u)

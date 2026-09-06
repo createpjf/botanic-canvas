@@ -5,6 +5,29 @@ export type ProjectRealtimeConnectionState = 'connecting' | 'connected' | 'recon
 export type CanvasSyncStatus = 'synced' | 'saving' | 'offline_pending' | 'syncing' | 'blocked'
 export type CanvasGraphNackCode = 'PERMISSION_REVOKED' | 'PROJECT_DELETED' | 'SCHEMA_UNSUPPORTED' | 'INVALID_UPDATE' | 'TEMPORARY_UNAVAILABLE' | 'EPOCH_STALE'
 
+/** 只把已知失败代码投影成可操作说明，不把传输层异常或负载显示给用户。 */
+export function canvasSyncFailureMessage(code: string | undefined, locale: 'zh-CN' | 'en') {
+  if (!code) return undefined
+  let copy: [string, string]
+  switch (code) {
+    case 'CANVAS_HANDSHAKE_TIMEOUT':
+      copy = ['协作连接超时，请重试。', 'Collaboration timed out. Try again.']; break
+    case 'PERMISSION_REVOKED': case 'PROJECT_ACCESS_FORBIDDEN': case 'PROJECT_WRITE_FORBIDDEN':
+      copy = ['没有画布编辑权限，请恢复权限后重试。', 'Canvas editing is not permitted. Restore access before retrying.']; break
+    case 'PROJECT_DELETED': case 'PROJECT_NOT_FOUND':
+      copy = ['项目不可用，请返回项目列表。', 'This project is unavailable. Return to projects.']; break
+    case 'SCHEMA_UNSUPPORTED': case 'EPOCH_STALE':
+      copy = ['同步版本已变化，请重新打开项目。', 'The sync version has changed. Reopen the project.']; break
+    case 'CANVAS_MUTATION_CONFLICT': case 'INVALID_UPDATE': case 'INVALID_CANVAS_SYNC_UPDATE':
+      copy = ['修改未被接受，本地修改仍保留。请重新打开项目。', 'Changes were not accepted and remain local. Reopen the project.']; break
+    case 'CANVAS_COLLABORATION_UNAVAILABLE':
+      copy = ['协作连接不可用，请重新打开项目。', 'Collaboration is unavailable. Reopen the project.']; break
+    default:
+      copy = ['同步受阻，请重试或重新打开项目。', 'Sync is blocked. Retry or reopen the project.']
+  }
+  return copy[locale === 'en' ? 1 : 0]
+}
+
 export type RealtimeReadyEvent = {
   type: 'realtime.ready'
   projectId: string
@@ -170,7 +193,8 @@ export function parseProjectRealtimeEvent(event: unknown, currentProjectId: stri
     && Number(candidate.graphRevision) > 0
     && typeof candidate.updateBase64 === 'string'
     && candidate.updateBase64.length > 0
-    && candidate.updateBase64.length <= 700_000
+    // 握手是累积文档快照，按文档传输的32MiB上限接收；单次写入增量仍限700KB。
+    && candidate.updateBase64.length <= 32 * 1024 * 1024
     && /^[A-Za-z0-9+/]*={0,2}$/.test(candidate.updateBase64)) {
     return candidate as CanvasSyncReadyRealtimeEvent
   }

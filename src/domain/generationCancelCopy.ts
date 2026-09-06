@@ -16,6 +16,12 @@ export type GenerationCancelRecord = GenerationCancelOutcome & {
   requestedAt: number
   reason: string
   requestedBy?: string
+  signalRequired?: boolean
+  signalAcknowledgedAt?: number
+}
+
+export function generationCancellationPending(outcome?: GenerationCancelOutcome & Partial<GenerationCancelRecord>) {
+  return outcome?.signalRequired === true && (outcome.workerReleased !== true || !(Number(outcome.signalAcknowledgedAt) > 0))
 }
 
 /**
@@ -30,12 +36,13 @@ export type GenerationCancelRecord = GenerationCancelOutcome & {
  * 判定本身在服务端（它才知道任务取消前的状态与 Provider 能力），这里只负责措辞。
  */
 export function generationCancelMessage(
-  outcome: GenerationCancelOutcome | undefined,
+  outcome: (GenerationCancelOutcome & Partial<GenerationCancelRecord>) | undefined,
   locale: ProductLocale = 'zh-CN',
 ) {
   if (!outcome) {
     return locale === 'en' ? 'Generation cancelled.' : '已取消生成。'
   }
+  if (generationCancellationPending(outcome)) return locale === 'en' ? 'Stopping…' : '正在停止…'
   if (outcome.code === 'ALREADY_SETTLED') {
     return locale === 'en' ? 'This task had already finished.' : '该任务已经结束，无需取消。'
   }

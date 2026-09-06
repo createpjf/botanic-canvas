@@ -44,6 +44,17 @@ function productError(message, code = 'PRODUCT_STORE_ERROR') {
 function fail(error, fallback = 'Supabase 数据操作失败。') {
   if (!error) return
   if (error.code === 'WORKSPACE_STORE_TIMEOUT') throw error
+  if (error.code === '23514') {
+    const messages = {
+      AGENT_MESSAGE_TURN_ID_CONFLICT: 'Agent 消息已绑定其他 Turn。',
+      AGENT_MESSAGE_ROLE_CONFLICT: 'Agent 消息作者角色不可改绑。',
+      AGENT_MESSAGE_TURN_REQUEST_CONFLICT: 'Agent 消息已绑定其他 Turn 请求快照。',
+      AGENT_MESSAGE_ENTITY_REFERENCES_CONFLICT: 'Agent Turn 结果业务引用发生冲突。',
+      AGENT_MESSAGE_ANSWER_CONFLICT: '确认内容已变化，请重新加载对话。',
+    }
+    const conflict = Object.entries(messages).find(([code]) => String(error.message).includes(code))
+    if (conflict) throw productError(conflict[1], conflict[0])
+  }
   if (typeof error.message === 'string' && error.message.includes('工作区数据库响应超时')) {
     throw productError('工作区数据库响应超时，请稍后重试。', 'WORKSPACE_STORE_TIMEOUT')
   }
@@ -439,8 +450,7 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
     const deletedAt = new Date().toISOString()
     const deletedMemoryRows = removedIds.map((id) => ({ id, deleted_at: deletedAt }))
 
-    // 派生字段必须由数据库在同一事务中保留；两个能力标记使旧的同名
-    // 7/8/9 参数 RPC 不会被 PostgREST 误匹配，缺迁移时拒绝非原子降级。
+    // 派生字段与确认答案必须在同一事务中保留，缺迁移时拒绝非原子降级。
     const { error: rpcError } = await supabaseRequest(() => supabase.rpc('botanic_sync_agent_entities', {
       p_owner_id: userId,
       p_project_id: document.id,
@@ -452,22 +462,11 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
       p_preserve_thread_summary: true,
       p_preserve_entity_references: true,
       p_insert_sessions_only: true,
+      p_preserve_clarification_answers: true,
     }))
     if (rpcError) {
       if (missingAgentEntityRpc(rpcError)) {
         throw productError('Agent 派生字段原子写入迁移尚未部署。', 'AGENT_DERIVED_FIELDS_ATOMIC_WRITE_REQUIRED')
-      }
-      if (rpcError.code === '23514' && String(rpcError.message).includes('AGENT_MESSAGE_TURN_ID_CONFLICT')) {
-        throw productError('Agent 消息已绑定其他 Turn。', 'AGENT_MESSAGE_TURN_ID_CONFLICT')
-      }
-      if (rpcError.code === '23514' && String(rpcError.message).includes('AGENT_MESSAGE_ROLE_CONFLICT')) {
-        throw productError('Agent 消息作者角色不可改绑。', 'AGENT_MESSAGE_ROLE_CONFLICT')
-      }
-      if (rpcError.code === '23514' && String(rpcError.message).includes('AGENT_MESSAGE_TURN_REQUEST_CONFLICT')) {
-        throw productError('Agent 消息已绑定其他 Turn 请求快照。', 'AGENT_MESSAGE_TURN_REQUEST_CONFLICT')
-      }
-      if (rpcError.code === '23514' && String(rpcError.message).includes('AGENT_MESSAGE_ENTITY_REFERENCES_CONFLICT')) {
-        throw productError('Agent Turn 结果业务引用发生冲突。', 'AGENT_MESSAGE_ENTITY_REFERENCES_CONFLICT')
       }
       fail(rpcError)
     }
@@ -487,6 +486,7 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
       p_preserve_thread_summary: true,
       p_preserve_entity_references: true,
       p_insert_sessions_only: true,
+      p_preserve_clarification_answers: true,
     }))
     if (missingAgentEntityRpc(error)) {
       throw productError('Agent 派生字段原子写入迁移尚未部署。', 'AGENT_DERIVED_FIELDS_ATOMIC_WRITE_REQUIRED')
@@ -1320,22 +1320,11 @@ export function createSupabaseProductStore({ url, secretKey, bootstrapEmail, inv
         p_message: message,
         p_updated_at: new Date(message.updatedAt).toISOString(),
         p_preserve_entity_references: true,
+        p_preserve_clarification_answers: true,
       }))
       if (error) {
         if (missingAgentEntityRpc(error)) {
           throw productError('Agent 派生字段原子写入迁移尚未部署。', 'AGENT_DERIVED_FIELDS_ATOMIC_WRITE_REQUIRED')
-        }
-        if (error.code === '23514' && String(error.message).includes('AGENT_MESSAGE_TURN_ID_CONFLICT')) {
-          throw productError('Agent 消息已绑定其他 Turn。', 'AGENT_MESSAGE_TURN_ID_CONFLICT')
-        }
-        if (error.code === '23514' && String(error.message).includes('AGENT_MESSAGE_ROLE_CONFLICT')) {
-          throw productError('Agent 消息作者角色不可改绑。', 'AGENT_MESSAGE_ROLE_CONFLICT')
-        }
-        if (error.code === '23514' && String(error.message).includes('AGENT_MESSAGE_TURN_REQUEST_CONFLICT')) {
-          throw productError('Agent 消息已绑定其他 Turn 请求快照。', 'AGENT_MESSAGE_TURN_REQUEST_CONFLICT')
-        }
-        if (error.code === '23514' && String(error.message).includes('AGENT_MESSAGE_ENTITY_REFERENCES_CONFLICT')) {
-          throw productError('Agent Turn 结果业务引用发生冲突。', 'AGENT_MESSAGE_ENTITY_REFERENCES_CONFLICT')
         }
         if (error.code === '23503') throw productError('未找到 Agent 会话。', 'AGENT_SESSION_NOT_FOUND')
         if (error.code === '23505') throw productError('Agent 消息标识已被其他会话使用。', 'AGENT_MESSAGE_ID_CONFLICT')

@@ -72,7 +72,7 @@ export function safeTimelineWebSources(
   for (const item of value.slice(0, MAX_SOURCE_CANDIDATES)) {
     const source = safeTimelineWebSource(item)
     if (!source) continue
-    const key = sourceKey(source.hostname)
+    const key = source.url ?? sourceKey(source.hostname)
     if (!key || seen.has(key)) continue
     seen.add(key)
     sources.push(source)
@@ -114,7 +114,7 @@ export function mergeTimelineWebSources(
     ...(incoming ?? []).slice(0, MAX_MERGED_WEB_SOURCES),
   ]
   for (const source of safeTimelineWebSources(candidates, MAX_MERGED_WEB_SOURCES) ?? []) {
-    const key = sourceKey(source.hostname)
+    const key = source.url ?? sourceKey(source.hostname)
     if (!key || seen.has(key)) continue
     seen.add(key)
     merged.push(source)

@@ -9,7 +9,7 @@ import {
   type CollaborationActivity,
   type CollaborationDocumentChange,
 } from '../../domain/collaborationActivity'
-import { shouldRefreshFromRealtimeEvent, type CanvasSyncStatus, type ProjectRealtimeConnectionState } from '../../domain/realtimeSync'
+import { canvasSyncFailureMessage, shouldRefreshFromRealtimeEvent, type CanvasSyncStatus, type ProjectRealtimeConnectionState } from '../../domain/realtimeSync'
 import { pendingCanvasSyncOutcome } from '../../domain/remoteDocumentSync'
 import { executePersistentBotanicAgentRun, listPersistentBotanicAgentRuns, listPersistentBotanicAgentSessions, readPersistentBotanicAgentState } from '../../lib/agentApi'
 import { listProjectCollaborationActivities, updateProjectCollaborationActivityReceipt } from '../../lib/collaborationApi'
@@ -22,6 +22,7 @@ import { useProductI18n } from '../../i18n/react'
 import { useCanvasStore } from '../../store/canvasStore'
 import type { CollaborationStatus } from '../../store/canvasStore.types'
 import { canvasSystemLabel } from './canvasI18n'
+import { retryCanvasRealtimeSync, type CanvasRealtimeRetryAttempt } from './canvasRealtimeRetry'
 
 const canvasSynchronizationCopy = {
   'zh-CN': {
@@ -86,6 +87,8 @@ type CanvasWorkspaceSynchronizationOptions = {
 
 export type CollaborationAwareness = {
   realtimeStatus: CollaborationStatus
+  realtimeRetrying?: boolean
+  realtimeRetryError?: string
   onlineCollaboratorCount: number
   activities: CollaborationActivity[]
   unreadActivityCount: number
@@ -138,6 +141,7 @@ export function useCanvasWorkspaceSynchronization({
   const [canvasHydrationFailed, setCanvasHydrationFailed] = useState(false)
   const [collaborationAwareness, setCollaborationAwareness] = useState<CollaborationAwareness>(emptyCollaborationAwareness)
   const collaborationRef = useRef<CanvasCollaboration | null>(null)
+  const realtimeRetryRef = useRef<CanvasRealtimeRetryAttempt | null>(null)
   const collaborationActivityLoadRef = useRef<{ projectId: string; promise: Promise<void> } | null>(null)
   const agentRunRecoveryRef = useRef<Promise<boolean> | null>(null)
   const remoteDocumentRefreshRef = useRef<{ projectId: string; promise: Promise<boolean> } | null>(null)
@@ -156,10 +160,14 @@ export function useCanvasWorkspaceSynchronization({
     return promise
   }, [refreshDocumentFromRemote])
 
-  const retryBlockedCanvasSync = useCallback(
-    () => collaborationRef.current?.retryBlocked() ?? Promise.resolve(),
-    [],
-  )
+  const retryBlockedCanvasSync = useCallback(() => {
+    const collaboration = collaborationRef.current
+    return retryCanvasRealtimeSync({
+      projectId: documentId, collaboration, inFlight: realtimeRetryRef, locale,
+      isCurrent: () => useCanvasStore.getState().document.id === documentId && collaborationRef.current === collaboration,
+      onState: (state) => setCollaborationAwareness((current) => ({ ...current, ...state })),
+    })
+  }, [documentId, locale])
 
   const recordRemoteChange = useCallback(({
     actorId,
@@ -490,12 +498,13 @@ export function useCanvasWorkspaceSynchronization({
   useEffect(() => {
     if (!hydrated || !workspaceActive || !serverPersistenceEnabled) return
     const current = useCanvasStore.getState().document
-    const updateRealtimeStatus = (state: ProjectRealtimeConnectionState | CanvasSyncStatus) => {
+    const updateRealtimeStatus = (state: ProjectRealtimeConnectionState | CanvasSyncStatus, failure?: { code: string }) => {
       if (useCanvasStore.getState().document.id !== current.id) return
       const realtimeStatus: CollaborationStatus = state === 'closed' ? 'disabled' : state
       useCanvasStore.setState({ collaborationStatus: realtimeStatus })
-      setCollaborationAwareness((awareness) => ({ ...awareness, realtimeStatus }))
+      setCollaborationAwareness((awareness) => ({ ...awareness, realtimeStatus, realtimeRetryError: canvasSyncFailureMessage(failure?.code, locale) }))
     }
+    setCollaborationAwareness((awareness) => ({ ...awareness, realtimeRetrying: false, realtimeRetryError: undefined }))
     updateRealtimeStatus('connecting')
     const collaboration = connectCanvasCollaboration({
       projectId: current.id,

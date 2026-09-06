@@ -22,8 +22,12 @@ export const AGENT_TURN_PUBLIC_STATUSES = Object.freeze([
 
 /** 实时通道事件类型(chat/turn/plan 共用)。 */
 export const AGENT_STREAM_EVENT_TYPES = Object.freeze([
-  'attempt', 'accepted', 'handoff', 'reasoning', 'answer', 'answer_snapshot', 'tool', 'done', 'error',
+  'attempt', 'accepted', 'handoff', 'reasoning', 'answer', 'answer_snapshot', 'references', 'tool', 'done', 'error',
 ])
+
+export const AGENT_REFERENCE_STAGES = Object.freeze(['prepared', 'submitted', 'failed', 'omitted'])
+export const AGENT_REFERENCE_MODES = Object.freeze(['image', 'description', 'none'])
+export const AGENT_REFERENCE_REASONS = Object.freeze(['unavailable', 'forbidden', 'unsupported', 'limit', 'too_large', 'network', 'not_configured', 'description_failed', 'context_omitted'])
 
 /** 工具调用公开状态(含 H4 的 aborted)。 */
 export const AGENT_TOOL_CALL_PUBLIC_STATUSES = Object.freeze([
@@ -98,6 +102,9 @@ export function agentProtocolCatalog() {
     enums: Object.freeze({
       AgentTurnPublicStatus: AGENT_TURN_PUBLIC_STATUSES,
       AgentStreamEventType: AGENT_STREAM_EVENT_TYPES,
+      AgentReferenceStage: AGENT_REFERENCE_STAGES,
+      AgentReferenceMode: AGENT_REFERENCE_MODES,
+      AgentReferenceReason: AGENT_REFERENCE_REASONS,
       AgentToolCallPublicStatus: AGENT_TOOL_CALL_PUBLIC_STATUSES,
       AgentToolCallPublicRisk: AGENT_TOOL_CALL_PUBLIC_RISKS,
       AgentPublicErrorCode: AGENT_PUBLIC_ERROR_CODES,

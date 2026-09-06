@@ -120,8 +120,8 @@ function isUsableVariationValue(label: string) {
 function uniqueLabels(values: string[]) {
   const seen = new Set<string>()
   return values.flatMap((value) => {
-    // 截断前先按原文拒绝：@ 引用与元话语片段截短后会伪装成合法取值。
-    if (value.includes('@') || valueMetaPattern.test(value)) return []
+    // 截断前排除引用、元话语和输出规格，避免 3:4 被压成变体「34」。
+    if (value.includes('@') || valueMetaPattern.test(value) || /^(?:\d+\s*[:：]\s*\d+|[1248]k)[。.\s]*$/iu.test(value.trim())) return []
     const label = clipBotanicAgentNodeTitle(value)
     if (!isUsableVariationValue(label) || seen.has(label)) return []
     seen.add(label)
@@ -519,10 +519,10 @@ const stripCreativeBriefAppendix = (instruction: string) => instruction.replace(
 export function resolveBotanicAgentVariationRequest(input: BotanicAgentVariationRequestInput): BotanicAgentVariationRequest {
   const locale = input.locale ?? 'zh-CN'
   const instruction = stripCreativeBriefAppendix(input.instruction.trim())
-  const intent = resolveBotanicAgentIntent(instruction, input.requestedIntent)
+  const intent = resolveBotanicAgentIntent(input.modelResolved ? instruction.replace(/(?:\d+|两|二|三|四|五|六|七|八|九|十)\s*张/gu, '') : instruction, input.requestedIntent)
   const answered = splitValueList(input.clarificationAnswers?.variation_values ?? '')
   const confirmed = answered.length ? answered : uniqueLabels(input.brief?.variation?.values ?? [])
-  const explicitBatch = instructionRequestsBatchVariation(instruction) || intent === 'batch_variation'
+  const explicitBatch = intent === 'batch_variation'
   const allowCustomAxis = explicitBatch || confirmed.length >= botanicAgentVariationValueMin
   // 隐式枚举挖掘只对短指令生效：长文本是画面描述，逗号列表是句子成分而不是取值。
   // modelResolved（模型已综合本轮且未声明 variants，语义结论是单图）时只有强枚举证据才允许挖掘。

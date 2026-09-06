@@ -113,6 +113,7 @@ export function createCanvasDocumentLifecycleActions({
 
   return {
     hydrate: async () => {
+      if (get().hydrated) return // effect 重挂载/热更新不能把已打开项目重置成占位文档。
       const document = createEmptyCanvasDocument('workspace-placeholder', '未命名画布')
       const selectedNode = [...document.nodes].reverse().find(
         (node) => node.selected || (node.type === 'result' && Boolean((node.data as ResultNodeData).selected)),
@@ -132,13 +133,15 @@ export function createCanvasDocumentLifecycleActions({
       })
     },
 
-    openDocument: async (documentId) => {
+    openDocument: async (documentId, signal) => {
+      if (signal?.aborted) return false
       const operationToken = openDocumentOperations.begin()
       // 上一项目的远端保存继续在后台跑；打开当前项目不能被它的 15s 超时堵住。
       void flushPendingCanvasDocumentWrites().catch(() => undefined)
       if (!openDocumentOperations.isCurrent(operationToken)) return false
       const stored = await readCanvasDocument(documentId, {
         onRemoteDocument: ({ cachedDocument, remoteDocument }) => (
+          !signal?.aborted && openDocumentOperations.isCurrent(operationToken) &&
           applyRemoteDocumentRefresh(
             remoteDocument,
             cachedDocument.updatedAt,
@@ -150,7 +153,7 @@ export function createCanvasDocumentLifecycleActions({
             : false
         ),
       })
-      if (!stored || !openDocumentOperations.isCurrent(operationToken)) return false
+      if (!stored || signal?.aborted || !openDocumentOperations.isCurrent(operationToken)) return false
       stopGenerationPolling()
       invalidatePersistence()
       const normalizedDocument = normalizeDocument(stored)
@@ -184,6 +187,7 @@ export function createCanvasDocumentLifecycleActions({
           }
         }
       }
+      if (signal?.aborted || !openDocumentOperations.isCurrent(operationToken)) return false
       void ensureGlobalAssetLibrary(seedGlobalAssets).then((library) => {
         if (get().document.id !== documentId) return
         set({ globalAssets: library.assets })

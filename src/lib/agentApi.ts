@@ -26,7 +26,7 @@ import { canonicalImageFormatSentenceList, isCanonicalImageFormat } from '../dom
 import { persistentBotanicAgentMessageBody } from '../domain/agentMessagePersistence'
 import { readAgentTurnTimelineEvents } from './agentTurnTimelineEventReader'
 import { captureSentryMessage } from './sentry.ts'
-
+import { flushPendingCanvasDocumentWrites } from './db'
 const agentActionsRequiringApproval = new Set([
   'canvas_action_set', 'generation_submit', 'mcp_call', 'agent_branch_retry', 'review_retry', 'workflow_run_retry_failed', 'skill_publish', 'skill_deprecate', 'skill_restore',
 ])
@@ -75,6 +75,7 @@ function blobAsDataUrl(blob: Blob) {
 }
 
 export async function persistAgentReferenceMedia(projectId: string, source: string) {
+  await flushPendingCanvasDocumentWrites(projectId)
   const copy = agentApiCopy(readProductLocale())
   let dataUrl = source
   if (!source.startsWith('data:image/')) {
@@ -135,6 +136,7 @@ export async function requestBotanicAgentPlan(
   const runtimeTurnId = response.runtimeTurn?.id?.trim()
   if (runtimeTurnId) onAccepted?.(runtimeTurnId)
   if (response.reasoning?.length) onReasoning?.(response.reasoning)
+  if (response.plan || response.clarification) onEvent?.({ type: 'done', runtimeTurn: response.runtimeTurn })
   if (response.clarification) {
     return { kind: 'clarification', clarification: response.clarification } satisfies BotanicAgentClarificationResponse
   }
@@ -272,7 +274,7 @@ async function observeAgentRuntimeResult<TResult>(input: {
       return { result: settlement.result, turn: page.turn }
     }
     if (settlement.kind === 'failed') {
-      input.onEvent?.({ type: 'error', code: settlement.code, message: settlement.message })
+      input.onEvent?.({ type: 'error', code: settlement.code, message: settlement.message, occurredAt: page.turn.updatedAt })
       throw new ProductApiError(settlement.message, 0, settlement.code)
     }
     if (!page.cursor.hasMore) await waitForAgentTurnObservation(input.signal)
@@ -289,7 +291,7 @@ async function observeBotanicAgentTurn(input: {
   missingTurnTimeoutMs?: number
 }): Promise<BotanicAgentTurnOutcome> {
   const observed = await observeAgentRuntimeResult<BotanicAgentTurnResult>(input)
-  input.onEvent?.({ type: 'done', result: observed.result })
+  input.onEvent?.({ type: 'done', result: observed.result, runtimeTurn: observed.turn })
   return withRuntimeTurnId(observed.result, observed.turn)
 }
 
@@ -341,9 +343,9 @@ async function observePersistentAgentPlan(
   })
   const result = planFromPersistentRuntimeResult(observed.result, input)
   if ('kind' in result && result.kind === 'clarification') {
-    options.onEvent?.({ type: 'done', clarification: result.clarification })
+    options.onEvent?.({ type: 'done', clarification: result.clarification, runtimeTurn: observed.turn })
   } else {
-    options.onEvent?.({ type: 'done', plan: result as BotanicAgentPlan })
+    options.onEvent?.({ type: 'done', plan: result as BotanicAgentPlan, runtimeTurn: observed.turn })
   }
   return result
 }
@@ -366,7 +368,7 @@ async function observePersistentAgentChat(
   if (observed.result.kind !== 'chat' || observed.result.runtimeOperation !== 'chat') {
     throw new ProductApiError('Agent 对话回合身份校验失败。', 409, 'AGENT_TURN_OPERATION_MISMATCH')
   }
-  options.onEvent?.({ type: 'done', response: observed.result.response })
+  options.onEvent?.({ type: 'done', response: observed.result.response, runtimeTurn: observed.turn })
   return observed.result.response
 }
 
@@ -420,6 +422,7 @@ export async function requestBotanicAgentTurn(
       onEvent,
     }),
   })
+  if (response.turn) onEvent?.({ type: 'done', runtimeTurn: response.runtimeTurn })
   if (continuation) return continuation
   throw new ProductApiError(copy.streamEnded, 0, 'AGENT_TURN_RESULT_MISSING')
 }
@@ -629,6 +632,7 @@ export async function requestBotanicAgentChat(
   })
   const runtimeTurnId = response.runtimeTurn?.id?.trim()
   if (runtimeTurnId) onAccepted?.(runtimeTurnId)
+  if (response.response) onEvent?.({ type: 'done', response: response.response, runtimeTurn: response.runtimeTurn })
   if (response.response) return response.response
   if (runtimeTurnId) return observePersistentAgentChat(runtimeTurnId, input, { signal, onEvent })
   throw new ProductApiError(copy.streamEnded, 0, 'AGENT_TURN_RESULT_MISSING')
@@ -828,6 +832,7 @@ export async function submitPersistentBotanicAgentMessage(input: {
   message: BotanicAgentMessage
   idempotencyKey: string
 }) {
+  await flushPendingCanvasDocumentWrites(input.projectId)
   const projectId = encodeURIComponent(input.projectId)
   const sessionId = encodeURIComponent(input.sessionId)
   const messageId = encodeURIComponent(input.message.id)
@@ -841,13 +846,13 @@ export async function submitPersistentBotanicAgentMessage(input: {
   )
   return response.message
 }
-
 /** 独立 Session 写入用于跨设备同步标题、模型、Skill、执行模式和上下文；阅读位置使用成员级回执。 */
 export async function submitPersistentBotanicAgentSession(
   projectIdValue: string,
   session: BotanicAgentSession,
   idempotencyKey = `agent-session-${session.id}-${session.updatedAt}`,
 ) {
+  await flushPendingCanvasDocumentWrites(projectIdValue)
   const projectId = encodeURIComponent(projectIdValue)
   const sessionId = encodeURIComponent(session.id)
   const response = await productRequest<{ session: BotanicAgentSession }>(`/api/projects/${projectId}/agent-sessions/${sessionId}`, {
@@ -1000,8 +1005,8 @@ export async function executePersistentBotanicAgentRun(
   return response.output
 }
 
-export async function listPersistentBotanicAgentRuns(projectId: string) {
-  const response = await productRequest<{ runs: BotanicAgentRunSnapshot[] }>(`/api/projects/${encodeURIComponent(projectId)}/agent-runs`)
+export async function listPersistentBotanicAgentRuns(projectId: string, signal?: AbortSignal) {
+  const response = await productRequest<{ runs: BotanicAgentRunSnapshot[] }>(`/api/projects/${encodeURIComponent(projectId)}/agent-runs`, { signal })
   return response.runs
 }
 
@@ -1074,19 +1079,24 @@ export async function listProjectAgentArtifacts(
 }
 
 export async function retryPersistentBotanicAgentBranch(runId: string, branchId: string, retryKey?: string) {
+  let key = retryKey ?? idempotencyKey('agent-retry')
+  // 已被服务端接受的短键保持不变；超长键压缩同一身份，不能随机化重试。
+  if (key.length > 128) {
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(key))
+    key = `agent-retry-${Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('')}`
+  }
   const response = await productRequest<{ run: BotanicAgentRunSnapshot }>(
     `/api/agent-runs/${encodeURIComponent(runId)}/branches/${encodeURIComponent(branchId)}/retry`,
-    { method: 'POST', headers: { 'Idempotency-Key': retryKey ?? idempotencyKey(`agent-retry-${branchId}`) } },
+    { method: 'POST', headers: { 'Idempotency-Key': key } },
   )
   return response.run
 }
 
 export async function cancelPersistentBotanicAgentRun(runId: string) {
-  const response = await productRequest<{ run: BotanicAgentRunSnapshot }>(
+  return productRequest<{ run: BotanicAgentRunSnapshot; cancellation?: { failures?: { code: string }[] } }>(
     `/api/agent-runs/${encodeURIComponent(runId)}/cancel`,
     { method: 'POST' },
   )
-  return response.run
 }
 
 export async function requestBotanicAgentRunReview(projectId: string, runId: string, signal?: AbortSignal, locale: ProductLocale = readProductLocale()) {

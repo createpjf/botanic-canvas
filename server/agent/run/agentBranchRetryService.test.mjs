@@ -49,7 +49,7 @@ test('分支重试幂等键命中另一项目或分支的 Job 时 fail closed', 
   )
 })
 
-test('分支新 Job 重试不继承上一任务的 execution token', async () => {
+test('部分成功只补缺图，不继承成功候选或上一任务的 execution token', async () => {
   const now = Date.now()
   const run = {
     id: 'run-retry-fence',
@@ -66,10 +66,11 @@ test('分支新 Job 重试不继承上一任务的 execution token', async () =>
   }
   const previousJob = {
     id: 'job-old', ownerId: 'user-1', projectId: run.projectId,
-    status: 'failed', kind: 'generation', refinementMode: 'faithful',
-    createdAt: now - 1_000, updatedAt: now - 500, batchCount: 1,
-    settings: { model: 'gpt-image-2' }, rawInput: { projectId: run.projectId },
-    outputs: [], error: 'provider failed',
+    status: 'succeeded', kind: 'generation', refinementMode: 'faithful',
+    createdAt: now - 1_000, updatedAt: now - 500, batchCount: 2,
+    settings: { model: 'gpt-image-2' }, rawInput: { projectId: run.projectId, batchCount: 2 },
+    outputs: [{ id: 'output-kept', image: '/api/media/kept' }], missingOutputCount: 1,
+    variants: [{ index: 0, status: 'succeeded', output: { id: 'output-kept', image: '/api/media/kept' } }], resultNodeId: 'result-kept', resultNodePosition: { x: 920, y: 0 },
     executionVersion: 7,
     execution: {
       generation: 7,
@@ -82,6 +83,7 @@ test('分支新 Job 重试不继承上一任务的 execution token', async () =>
   }
   let currentRun = structuredClone(run)
   let insertedJob
+  let reservedCount
   const retry = createAgentBranchRetryService({
     productStore: {
       async readAgentRun() { return structuredClone(currentRun) },
@@ -100,7 +102,7 @@ test('分支新 Job 重试不继承上一任务的 execution token', async () =>
     },
     config: { security: { generationOutputsPerDay: 100 } },
     enqueue: async () => {},
-    securityControls: { reserveMany: async () => ({ allowed: true, reused: false }) },
+    securityControls: { reserveMany: async (request) => { reservedCount = request.entries[0].cost; return { allowed: true, reused: false } } },
     publishProjectUpdated: async () => {},
     publishAgentRunUpdated: async () => {},
     agentRunGeneration: { persistJobState: async () => {} },
@@ -114,6 +116,12 @@ test('分支新 Job 重试不继承上一任务的 execution token', async () =>
   assert.notEqual(insertedJob.id, previousJob.id)
   assert.equal(insertedJob.execution, undefined)
   assert.equal(insertedJob.executionVersion, undefined)
+  assert.equal(insertedJob.batchCount, 1)
+  assert.equal(insertedJob.rawInput.batchCount, 1)
+  assert.equal(reservedCount, 1)
+  assert.deepEqual(insertedJob.variants, [])
+  assert.notEqual(insertedJob.resultNodeId, previousJob.resultNodeId)
+  assert.deepEqual(insertedJob.resultNodePosition, { x: 920, y: 370 })
 })
 
 test('并发分支重试已先 claim 时复用权威 running，不因重复 enqueue 失败终结 Worker', async () => {

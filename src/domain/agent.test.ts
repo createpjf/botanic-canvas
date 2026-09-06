@@ -1,13 +1,14 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { AssetGroup, CanvasNode, GenerationJob, GenerationRecipe } from './canvas.ts'
+import { botanicAgentClarificationProgress } from './agentMessageUtilities.ts'
+import { mergeBotanicAgentRunSnapshot, upsertBotanicAgentRunSnapshot } from './agentRunSnapshot.ts'
 import {
   appendBotanicAgentMessage,
   collectBotanicAgentArtifacts,
   collectBotanicAgentResults,
   createBotanicAgentMemoryItem,
   buildBotanicAgentPlan,
-  botanicAgentAutoRetryTargets,
   botanicAgentAssistantMessageProvenance,
   botanicAgentContextSnapshotNodeIds,
   botanicAgentImageContext,
@@ -22,8 +23,6 @@ import {
   resolveBotanicAgentIntent,
   consumeBotanicAgentMention,
   insertBotanicAgentMention,
-  mergeBotanicAgentRunSnapshot,
-  upsertBotanicAgentRunSnapshot,
   readBotanicAgentMentionQuery,
   readBotanicAgentCanvasWritebacks,
   recordBotanicAgentCanvasWritebacks,
@@ -339,25 +338,6 @@ test('Agent Run 只对已确认但未绑定任务的 queued 快照补执行', ()
   }), false)
   assert.equal(shouldResumeQueuedAgentRunExecution({ status: 'running', branches: [branch] }), false)
   assert.equal(shouldResumeQueuedAgentRunExecution({ status: 'queued', branches: [] }), false)
-})
-
-test('导演回看只自动重试首次失败的分支，取消与二次失败交还用户', () => {
-  const runs = [{
-    id: 'run-1',
-    branches: [
-      { id: 'branch-first-fail', label: 'A', status: 'failed' as const, attempt: 0, jobIds: [], outputCount: 0, updatedAt: 1 },
-      { id: 'branch-retried-fail', label: 'B', status: 'failed' as const, attempt: 1, jobIds: [], outputCount: 0, updatedAt: 1 },
-      { id: 'branch-cancelled', label: 'C', status: 'cancelled' as const, attempt: 0, jobIds: [], outputCount: 0, updatedAt: 1 },
-      { id: 'branch-ok', label: 'D', status: 'succeeded' as const, attempt: 0, jobIds: ['job'], outputCount: 1, updatedAt: 1 },
-    ],
-  }, {
-    id: 'run-other-session',
-    branches: [{ id: 'branch-x', label: 'X', status: 'failed' as const, attempt: 0, jobIds: [], outputCount: 0, updatedAt: 1 }],
-  }]
-  assert.deepEqual(botanicAgentAutoRetryTargets(runs, new Set(['run-1'])), [
-    { runId: 'run-1', branchId: 'branch-first-fail' },
-  ])
-  assert.deepEqual(botanicAgentAutoRetryTargets(runs, new Set()), [])
 })
 
 test('一轮生成回填后，新结果按分支顺序成为下一轮默认基准', () => {
@@ -1066,6 +1046,7 @@ test('刷新后可用服务端权威快照恢复本地缺失的 Agent Run', () =
   })
   const snapshot = {
     id: 'agent-run-restored', projectId: 'project-a', status: 'running' as const,
+    turnId: 'turn-original',
     plan: (({ references: _references, rootRecipe: _rootRecipe, actions: _actions, ...safePlan }) => safePlan)(plan),
     completedBranchCount: 0, failedBranchCount: 0,
     branches: [{ id: 'branch-a', label: '动作 A', status: 'running' as const, attempt: 0, jobIds: ['job-a'], activeJobId: 'job-a', outputCount: 0, updatedAt: 210 }],
@@ -1078,6 +1059,27 @@ test('刷新后可用服务端权威快照恢复本地缺失的 Agent Run', () =
   assert.equal(restored[0].status, 'running')
   assert.equal(restored[0].plan.rootRecipe, rootRecipe)
   assert.equal(restored[0].plan.selectedResultNodeId, 'result-v03')
+  assert.equal(restored[0].plan.turnId, 'turn-original')
+  assert.deepEqual(botanicAgentClarificationProgress({ turnId: 'turn-original', status: 'pending' }, restored), {
+    state: 'continued', runId: snapshot.id,
+  })
+})
+
+test('同时间快照可补回 Turn 关联，但旧快照不能回退进度或改写既有关联', () => {
+  const plan = buildBotanicAgentPlan({ instruction: '调整动作', intent: 'change_pose', selectedResultNodeId: 'result-v03', rootRecipe })
+  const local = { ...createBotanicAgentRun(plan, { id: 'run-1', now: 200 }), status: 'completed' as const }
+  const snapshot = {
+    id: local.id, projectId: 'project-a', turnId: 'turn-original', status: 'running' as const,
+    branches: [], completedBranchCount: 0, failedBranchCount: 0, createdAt: 100, updatedAt: 200,
+  }
+  const linked = mergeBotanicAgentRunSnapshot(local, snapshot)
+  assert.equal(linked.plan.turnId, 'turn-original')
+  assert.equal(linked.status, 'completed')
+  assert.equal(linked.updatedAt, local.updatedAt)
+  assert.equal(linked.plan.rootRecipe, plan.rootRecipe)
+  assert.equal(mergeBotanicAgentRunSnapshot(linked, snapshot), linked)
+  assert.equal(mergeBotanicAgentRunSnapshot(linked, { ...snapshot, turnId: 'unrelated-turn', updatedAt: 100 }), linked)
+  assert.equal(mergeBotanicAgentRunSnapshot(local, { ...snapshot, id: 'other-run' }), local)
 })
 
 test('刷新恢复首次生成 Run 时不伪造父结果引用', () => {
@@ -1491,6 +1493,19 @@ test('Agent 结果区合并关联 Run 的生成结果并保留批次溯源', () 
   assert.equal(botanicAgentArtifactPrompt(results[0]), '海边黄昏，保持商品不变。')
   assert.equal(botanicAgentArtifactModel(results[0]), 'gpt-image-2')
   assert.equal(botanicAgentArtifactTimestamp(results[0]), 220)
+
+  const legacy = { ...nodes[0], id: 'legacy-result', data: { ...nodes[0].data, candidateId: undefined } } as CanvasNode
+  const restored = collectBotanicAgentResults({ sessions: [], nodes: [legacy, ...nodes], generationJobs })
+  assert.equal(restored.length, 1)
+  assert.equal(restored[0].id, results[0].id)
+  assert.deepEqual(restored[0].provenance.sourceNodeIds, ['legacy-result', 'result-agent-1'])
+  // 同 URL 不等于同输出：同一 Job 的多个输出身份不能猜测合并。
+  const ambiguousJobs = [{ ...generationJobs[0], outputs: [
+    ...generationJobs[0].outputs!, { id: 'candidate-2', image: results[0].url! },
+  ] }]
+  const ambiguous = collectBotanicAgentResults({ sessions: [], nodes: [legacy, ...nodes], generationJobs: ambiguousJobs })
+  assert.equal(ambiguous.length, 2)
+  assert.equal(ambiguous[0].id, 'generation:job-agent-1:legacy-result')
 })
 
 test('Agent 结果区不混入普通画布任务，并识别已入库结果', () => {
@@ -1528,7 +1543,7 @@ test('Agent 批量结果选择忽略失效项并去重画布引用', () => {
 
 test('Artifact Index 覆盖同 ID 的本地快照，同时合并当前画布可定位节点', () => {
   const indexed = [{
-    id: 'artifact-a', kind: 'image' as const, label: '服务端历史结果', url: '/api/media/indexed',
+    id: 'artifact-a', kind: 'image' as const, label: '服务端历史结果',
     provenance: { actionId: 'action-a', toolName: 'image_generation', runId: 'run-a', sourceNodeIds: ['deleted-result'] },
     origin: { type: 'generation_output' as const, jobId: 'job-a', outputId: 'output-a' },
     createdAt: 100,
@@ -1552,6 +1567,7 @@ test('Artifact Index 覆盖同 ID 的本地快照，同时合并当前画布可�
 
   assert.deepEqual(results.map((item) => item.id), ['artifact-a', 'artifact-b'])
   assert.equal(results[0].label, '服务端历史结果')
+  assert.equal(results[0].url, '/api/media/local')
   assert.deepEqual(results[0].provenance.sourceNodeIds, ['deleted-result', 'result-a'])
 })
 

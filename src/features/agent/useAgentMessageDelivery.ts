@@ -30,22 +30,26 @@ export function useAgentMessageDelivery({
   isCurrentProject,
   onAppendMessage,
   onUpdateMessage,
+  onUpsertMessage,
 }: {
   projectId: string
   session?: BotanicAgentSession
   isCurrentProject: () => boolean
   onAppendMessage: (sessionId: string, message: BotanicAgentMessage) => void
   onUpdateMessage: (sessionId: string, messageId: string, patch: AgentMessagePatch) => void
+  onUpsertMessage: (sessionId: string, message: BotanicAgentMessage) => void
 }) {
   const { locale } = useProductI18n()
   const localeRef = useRef(locale)
+  const currentSessionId = useRef(session?.id)
+  currentSessionId.current = session?.id
   useEffect(() => { localeRef.current = locale }, [locale])
   const [online, setOnline] = useState(() => typeof navigator === 'undefined' || navigator.onLine)
   const queue = useMemo(() => createAgentMessageQueue({
     storage: createLocalStorageAgentMessageQueueStorage(projectId),
     deliver: async (item) => {
       try {
-        await submitPersistentBotanicAgentMessage(item)
+        return await submitPersistentBotanicAgentMessage(item)
       } catch (caught) {
         throw localizedAgentDeliveryError(caught, localeRef.current)
       }
@@ -58,14 +62,17 @@ export function useAgentMessageDelivery({
     if (!isCurrentProject()) return
     for (const messageId of result.delivered) {
       const sessionId = queued.get(messageId)
-      if (sessionId) onUpdateMessage(sessionId, messageId, { deliveryStatus: 'synced' })
+      const receipt = result.receipts?.find((item) => item.sessionId === sessionId && item.message.id === messageId)
+      // 旧会话的异步回执不切换当前会话；再次进入时由独立 Message API 加载。
+      if (receipt && sessionId === currentSessionId.current) onUpsertMessage(receipt.sessionId, { ...receipt.message, deliveryStatus: 'synced' })
+      else if (sessionId) onUpdateMessage(sessionId, messageId, { deliveryStatus: 'synced' })
     }
     for (const messageId of result.failed) {
       const sessionId = queued.get(messageId)
       if (sessionId) onUpdateMessage(sessionId, messageId, { deliveryStatus: 'failed' })
     }
     return result
-  }, [isCurrentProject, onUpdateMessage, queue])
+  }, [isCurrentProject, onUpdateMessage, onUpsertMessage, queue])
 
   useEffect(() => {
     if (!serverPersistenceEnabled) return
@@ -146,7 +153,9 @@ export function useAgentMessageDelivery({
       ...message,
       deliveryStatus: online ? 'queued' : 'waiting_network',
     }
-    if (!enqueueSafely(session.id, queuedMessage) && navigator.onLine) void flush()
+    const failure = enqueueSafely(session.id, queuedMessage)
+    if (!failure && navigator.onLine) void flush()
+    return failure
   }, [enqueueSafely, flush, isCurrentProject, online, session])
 
   const retryMessage = useCallback((messageId: string) => {
@@ -167,15 +176,18 @@ export function useAgentMessageDelivery({
     // enqueue 失败必须在此冒泡：消息不在队列里时，下面的送达断言会因
     // 「找不到 pending 项」误判为已送达，放行一个输入并未持久化的 Turn。
     if (!session) throw new Error('会话不存在，无法持久化消息。')
-    if (isCurrentProject() && serverPersistenceEnabled) {
-      const failure = enqueueSafely(session.id, {
-        ...message,
-        deliveryStatus: online ? 'queued' : 'waiting_network',
-      })
-      if (failure) throw failure
-    }
-    await flush()
+    if (!isCurrentProject()) throw new Error('项目已切换，已停止提交。')
+    if (!serverPersistenceEnabled) return message
+    const failure = enqueueSafely(session.id, {
+      ...message,
+      deliveryStatus: online ? 'queued' : 'waiting_network',
+    })
+    if (failure) throw failure
+    const result = await flush()
     assertAgentMessageQueueItemDelivered(queue, message.id)
+    const accepted = result?.receipts?.find((item) => item.sessionId === session.id && item.message.id === message.id)?.message
+    if (!accepted) throw Object.assign(new Error('未收到消息保存回执，请重试。'), { code: 'AGENT_MESSAGE_NOT_DURABLE', status: 0 })
+    return accepted
   }, [enqueueSafely, flush, isCurrentProject, online, queue, session])
 
   return { appendMessage, persistMessage, retryMessage, discardMessage, ensureMessageDurable }

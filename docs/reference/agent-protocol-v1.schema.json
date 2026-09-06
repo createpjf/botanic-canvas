@@ -26,9 +26,41 @@
         "reasoning",
         "answer",
         "answer_snapshot",
+        "references",
         "tool",
         "done",
         "error"
+      ]
+    },
+    "AgentReferenceStage": {
+      "type": "string",
+      "enum": [
+        "prepared",
+        "submitted",
+        "failed",
+        "omitted"
+      ]
+    },
+    "AgentReferenceMode": {
+      "type": "string",
+      "enum": [
+        "image",
+        "description",
+        "none"
+      ]
+    },
+    "AgentReferenceReason": {
+      "type": "string",
+      "enum": [
+        "unavailable",
+        "forbidden",
+        "unsupported",
+        "limit",
+        "too_large",
+        "network",
+        "not_configured",
+        "description_failed",
+        "context_omitted"
       ]
     },
     "AgentToolCallPublicStatus": {

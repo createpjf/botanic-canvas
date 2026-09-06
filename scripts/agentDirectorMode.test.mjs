@@ -25,11 +25,8 @@ test('服务端已提交的 Run 不再补打浏览器三跳，但空 queued 保�
   assert.match(confirm, /executePersistentBotanicAgentRun/)
 })
 
-test('自动模式失败分支只自动重试一次，且判定归领域函数', () => {
-  const retry = between(workspace, '// 导演回看', '// 结果自评')
-  assert.match(retry, /session\?\.executionMode !== 'auto'/)
-  assert.match(retry, /botanicAgentAutoRetryTargets\(/)
-  assert.match(retry, /autoRetriedBranchesRef/)
+test('失败分支自动重试归 Worker，浏览器不再保留第二套自动重试入口', () => {
+  assert.doesNotMatch(workspace, /botanicAgentAutoRetryTargets\(|autoRetriedBranchesRef/)
 })
 
 test('兼容 plan/chat 提交键只用 Idempotency-Key 允许的字符，不能带冒号', () => {

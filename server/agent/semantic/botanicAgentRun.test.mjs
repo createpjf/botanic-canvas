@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { retargetGenerationJobForRetry } from '../../generation/generationResultReconciliation.mjs'
 import {
   applyGenerationJobToAgentRun,
   cancelPersistentAgentRun,
@@ -43,6 +44,24 @@ const creation = {
     { id: 'branch-b', label: '森林', assetId: 'asset-scene-b' },
   ],
 }
+
+test('单分支缺图不是完成，补图保留成功节点与旧任务', () => {
+  const run = createPersistentAgentRun({ ...creation, branches: [creation.branches[0]] }, { id: 'run-partial', ownerId: 'user-1', now: 100 })
+  const job = { id: 'job-partial', status: 'succeeded', updatedAt: 200, batchCount: 2, missingOutputCount: 1,
+    partialError: '仍有 1 张未完成', outputs: [{ id: 'output-1', image: '/api/media/kept' }],
+    agentRun: { runId: run.id, branchId: 'branch-a' } }
+  const projected = applyGenerationJobToAgentRun(run, job)
+  assert.equal(projected.status, 'partial')
+  assert.equal(projected.branches[0].status, 'failed')
+  assert.equal(projected.branches[0].outputCount, 1)
+  assert.equal(projected.branches[0].error, job.partialError)
+  assert.equal(mergeAgentRunForWrite(projected, projected).status, 'partial')
+  const readyNode = { id: 'kept', type: 'result', data: { jobId: job.id, image: '/api/media/kept', status: 'ready' } }
+  const document = { nodes: [readyNode, { id: 'generate', type: 'generate', data: { jobId: job.id } }], generationJobs: [job] }
+  const retargeted = retargetGenerationJobForRetry(document, job.id, 'job-retry', 300).document
+  assert.deepEqual(retargeted.nodes[0], readyNode)
+  assert.deepEqual(retargeted.generationJobs.find((item) => item.id === job.id), job)
+})
 
 test('Agent Run 创建请求只持久化计划元数据与独立分支', () => {
   const input = validateAgentRunCreation(creation)

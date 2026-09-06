@@ -8,11 +8,34 @@ export type AgentDockTarget = {
   rootRecipe: GenerationRecipe
 }
 
+export function isMediaArtifact(artifact: Pick<BotanicAgentArtifact, 'kind' | 'url'>) {
+  return artifact.kind === 'image' || artifact.kind === 'video'
+}
+
 export type AgentArtifactIndexState = {
   projectId: string
   artifacts: BotanicIndexedArtifact[]
   nextBefore?: string
-  status: 'idle' | 'loading' | 'loading-more' | 'ready' | 'error'
+  status: 'idle' | 'loading' | 'loading-more' | 'ready' | 'error' | 'error-more'
+}
+
+export function agentArtifactIndexNextPage(index: AgentArtifactIndexState): { before?: string } | null {
+  if (index.status === 'error') return {}
+  if ((index.status === 'ready' || index.status === 'error-more') && index.nextBefore !== undefined) return { before: index.nextBefore }
+  return null
+}
+
+/** 合并一页历史索引；游标属于本次读取，不从缓存数量推断历史是否穷尽。 */
+export function mergeAgentArtifactIndexPage(
+  current: AgentArtifactIndexState,
+  page: { artifacts: BotanicIndexedArtifact[]; nextBefore?: string },
+): AgentArtifactIndexState {
+  const merged = new Map(current.artifacts.map((artifact) => [artifact.id, artifact]))
+  for (const artifact of page.artifacts) {
+    const previous = merged.get(artifact.id)
+    if (!previous || artifact.updatedAt >= previous.updatedAt) merged.set(artifact.id, artifact)
+  }
+  return { ...current, artifacts: [...merged.values()], nextBefore: page.nextBefore, status: 'ready' }
 }
 
 export type AgentContextItem = {

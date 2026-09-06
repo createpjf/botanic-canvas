@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import test from 'node:test'
 import { createAgentRouteHandler, createServerSentEventWriter } from './agentRoutes.mjs'
+import { createAgentMessageRouteHandler } from './agentMessageRoutes.mjs'
 import { matchBotanicHttpRoutes } from './httpRouteTable.mjs'
 import { AgentSubagentServiceError } from '../agent/subagent/agentSubagentService.mjs'
 import { AgentSubagentPersistenceError } from '../agent/subagent/agentSubagentPersistence.mjs'
@@ -24,6 +25,61 @@ import {
 import { createAgentTargetBinding } from '../agentTargetBinding.mjs'
 
 const targetImage = 'data:image/png;base64,AQ=='
+
+test('引用准备重试只读取指定失败项，不创建 Turn、Run 或生成任务', async () => {
+  const reads = []; const responses = []
+  let denied = true
+  const handler = createAgentRouteHandler({
+    config: { flockApiKey: 'test-only', flockTextModel: 'gemini-3.7-flash', security: { agentPlansPerFiveMinutes: 10 } },
+    productStore: {
+      projectAccess: async () => ({ exists: true, role: 'editor' }),
+      readProject: async () => ({ document: { id: 'project-1', nodes: ['good', 'failed'].map((id) => ({
+        id, type: 'asset', data: { image: `/api/media/${id}`, mediaKind: 'image' },
+      })) } }),
+      putAgentRun: () => assert.fail('不得创建 Run'),
+      claimAgentTurn: () => assert.fail('不得创建 Turn'),
+    },
+    mediaService: { enabled: true, readGenerationInput: async (userId, mediaId, projectId) => {
+      reads.push({ userId, mediaId, projectId })
+      if (denied) throw Object.assign(new Error('private media path'), { statusCode: 403 })
+      return { mimeType: 'image/png', buffer: Buffer.from('image') }
+    } },
+    requireUser: async () => ({ id: 'user-1' }), enforceRateLimit: async () => true,
+    readJson: async () => ({ nodeIds: ['failed'], plannerModel: 'gemini-3.7-flash' }),
+    json: (_response, status, body) => { responses.push({ status, body }); return true },
+    error: (_response, status, code) => { responses.push({ status, code }); return true },
+  })
+  const url = new URL('http://botanic.test/api/projects/project-1/agent-references/prepare')
+  const post = () => handler(Object.assign(new EventEmitter(), { method: 'POST', headers: {} }), new EventEmitter(), url, matchBotanicHttpRoutes(url.pathname), 'prepare-only')
+  assert.equal(await post(), true)
+  assert.deepEqual(responses.at(-1).body.items, [{ nodeId: 'failed', stage: 'failed', mode: 'none', reason: 'forbidden' }])
+  denied = false
+  await post()
+  assert.deepEqual(responses.at(-1).body.items, [{ nodeId: 'failed', stage: 'prepared', mode: 'image' }])
+  assert.deepEqual(reads, Array.from({ length: 2 }, () => ({ userId: 'user-1', mediaId: 'failed', projectId: 'project-1' })))
+  assert.doesNotMatch(JSON.stringify(responses), /data:image|private media|submitted/u)
+})
+
+test('引用准备入口拒绝无权限与任意媒体 URL，不绕过项目归属', async () => {
+  let body = { nodeIds: ['failed'], plannerModel: 'gemini-3.7-flash' }
+  let role = 'viewer'; let readCount = 0
+  const responses = []
+  const handler = createAgentRouteHandler({
+    config: { security: { agentPlansPerFiveMinutes: 10 } },
+    productStore: { projectAccess: async () => ({ exists: true, role }), readProject: async () => { readCount++; return {} } },
+    requireUser: async () => ({ id: 'user-1' }), enforceRateLimit: async () => true,
+    readJson: async () => body,
+    json: () => assert.fail('不得准备无权限或无效请求'),
+    error: (_response, status, code) => { responses.push({ status, code }); return true },
+  })
+  const url = new URL('http://botanic.test/api/projects/project-1/agent-references/prepare')
+  const post = () => handler({ method: 'POST', headers: {} }, {}, url, matchBotanicHttpRoutes(url.pathname), 'invalid-prepare')
+  await assert.rejects(post(), (caught) => caught.code === 'PROJECT_ACCESS_FORBIDDEN')
+  role = 'editor'; body = { ...body, image: 'https://private.example/image' }
+  await post()
+  assert.deepEqual(responses.at(-1), { status: 400, code: 'INVALID_REFERENCE_PREPARATION' })
+  assert.equal(readCount, 0)
+})
 
 const runInput = {
   projectId: 'project-concurrent',
@@ -632,6 +688,46 @@ test('Agent 阅读位置增量更新写入当前成员回执，不修改共享�
   assert.equal(storedReceipts[0]?.receipt.messageId, 'message-reading')
   assert.ok(storedReceipts[0]?.receipt.updatedAt >= remoteSession.updatedAt)
   assert.equal(responses[0]?.body.receipt.messageId, 'message-reading')
+})
+
+test('规划确认写入核对原 Turn 当前问题，取消后不能保存答案', async () => {
+  const question = { id: 'plan-clarification:turn-plan', originalInstruction: '修改原图', fields: [] }
+  let turn = { id: 'turn-plan', projectId: 'project-1', status: 'waiting_user', result: { runtimeOperation: 'plan', kind: 'clarification', clarification: question } }
+  let writes = 0
+  const responses = []
+  let body = { id: 'question-1', role: 'assistant', kind: 'question', status: 'answered', question }
+  const handler = createAgentMessageRouteHandler({
+    productStore: {
+      projectAccess: async () => ({ exists: true, role: 'owner' }),
+      readAgentTurn: async () => turn,
+      putAgentMessage: async (_u, _p, _s, message) => { writes++; return message },
+    },
+    requireUser: async () => ({ id: 'user-1' }),
+    readJson: async () => body,
+    json: (_r, status) => { responses.push(status); return true },
+    error: (_r, status, code) => { responses.push({ status, code }); return true },
+    recordCollaborationActivity: async () => {},
+  })
+  const submit = () => handler({ method: 'PUT' }, {}, ['', 'project-1', 'session-1', 'question-1'])
+  await submit()
+  assert.equal(writes, 1)
+  turn = { ...turn, status: 'cancelled' }
+  await submit()
+  assert.equal(writes, 1)
+  assert.deepEqual(responses.at(-1), { status: 409, code: 'AGENT_MESSAGE_ANSWER_CONFLICT' })
+  turn = { id: 'turn-generation', projectId: 'project-1', sessionId: 'session-1', status: 'completed', result: { kind: 'generation', mediaKind: 'image', prompt: '原图' } }
+  body = { ...body, turnId: turn.id, question: { ...question, id: 'clarification-legacy', resolvedGeneration: { turnId: turn.id, mediaKind: 'image', prompt: '原图' } } }
+  await submit()
+  assert.equal(writes, 2, '已完成的生成决策仍可继续确认设置')
+  turn = { ...turn, status: 'cancelled' }
+  await submit()
+  assert.equal(writes, 2, '旧格式卡也不能绕过原 Turn 的取消状态')
+  assert.deepEqual(responses.at(-1), { status: 409, code: 'AGENT_MESSAGE_ANSWER_CONFLICT' })
+  turn = { ...turn, id: 'turn-plan', status: 'completed', result: { runtimeOperation: 'plan', kind: 'plan' } }
+  body = { ...body, turnId: turn.id, question, status: 'submitted', runId: 'existing-run' }
+  await submit()
+  assert.equal(writes, 3, '已有任务的关联收口不是再次回答旧规划问题')
+  assert.equal(responses.at(-1), 200)
 })
 
 test('Agent 消息独立写入后产生可定位协作活动并实时广播', async () => {

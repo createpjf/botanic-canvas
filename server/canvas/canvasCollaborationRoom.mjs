@@ -1,5 +1,6 @@
 import * as Y from 'yjs'
 import { canvasGraphConflictCode } from '../store/productStoreContract.mjs'
+import { isCanonicalImageFormat } from '../media/mediaFormats.mjs'
 
 const clone = (value) => structuredClone(value)
 const mediaReferenceKeys = new Set(['image', 'maskImage', 'externalImage', 'mediaUrl', 'thumbnailUrl', 'previewUrl'])
@@ -50,6 +51,13 @@ function sanitizeCollaborativeValue(value, key, mediaContext = false, stripExter
 
 function persistableNode(node) {
   const normalized = sanitizeCollaborativeValue(node)
+  // 本地媒体服务可持久化 inline 输出；仅还原权威节点的媒体，不还原嵌套负载。
+  // collaborativeNode 仍会移除该字段，客户端增量与 Yjs 快照不能携带图片字节。
+  const mime = typeof node.data?.image === 'string' ? node.data.image.match(/^data:([^;,]+);base64,/i)?.[1] : undefined
+  if ((node.type === 'asset' || node.type === 'result') && normalized.data
+    && (isCanonicalImageFormat(mime) || mime?.toLowerCase() === 'video/mp4')) {
+    normalized.data.image = node.data.image
+  }
   delete normalized.selected
   delete normalized.dragging
   if (normalized.type === 'result' && normalized.data) delete normalized.data.selected
@@ -201,6 +209,7 @@ function materializeNodes(document, current, changedRecordIds, changedGeometryId
       ...(baseline.type ? { type: baseline.type } : {}),
       ...clone(geometry),
       ...clone(config),
+      position: clone(geometry.position ?? baseline.position),
     }
     if ((value.type === 'asset' || value.type === 'result') && !value.data?.image && existing?.data?.image) {
       value.data = { ...value.data, image: existing.data.image }
@@ -357,7 +366,7 @@ function restoredRoomState(state) {
  * 一个项目对应一个持久化 Y.Doc 房间。调用方只负责提供三种 Adapter 行为：
  * 初始状态、追加增量、压缩快照；Yjs 恢复与图谱物化全部封装在模块内部。
  */
-export function createCanvasCollaborationRoom({ state, append, compact, reload, compactEvery = 64 }) {
+export function createCanvasCollaborationRoom({ state, append, compact, reload, beforeAppend = async (_change, _actorId) => {}, compactEvery = 64 }) {
   const restored = restoredRoomState(state)
   let document = restored.document
   let graph = restored.graph
@@ -479,6 +488,7 @@ export function createCanvasCollaborationRoom({ state, append, compact, reload, 
       : encodedUpdate
     let saved
     try {
+      await beforeAppend?.({ previousGraph, graph: clone(graph) }, actorId)
       saved = await append({
         update: durableUpdate,
         idempotencyUpdate: encodedUpdate,

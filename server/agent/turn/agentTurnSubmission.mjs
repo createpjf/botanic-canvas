@@ -222,7 +222,8 @@ export function createAgentTurnSubmission({
       const access = await requireProjectPermission(productStore, userId, validatedInput.projectId, 'read')
       const [project, projectSkills] = await Promise.all([
         productStore.readProject(userId, validatedInput.projectId),
-        productStore.listAgentSkills(userId, validatedInput.projectId).then((value) => value ?? []),
+        // Local Adapter 的 listAgentSkills 是同步方法;Promise.resolve 同时兼容三个 Adapter。
+        Promise.resolve(productStore.listAgentSkills(userId, validatedInput.projectId)).then((value) => value ?? []),
       ])
       if (!project?.document) {
         throw Object.assign(new Error('未找到项目或你没有访问权限。'), {

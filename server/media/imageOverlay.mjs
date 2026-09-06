@@ -130,7 +130,9 @@ export function decodeRgbaImage(buffer, mimeType = '') {
   }
   const bytesPerPixel = colorType === 6 ? 4 : colorType === 2 ? 3 : colorType === 4 ? 2 : 1
   const idat = Buffer.concat(chunks.filter((chunk) => chunk.type === 'IDAT').map((chunk) => chunk.data))
-  const raw = inflateSync(idat)
+  const rawBytes = (width * bytesPerPixel + 1) * height
+  const raw = inflateSync(idat, { maxOutputLength: rawBytes })
+  if (raw.length !== rawBytes) throw new GenerationError(422, 'INVALID_REFERENCE', 'PNG 像素数据不完整。')
   const samples = unfilter(raw, width, height, bytesPerPixel)
   const palette = chunks.find((chunk) => chunk.type === 'PLTE')?.data
   const transparency = chunks.find((chunk) => chunk.type === 'tRNS')?.data

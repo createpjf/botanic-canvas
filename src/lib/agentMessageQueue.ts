@@ -24,6 +24,8 @@ export type AgentMessageQueueFlushResult = {
   delivered: string[]
   failed: string[]
   pending: string[]
+  /** 仅本次交付的权威回执，不写入离线队列。被更新快照取代的回执不下发。 */
+  receipts?: Array<{ sessionId: string; message: BotanicAgentMessage }>
 }
 
 export type AgentMessageQueueStorage = {
@@ -36,7 +38,7 @@ type QueueError = Error & { status?: number; code?: string }
 
 type AgentMessageQueueOptions = {
   storage?: AgentMessageQueueStorage
-  deliver: (item: AgentMessageQueueItem) => Promise<void>
+  deliver: (item: AgentMessageQueueItem) => Promise<BotanicAgentMessage>
   now?: () => number
   isRetryableError?: (error: unknown) => boolean
 }
@@ -197,6 +199,7 @@ export function createAgentMessageQueue(options: AgentMessageQueueOptions) {
     if (flushPromise) return flushPromise
     flushPromise = (async () => {
       const delivered: string[] = []
+      const receipts: NonNullable<AgentMessageQueueFlushResult['receipts']> = []
       const ordered = items
         .filter((item) => item.status !== 'failed')
         .sort(compareQueueItems)
@@ -217,7 +220,12 @@ export function createAgentMessageQueue(options: AgentMessageQueueOptions) {
           if (!persist()) break
           const deliverySnapshot = structuredClone(item)
           try {
-            await options.deliver(deliverySnapshot)
+            const accepted = await options.deliver(deliverySnapshot)
+            if (!accepted || accepted.id !== deliverySnapshot.message.id
+              || accepted.role !== deliverySnapshot.message.role
+              || typeof accepted.content !== 'string' || !Number.isSafeInteger(accepted.createdAt)) {
+              throw Object.assign(new Error('消息保存回执无效，请重试。'), { code: 'AGENT_MESSAGE_RECEIPT_INVALID', status: 502 })
+            }
             const latest = items.find((candidate) => candidate.key === item.key)
             if (!latest) break
             if (JSON.stringify(latest.message) !== JSON.stringify(deliverySnapshot.message)) {
@@ -227,6 +235,7 @@ export function createAgentMessageQueue(options: AgentMessageQueueOptions) {
               continue
             }
             delivered.push(latest.message.id)
+            receipts.push({ sessionId: latest.sessionId, message: structuredClone(accepted) })
             items = items.filter((candidate) => candidate.key !== latest.key)
             persist()
           } catch (error) {
@@ -251,6 +260,7 @@ export function createAgentMessageQueue(options: AgentMessageQueueOptions) {
         delivered,
         failed: snapshot().filter((item) => item.status === 'failed').map((item) => item.message.id),
         pending: snapshot().filter((item) => item.status !== 'failed').map((item) => item.message.id),
+        ...(receipts.length ? { receipts } : {}),
       }
       return result
     })().finally(() => { flushPromise = undefined })

@@ -12,7 +12,7 @@ import { decodeArtifactCursor, encodeArtifactCursor } from '../agent/semantic/bo
 import { retryFailedWorkflowItems } from '../workflow/productionWorkflow.mjs'
 import { generationIdempotencyKey, generationJobIdForIdempotency } from '../generation/generationIdempotency.mjs'
 import { persistedGenerationJob, publicGenerationJob } from '../generation/generationProvider.mjs'
-import { retargetGenerationJobForRetry } from '../generation/generationResultReconciliation.mjs'
+import { createAgentReferenceRouteHandler } from './agentReferenceRoutes.mjs'
 import { requireProjectPermission } from '../auth/projectAuthorization.mjs'
 import { projectPermissionDecision } from '../auth/authorization.mjs'
 import { buildAgentExecutionTrace } from '../observability/agentExecutionTrace.mjs'
@@ -118,16 +118,6 @@ function publicAgentSubagentMessage(message) {
     ...(Array.isArray(message.entityReferences)
       ? { entityReferences: structuredClone(message.entityReferences) }
       : {}),
-  }
-}
-
-function isAuthorizedAgentMediaUrl(value) {
-  if (typeof value !== 'string' || !value.startsWith('/api/media/') || value.length > 2048) return false
-  try {
-    const parsed = new URL(value, 'http://botanic.internal')
-    return parsed.origin === 'http://botanic.internal' && parsed.pathname.startsWith('/api/media/')
-  } catch {
-    return false
   }
 }
 
@@ -679,12 +669,15 @@ export function createAgentRouteHandler({
   const agentSkillRoutes = createAgentSkillRouteHandler({
     productStore, json, error, readJson, requireUser, methodNotAllowed,
   })
+  const prepareAgentReferences = createAgentReferenceRouteHandler({
+    config, productStore, json, error, readJson, requireUser, enforceRateLimit, mediaService,
+  })
   let agentActionRouteHandler
   const agentActionRoutes = () => {
     agentActionRouteHandler ??= createAgentActionRouteHandler({
       config, productStore, json, error, readJson, text, requireUser, enforceRateLimit,
       methodNotAllowed, mediaService, agentRunGeneration, publishProjectUpdated, observeAgentRun,
-      isAuthorizedAgentMediaUrl, actionHasContext, requireActionProposal,
+      actionHasContext, requireActionProposal,
       authoritativeActionAttempt, commitAgentReviewAction,
       cancellationService, durableAgentActionExecution, durableAgentActionReconciliation,
       agentActionTimeoutMs, recordCollaborationActivity,
@@ -710,6 +703,7 @@ export function createAgentRouteHandler({
     return agentTurnHttpAdapter
   }
   return async function handleAgentRoute(request, response, url, routeMatches, requestId) {
+    if (await prepareAgentReferences(request, response, routeMatches.projectAgentReferencePreparation)) return true
     const turnHandled = await turnHttpAdapter()({ request, response, url, routeMatches, requestId })
     if (turnHandled !== false) return turnHandled
     const skillHandled = await agentSkillRoutes({ request, response, url, routeMatches })

@@ -14,6 +14,7 @@ import {
   type TimelineBlock,
   type TimelineStepBlock,
   type TimelineStepKind,
+  type TimelineWebSource,
 } from './agentTimeline.ts'
 
 export type AgentToolAccordionRowStatus = 'running' | 'awaiting_confirmation' | 'succeeded' | 'failed' | 'aborted'
@@ -29,10 +30,12 @@ export type AgentToolAccordionRow = {
   /** 动作目标（hostname / 节点名 / MCP server 名），来自既有安全展示数据的投影。 */
   target?: string
   durationMs?: number
+  startedAt?: number
   error?: string
   why?: string
   input?: unknown
   output?: unknown
+  sources?: TimelineWebSource[]
   recovery?: AgentToolCallTrace['recovery']
   receiptId?: string
   recovered?: boolean
@@ -208,10 +211,22 @@ function toolAccordionDetail(call: AgentToolCallTrace) {
   return stripped || label || call.name
 }
 
-function toolAccordionDurationMs(startedAt?: number, endedAt?: number) {
-  if (startedAt === undefined || endedAt === undefined) return undefined
-  const duration = endedAt - startedAt
-  return duration >= 1_000 ? duration : undefined
+function toolAccordionDurationMs(
+  startedAt?: number,
+  endedAt?: number,
+  status?: AgentToolAccordionRowStatus,
+  now = Date.now(),
+  live = true,
+) {
+  if (startedAt === undefined) return undefined
+  const end = endedAt ?? (status === 'running' && live ? now : undefined)
+  if (end === undefined || end < startedAt) return undefined
+  return Math.max(0, end - startedAt)
+}
+
+function elapsedRowDuration(rows: AgentToolAccordionRow[]) {
+  if (!rows.length || rows.some((row) => row.durationMs === undefined || row.startedAt === undefined)) return undefined
+  return Math.max(...rows.map((row) => row.startedAt! + row.durationMs!)) - Math.min(...rows.map((row) => row.startedAt!))
 }
 
 function aggregateAccordionStatus(statuses: AgentToolAccordionRowStatus[]): AgentToolAccordionRowStatus {
@@ -264,6 +279,7 @@ function quietReadSummaryRow(rows: AgentToolAccordionRow[], locale: string): Age
     verb,
     detail: verb,
     status: 'succeeded',
+    ...(elapsedRowDuration(rows) !== undefined ? { durationMs: elapsedRowDuration(rows) } : {}),
     callCount: count,
     calls: rows,
   }
@@ -281,15 +297,14 @@ function buildToolAccordionRow(
   timing?: { startedAt?: number; endedAt?: number },
   locale = 'zh-CN',
   hostname?: string,
+  sources?: TimelineWebSource[],
+  now = Date.now(),
+  live = true,
 ): AgentToolAccordionRow {
   const presentation = agentTimelineToolPresentation(call)
   const status = toolCallRowStatus(call.status)
-  const durationMs = toolAccordionDurationMs(timing?.startedAt, timing?.endedAt)
-  const verb = durationMs !== undefined && status === 'succeeded'
-    ? (locale === 'en'
-      ? `Ran in ${Math.round(durationMs / 1_000)}s`
-      : `已在 ${Math.round(durationMs / 1_000)}s 内运行`)
-    : toolAccordionVerb(presentation.kind, status, locale)
+  const durationMs = toolAccordionDurationMs(timing?.startedAt, timing?.endedAt, status, now, live)
+  const verb = toolAccordionVerb(presentation.kind, status, locale)
   const target = toolAccordionTarget(call, hostname)
   return {
     id: call.id,
@@ -301,10 +316,12 @@ function buildToolAccordionRow(
     status,
     ...(target ? { target } : {}),
     ...(durationMs !== undefined ? { durationMs } : {}),
+    ...(timing?.startedAt !== undefined ? { startedAt: timing.startedAt } : {}),
     ...(call.error?.trim() ? { error: call.error.trim() } : {}),
     ...(call.summary?.trim() ? { why: call.summary.trim() } : {}),
     ...(call.input !== undefined ? { input: call.input } : {}),
     ...(call.output !== undefined ? { output: call.output } : {}),
+    ...(sources?.length ? { sources } : {}),
     ...(call.recovery ? { recovery: call.recovery } : {}),
     ...(call.receiptId?.trim() ? { receiptId: call.receiptId.trim() } : {}),
     ...(call.recovered ? { recovered: true } : {}),
@@ -326,6 +343,7 @@ function mergeMcpAccordionRows(rows: AgentToolAccordionRow[], locale: string): A
       const calls = [...(previous.calls ?? [{ ...previous, callCount: undefined }]), row]
       const status = aggregateAccordionStatus(calls.map((call) => call.status))
       const verb = toolAccordionVerb(previous.kind, status, locale)
+      const durationMs = elapsedRowDuration(calls)
       merged[merged.length - 1] = {
         ...previous,
         id: `${previous.id}+${row.id}`,
@@ -334,6 +352,7 @@ function mergeMcpAccordionRows(rows: AgentToolAccordionRow[], locale: string): A
         detail: previous.detail,
         callCount: calls.length,
         calls,
+        ...(durationMs !== undefined ? { durationMs } : { durationMs: undefined }),
         ...(calls.find((call) => call.error)?.error ? { error: calls.find((call) => call.error)?.error } : { error: undefined }),
       }
       continue
@@ -346,6 +365,7 @@ function mergeMcpAccordionRows(rows: AgentToolAccordionRow[], locale: string): A
     ) {
       const calls = [...previous.calls, row]
       const status = aggregateAccordionStatus(calls.map((call) => call.status))
+      const durationMs = elapsedRowDuration(calls)
       merged[merged.length - 1] = {
         ...previous,
         id: `${previous.id}+${row.id}`,
@@ -353,6 +373,7 @@ function mergeMcpAccordionRows(rows: AgentToolAccordionRow[], locale: string): A
         verb: toolAccordionVerb(previous.kind, status, locale),
         callCount: calls.length,
         calls,
+        ...(durationMs !== undefined ? { durationMs } : { durationMs: undefined }),
         ...(calls.find((call) => call.error)?.error ? { error: calls.find((call) => call.error)?.error } : { error: undefined }),
       }
       continue
@@ -385,6 +406,11 @@ function accordionGroupTitle(step: TimelineStepBlock | undefined, rows: AgentToo
 }
 
 function timelineElapsedMs(timeline: AgentTimelineState, now: number) {
+  if (timeline.timing?.startedAt !== undefined) {
+    const end = timeline.timing.endedAt ?? (timeline.timing.live ? now : undefined)
+    return end === undefined ? 0 : Math.max(0, end - timeline.timing.startedAt)
+  }
+  if (timeline.truncation) return 0
   // 一整段区间：最早的思考/步骤开始 → 全部结算后的最晚结束；仍有 running 就用 now，
   // 不能在思考结束后冻住（后面的工具还在跑）。
   let startedAt: number | undefined
@@ -397,12 +423,12 @@ function timelineElapsedMs(timeline: AgentTimelineState, now: number) {
       else endedAt = Math.max(endedAt, block.endedAt ?? block.startedAt)
     } else if (block.type === 'step') {
       if (block.status === 'running') running = true
-      if (block.startedAt === undefined) continue
+      if (block.startedAt === undefined || (block.status !== 'running' && block.endedAt === undefined)) return 0
       startedAt = startedAt === undefined ? block.startedAt : Math.min(startedAt, block.startedAt)
       if (block.status !== 'running') endedAt = Math.max(endedAt, block.endedAt ?? block.startedAt)
     }
   }
-  if (startedAt === undefined) return 0
+  if (startedAt === undefined || (running && timeline.timing?.live === false)) return 0
   return Math.max(0, (running ? now : endedAt) - startedAt)
 }
 
@@ -490,9 +516,13 @@ export function presentAgentToolAccordion(
 
   // web 步骤的目标 hostname：单来源步骤才有明确目标，多来源（聚合搜索）不标。
   const hostnameByToolId = new Map<string, string>()
+  const sourcesByToolId = new Map<string, TimelineWebSource[]>()
   for (const step of steps) {
-    if (step.sources?.length !== 1) continue
-    for (const id of step.sourceToolIds) hostnameByToolId.set(id, step.sources[0].hostname)
+    if (!step.sources?.length) continue
+    for (const id of step.sourceToolIds) {
+      sourcesByToolId.set(id, step.sources)
+      if (step.sources.length === 1) hostnameByToolId.set(id, step.sources[0].hostname)
+    }
   }
 
   const visibleRows: AgentToolAccordionRow[] = []
@@ -501,7 +531,7 @@ export function presentAgentToolAccordion(
   let nextUpdateAt: number | undefined
   for (const call of orderedCalls) {
     const timing = timingByToolId.get(call.id)
-    const row = buildToolAccordionRow(call, timing, locale, hostnameByToolId.get(call.id))
+    const row = buildToolAccordionRow(call, timing, locale, hostnameByToolId.get(call.id), sourcesByToolId.get(call.id), now, timeline.timing?.live !== false && !timeline.truncation)
     const disposition = quietReadDisposition(call, row, timing, now)
     if (disposition.nextUpdateAt !== undefined) {
       nextUpdateAt = nextUpdateAt === undefined ? disposition.nextUpdateAt : Math.min(nextUpdateAt, disposition.nextUpdateAt)
@@ -548,7 +578,7 @@ export function presentAgentToolAccordionFromCalls(
       ? (last.detail || last.verb)
       : (locale === 'en' ? 'Tool calls' : '工具调用')
   return {
-    elapsedMs: startedAt !== undefined ? Math.max(0, now - startedAt) : 0,
+    elapsedMs: running && startedAt !== undefined ? Math.max(0, now - startedAt) : 0,
     groups: [{
       id: 'plan-tools',
       title,
@@ -567,6 +597,19 @@ export function agentToolAccordionElapsedLabel(elapsedMs: number, locale: string
     return minutes ? `Processed ${minutes}m ${remainder}s` : `Processed ${seconds}s`
   }
   return minutes ? `已处理 ${minutes}分钟 ${remainder}秒` : `已处理 ${seconds}秒`
+}
+
+export function agentToolDurationLabel(durationMs: number | undefined, locale: string) {
+  if (durationMs === undefined) return '—'
+  const seconds = Math.max(0, Math.floor(durationMs / 1_000))
+  const minutes = Math.floor(seconds / 60)
+  const remainder = seconds % 60
+  if (locale === 'en') {
+    if (durationMs < 1_000) return '<1s'
+    return minutes ? `${minutes}m ${String(remainder).padStart(2, '0')}s` : `${seconds}s`
+  }
+  if (durationMs < 1_000) return '<1秒'
+  return minutes ? `${minutes}分${String(remainder).padStart(2, '0')}秒` : `${seconds}秒`
 }
 
 /** 对话默认层：空思考丢掉；进行中按到达顺序流在主列。结算后提交让给出图结果，失败也不叠两行。 */
@@ -605,7 +648,7 @@ export function conversationTimelineStepTitle(
   const en = locale === 'en'
   const running = block.status === 'running'
   const failed = block.status === 'failed'
-  if (block.status === 'aborted') return en ? 'Not run' : '未执行'
+  if (block.status === 'aborted') return isGenerateStep(block) ? (en ? 'Stopped' : '已停止') : (en ? 'Not run' : '未执行')
   if (block.kind === 'write' && /^生成/u.test(block.title)) {
     const label = block.title.replace(/^生成(?:\s*·\s*|\s*)/u, '').trim()
     const suffix = label && !isBotanicAgentProcessLabel(label) && label !== '分支' ? ` · ${label}` : ''

@@ -7,6 +7,34 @@ import type {
   observePersistentBotanicAgentTurn,
   streamBotanicAgentTurn,
 } from '../../lib/agentApi.ts'
+import type { AgentTurnTimelineReadResult } from '../../lib/agentTurnTimelineEventReader.ts'
+
+/** Turn → Run POST 交接时仍按计划的原 Turn 停止，不借用另一条最新任务。 */
+export function resolveAgentStopTarget(messages: readonly BotanicAgentMessage[], input: {
+  activeTurnId?: string; activeInputMessage?: BotanicAgentMessage | null; submittingMessageId?: string
+}) {
+  const submitting = messages.find((message) => message.id === input.submittingMessageId)
+  const turnId = input.activeTurnId || submitting?.plan?.turnId
+  const inputMessage = input.activeInputMessage && (!turnId || !input.activeInputMessage.turnId || input.activeInputMessage.turnId === turnId)
+    ? input.activeInputMessage
+    : turnId ? messages.find((message) => message.role === 'user' && message.turnRequestSnapshot && message.turnId === turnId) : undefined
+  return { turnId, inputMessage }
+}
+
+/** 失败文案不是失败事实；重试前先读原 Turn，禁止重放有副作用的过程。 */
+export function failedAgentTurnRecoveryDecision(
+  read: AgentTurnTimelineReadResult,
+  runId?: string,
+): 'task' | 'observe' | 'retry' | 'inspect' | 'blocked' {
+  if (runId) return 'task'
+  if (!read.turn) return 'blocked'
+  if (['AGENT_TOOL_OUTCOME_UNKNOWN', 'AGENT_ACTION_OUTCOME_UNKNOWN', 'AGENT_REVIEW_OUTCOME_UNKNOWN'].includes(read.turn.error?.code ?? '')) return 'inspect'
+  if (['queued', 'running', 'cancelling', 'waiting_user', 'completed'].includes(read.turn.status)) return 'observe'
+  if (read.turn.status !== 'failed' || read.truncated || read.hasNonReadTool !== false || read.turn.result
+    || !['PROVIDER_TIMEOUT', 'PROVIDER_RATE_LIMITED', 'PROVIDER_UNAVAILABLE', 'PROVIDER_STREAM_CLOSED', 'PROVIDER_STREAM_MALFORMED', 'REQUEST_TIMEOUT'].includes(read.turn.error?.code ?? '')) return 'blocked'
+  // 任何非只读工具都留给其自身的 receipt/人工恢复入口，不能重跑整轮。
+  return read.events.some((event) => event.type === 'tool' && event.toolCall.risk !== 'read') ? 'blocked' : 'retry'
+}
 
 /**
  * pending Message 的唯一恢复 seam：先观察 durable Turn，缺失时才用同一稳定请求补提交。

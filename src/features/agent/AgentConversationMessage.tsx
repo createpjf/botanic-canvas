@@ -1,9 +1,9 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
+import { agentArtifactTargetNodeIds } from '../../domain/agentArtifactTargets'
 import { botanicMotion, gsap, prefersReducedMotion, useGSAP } from '../../components/gsapMotion'
 import {
   BOTANIC_AGENT_MAX_SINGLE_OUTPUT,
   botanicAgentAppliedSkillName,
-  botanicAgentContextSnapshotNodeIds,
   botanicAgentExecutionPauseHint,
   botanicAgentPendingConfirmationCount,
   botanicAgentPlanMediaKind,
@@ -44,10 +44,11 @@ import { bobMessageAllowsSays, bobMessageIsLargeReply, bobReplyPresentation } fr
 import { useBobSaysPlays } from './useBobSaysPlays'
 import { AlertIcon, CheckIcon, ChevronDownIcon, ContinueChatIcon, CopyIcon, EditIcon, FocusIcon, MoreIcon, PinNodeIcon, ThumbDownIcon, ThumbUpIcon } from '../../components/BotanicIcons'
 import { AgentToolOrb } from '../../components/AgentToolOrb'
-import { AgentWebSourcePills } from '../../components/AgentWebSourcePills'
+import { AgentInlineCitation, AgentWebSourcePills } from '../../components/AgentWebSourcePills'
 import { agentPlannerModelLabel, modelDisplayLabel, modelProviderLogo } from '../../components/generationModelPresentation'
 import { BotanicSelect } from '../../components/BotanicSelect'
-import { AgentClarificationCard, AgentPromptDiff } from './AgentWorkspaceParts'
+import { AgentPromptDiff } from './AgentWorkspaceParts'
+import { AgentClarificationMessage } from './AgentClarificationMessage'
 import { AgentMarkdownSources } from './AgentMarkdown'
 import { AgentPromptResponse } from './AgentPromptResponse'
 import { AgentCanvasActionPreview } from './AgentCanvasActionPreview'
@@ -57,7 +58,10 @@ import { agentMessageNeedsCollapse, splitAgentMessageSources } from '../../domai
 import type { BotanicAgentMentionCatalog } from '../../domain/agentMentions'
 import {
   botanicAgentMessageHasUtilities,
+  botanicAgentMessageIsRunLinked,
+  botanicAgentMessageIsSettled,
   botanicAgentMessageUtilityActions,
+  botanicAgentRunResultReadState,
   type BotanicAgentMessageUtilityActions,
 } from '../../domain/agentMessageUtilities'
 import { botanicAgentPlanBranchPrompts, botanicAgentPlanConfirmActionLabel, botanicAgentPlanSheetCountLabel } from '../../domain/agentVariations'
@@ -71,11 +75,24 @@ import { useProductI18n } from '../../i18n/react'
 import type { ProductLocale } from '../../i18n/core'
 import type { BotanicAgentRunReview } from '../../domain/agentReviewContract'
 import { agentTimelineOrbState, agentTimelineStepToolName, timelineStepShowsWebSources, timelineWebSourceHref, type AgentTimelineState, type TimelineBlock, type TimelineStepKind, type TimelineWebSource } from '../../domain/agentTimeline'
-import { agentTimelineHasRenderableContent, conversationTimelineStepTitle, presentAgentTimelineConversation, presentAgentToolAccordion, presentAgentToolAccordionFromCalls } from '../../domain/agentToolAccordion'
+import { agentTimelineHasRenderableContent, agentToolDurationLabel, conversationTimelineStepTitle, presentAgentTimelineConversation, presentAgentToolAccordion, presentAgentToolAccordionFromCalls } from '../../domain/agentToolAccordion'
 import { AgentToolCallAccordion, AgentToolCallIcon } from './AgentActionCard'
+import { Message, MessageContent } from '../../components/ai-elements/message'
+import { AgentReferenceUsageDetails } from './AgentReferenceUsage'
+import { prepareAgentReference } from '../../lib/agentReferencePreparation'
+import { serverPersistenceEnabled } from '../../lib/productSession'
 import { Reasoning, ReasoningContent, ReasoningTrigger } from '../../components/ai-elements/reasoning'
+import { Shimmer } from '../../components/ai-elements/shimmer'
+import { agentArtifactDisplayName } from './agentDisplayNames'
 import { Sources, SourcesContent, SourcesTrigger } from '../../components/ai-elements/sources'
+import { Artifact, ArtifactContent, ArtifactHeader, ArtifactTitle } from '../../components/ai-elements/artifact'
+import { WebPreview } from '../../components/ai-elements/web-preview'
+import { Plan, PlanAction, PlanContent, PlanDescription, PlanHeader, PlanTitle, PlanTrigger } from '../../components/ai-elements/plan'
+import { ModelSelector } from '../../components/ai-elements/model-selector'
+import { CodeBlock } from '../../components/ai-elements/code-block'
+import { Attachment as ElementsAttachment, AttachmentInfo as ElementsAttachmentInfo, AttachmentPreview as ElementsAttachmentPreview, Attachments as ElementsAttachments, type AttachmentData as ElementsAttachmentData } from '../../components/ai-elements/attachments'
 import { AgentAttachment, AgentAttachmentHoverPreview, AgentAttachmentInfo, AgentAttachmentPreview, AgentAttachments, attachmentFromArtifact, attachmentFromContextItem } from './AgentAttachment'
+import type { AgentArtifactIndexState } from './agentWorkspace.types'
 /** 单条任务消息内联展示的结果上限；更多结果去结果面板看，避免对话被结果流冲垮。 */
 const inlineRunResultLimit = 4
 const justFinishedRevealMs = 1200
@@ -124,7 +141,17 @@ function AgentMcpStructuredBlock({ value }: { value: unknown }) {
       </div>
     }
   }
-  return <pre className="agent-action-card__artifact-text">{JSON.stringify(value, null, 2)}</pre>
+  return <CodeBlock className="agent-action-card__artifact-text" code={JSON.stringify(value, null, 2)} language="json" />
+}
+
+function elementsAttachmentData(artifact: BotanicAgentArtifact): ElementsAttachmentData {
+  return {
+    id: artifact.id,
+    type: 'file',
+    url: artifact.url ?? '',
+    mediaType: artifact.mimeType ?? (artifact.kind === 'video' ? 'video/*' : 'image/*'),
+    filename: artifact.label,
+  }
 }
 
 function AgentActionResultArtifacts({
@@ -138,37 +165,32 @@ function AgentActionResultArtifacts({
 }) {
   if (!artifacts.length) return null
   const t = (zh: string, en: string) => locale === 'en' ? en : zh
+  const mediaArtifacts = artifacts.filter((artifact) => (artifact.kind === 'image' || artifact.kind === 'video') && artifact.url)
+  const nonMediaArtifacts = artifacts.filter((artifact) => !mediaArtifacts.includes(artifact))
   return <div className="agent-action-card__artifacts" aria-label={t('工具结果', 'Tool results')}>
-    {artifacts.map((artifact) => {
-      if ((artifact.kind === 'image' || artifact.kind === 'video') && artifact.url) {
-        return <figure key={artifact.id} className="agent-action-card__media">
-          {artifact.kind === 'image'
-            ? <img src={artifact.url} alt={artifact.label} />
-            : <video src={artifact.url} controls playsInline aria-label={artifact.label} />}
-          <figcaption>{artifact.label}</figcaption>
-        </figure>
-      }
+    {mediaArtifacts.length ? <ElementsAttachments variant="grid" className="agent-action-card__media-attachments">
+      {mediaArtifacts.map((artifact) => <ElementsAttachment key={artifact.id} data={elementsAttachmentData(artifact)}>
+        <ElementsAttachmentPreview />
+        <ElementsAttachmentInfo />
+        <span className="agent-action-card__media-label">{artifact.label}</span>
+      </ElementsAttachment>)}
+    </ElementsAttachments> : null}
+    {nonMediaArtifacts.map((artifact) => {
       if (artifact.kind === 'text' && artifact.content) {
         const parsed = tryParseJsonValue(artifact.content)
-        if (parsed !== undefined) {
-          return <div key={artifact.id} className="agent-action-card__artifact">
-            <small>{artifact.label}</small>
-            <AgentMcpStructuredBlock value={parsed} />
-          </div>
-        }
-        return <div key={artifact.id} className="agent-action-card__artifact">
-          <small>{artifact.label}</small>
-          <pre className="agent-action-card__artifact-text">{artifact.content}</pre>
-        </div>
+        return <Artifact key={artifact.id} className="agent-action-card__artifact">
+          <ArtifactHeader><ArtifactTitle>{artifact.label}</ArtifactTitle></ArtifactHeader>
+          <ArtifactContent>{parsed !== undefined ? <AgentMcpStructuredBlock value={parsed} /> : <CodeBlock className="agent-action-card__artifact-text" code={artifact.content} language="text" />}</ArtifactContent>
+        </Artifact>
       }
       if (artifact.url) {
-        return <a key={artifact.id} className="agent-action-card__file" href={artifact.url} target="_blank" rel="noreferrer">{artifact.label}</a>
+        return <WebPreview key={artifact.id} className="agent-action-card__web-preview" title={artifact.label} url={artifact.url} />
       }
-      const nodeId = artifact.provenance.sourceNodeIds?.[0]
-      return <div key={artifact.id} className="agent-action-card__artifact is-meta">
+      const nodeId = agentArtifactTargetNodeIds(artifact)[0]
+      return <Artifact key={artifact.id} className="agent-action-card__artifact is-meta">
         <span>{artifact.label}</span>
         {nodeId ? <button type="button" className="agent-icon-button" aria-label={t('在画布定位', 'Locate on canvas')} title={t('在画布定位', 'Locate on canvas')} onClick={() => onLocateNode(nodeId)}><FocusIcon /></button> : null}
-      </div>
+      </Artifact>
     })}
   </div>
 }
@@ -342,22 +364,48 @@ function timelineSearchPills(sources: TimelineWebSource[]) {
   })
 }
 
+function timelineInlineCitationSources(timeline?: AgentTimelineState) {
+  if (!timeline) return []
+  const toolItems = timeline.blocks.find((block) => block.type === 'raw_group')?.items ?? []
+  const seen = new Set<string>()
+  const sources: TimelineWebSource[] = []
+  for (const block of timeline.blocks) {
+    if (block.type !== 'step' || !timelineStepShowsWebSources(block, toolItems)) continue
+    for (const source of block.sources ?? []) {
+      const key = timelineWebSourceHref(source) || source.hostname.toLowerCase()
+      if (seen.has(key)) continue
+      seen.add(key)
+      sources.push(source)
+    }
+  }
+  return sources.map((source) => {
+    const href = timelineWebSourceHref(source)
+    return {
+      hostname: source.hostname,
+      ...(href ? { href } : {}),
+      ...(source.title ? { title: source.title } : {}),
+    }
+  })
+}
+
 function AgentTimelineSearchStep({
   block,
   title,
   statusLabel,
+  durationLabel,
   toolItems,
   error,
 }: {
   block: Extract<TimelineBlock, { type: 'step' }>
   title: string
   statusLabel: string
+  durationLabel: string
   toolItems: AgentToolCallTrace[]
   error: ReactNode
 }) {
   const [open, setOpen] = useState(false)
   const sourceCount = block.sources?.length ?? 0
-  const accessibleLabel = `${title}${block.summary ? `, ${block.summary}` : ''}, ${statusLabel}`
+  const accessibleLabel = `${title}${block.summary ? `, ${block.summary}` : ''}, ${statusLabel}, ${durationLabel}`
 
   return <Sources open={open} onOpenChange={setOpen} className={`agent-timeline__search mb-0 is-${block.status}${open ? ' is-open' : ''}`}>
     <SourcesTrigger count={sourceCount} asChild>
@@ -368,7 +416,7 @@ function AgentTimelineSearchStep({
     >
       <span className="agent-timeline__step-icon" aria-hidden="true"><TimelineStepMarker block={block} toolItems={toolItems} /></span>
       <span className="agent-timeline__step-copy"><strong>{title}</strong>{block.summary ? <span>{block.summary}</span> : null}</span>
-      <small>{statusLabel}</small>
+      <small className="agent-timeline__step-meta"><span>{durationLabel}</span><span className="agent-timeline__step-status">{statusLabel}</span></small>
       <ChevronDownIcon />
     </button>
     </SourcesTrigger>
@@ -414,9 +462,11 @@ function AgentMessageTimeline({
   const thinkingLive = timeline.blocks.some((block) => block.type === 'thinking' && block.status === 'running')
   const toolItems = timeline.blocks.find((block) => block.type === 'raw_group')?.items ?? []
   const liveAccordion = accordion
+  const pipelineLive = timeline.blocks.some((block) => block.type === 'step' && block.status === 'running')
+  const clockLive = timeline.timing?.live ?? (toolLive || thinkingLive || pipelineLive)
 
   useEffect(() => {
-    if (toolLive || thinkingLive) {
+    if (clockLive) {
       const timer = window.setInterval(() => setNow(Date.now()), 1_000)
       return () => window.clearInterval(timer)
     }
@@ -424,7 +474,7 @@ function AgentMessageTimeline({
       const timer = window.setTimeout(() => setNow(Date.now()), accordion.nextUpdateAt - now + 1)
       return () => window.clearTimeout(timer)
     }
-  }, [accordion?.nextUpdateAt, now, thinkingLive, toolLive])
+  }, [accordion?.nextUpdateAt, now, clockLive])
 
   const renderBlock = (block: TimelineBlock) => {
     if (block.type === 'thinking') {
@@ -451,9 +501,16 @@ function AgentMessageTimeline({
         : block.status === 'succeeded'
           ? (locale === 'en' ? 'Completed' : '已完成')
           : block.status === 'aborted'
-            ? (locale === 'en' ? 'Not run' : '未执行')
+            ? conversationTimelineStepTitle(block, locale) ?? (locale === 'en' ? 'Not run' : '未执行')
             : (locale === 'en' ? 'Failed' : '失败')
       const title = conversationTimelineStepTitle(block, locale) ?? timelineStepTitle(block, locale)
+      const durationEnd = block.status === 'running' && clockLive ? now : block.endedAt
+      const durationLabel = agentToolDurationLabel(
+        block.startedAt !== undefined && durationEnd !== undefined
+          ? Math.max(0, durationEnd - block.startedAt)
+          : undefined,
+        locale,
+      )
       const failureCopy = block.status === 'failed'
         ? generationTaskErrorMessage(block.error, block.errorCode, locale === 'en' ? 'en' : 'zh-CN')
         : undefined
@@ -466,14 +523,15 @@ function AgentMessageTimeline({
           block={block}
           title={title}
           statusLabel={statusLabel}
+          durationLabel={durationLabel}
           toolItems={toolItems}
           error={stepError}
         />
       }
-      return <div key={block.id} className={`agent-timeline__step is-${block.status}`} aria-label={`${title}${block.summary ? `, ${block.summary}` : ''}, ${statusLabel}`}>
+      return <div key={block.id} className={`agent-timeline__step is-${block.status}`} aria-label={`${title}${block.summary ? `, ${block.summary}` : ''}, ${statusLabel}, ${durationLabel}`}>
         <span className="agent-timeline__step-icon" aria-hidden="true"><TimelineStepMarker block={block} toolItems={toolItems} /></span>
         <span className="agent-timeline__step-copy"><strong>{title}</strong>{block.summary ? <span>{block.summary}</span> : null}</span>
-        <small>{statusLabel}</small>
+        <small className="agent-timeline__step-meta"><span>{durationLabel}</span><span className="agent-timeline__step-status">{statusLabel}</span></small>
         {stepError}
       </div>
     }
@@ -504,15 +562,14 @@ function AgentMessageTimeline({
 function AgentCollapsibleContent({ content, prompt, mentionCatalog }: { content: string; prompt?: string; mentionCatalog?: BotanicAgentMentionCatalog }) {
   const { locale } = useProductI18n()
   const [expanded, setExpanded] = useState(false)
-  const { body, sources } = splitAgentMessageSources(content)
+  const { body } = splitAgentMessageSources(content)
   if (!agentMessageNeedsCollapse(content)) {
-    return <AgentPromptResponse content={content} prompt={prompt} mentionCatalog={mentionCatalog} />
+    return <AgentPromptResponse content={body} prompt={prompt} mentionCatalog={mentionCatalog} showSources={false} />
   }
   return <div className={`agent-message__collapsible${expanded ? ' is-expanded' : ''}`}>
     <div className="agent-message__collapsible-body">
       <AgentPromptResponse content={body} prompt={prompt} mentionCatalog={mentionCatalog} showSources={false} />
     </div>
-    <AgentMarkdownSources sources={sources} />
     <button type="button" className="agent-message__collapsible-toggle" aria-expanded={expanded} onClick={() => setExpanded((open) => !open)}>
       <ChevronDownIcon />
       <span>{expanded ? (locale === 'en' ? 'Collapse' : '收起') : (locale === 'en' ? 'Show full response' : '展开全文')}</span>
@@ -635,7 +692,7 @@ function AgentPlanSettingsEditor({
   return <div className="agent-plan-settings is-editable" aria-label={locale === 'en' ? 'Generation settings' : '本次生成设置'}>
     <label>
       <small>{locale === 'en' ? 'Model' : '模型'}</small>
-      <BotanicSelect
+      <ModelSelector
         value={settings.model}
         ariaLabel={locale === 'en' ? 'Select generation model' : '选择生成模型'}
         disabled={disabled}
@@ -878,7 +935,10 @@ function AgentCompositionCard({
 }
 
 type AgentConversationMessageProps = {
+  projectId?: string
   message: BotanicAgentMessage
+  sourceMessage?: BotanicAgentMessage
+  onLoadEarlierMessages?: () => void
   timeline?: AgentTimelineState
   timelineLoadingMore?: boolean
   onLoadMoreTimeline?: () => void
@@ -888,23 +948,28 @@ type AgentConversationMessageProps = {
   isLatestEvaluable?: boolean
   sessionId?: string
   runs: BotanicAgentRun[]
+  runCancelling?: boolean
   artifacts: BotanicAgentArtifact[]
+  artifactIndexStatus: AgentArtifactIndexState['status']
+  artifactIndexHasMore: boolean
   contextOptionIds: string[]
   mentionCatalog?: BotanicAgentMentionCatalog
   generationModels: GenerationModelOption[]
   executionMode: BotanicAgentExecutionMode
-  planning: boolean
+  planning: boolean; canvasWritebackBlocked?: boolean
   promptUsePending: boolean
   plannerModel: string
   executingActionId: string
   submittingMessageId: string
   promptDraft?: string
-  onContinueResultContext: (nodeIds: string[], outputCount: number) => void
+  onContinueArtifact: (artifact: BotanicAgentArtifact) => void
   onShowResults: () => void
+  onShowTasks: (runId?: string) => void
+  onRetryArtifacts: () => Promise<void>
   onFocusNodes: (nodeIds: string[]) => void
   /** 把这次运行带进画布的自动化面板；发布本身仍在那里完成。 */
   onPromoteRunToWorkflow: (runId: string) => void
-  onAnswerClarification: (message: BotanicAgentMessage, answers: Record<string, string>) => void
+  onAnswerClarification: (message: BotanicAgentMessage, answers: Record<string, string>) => Promise<void>
   onLocateNode: (nodeId: string) => void
   canManualRetryAction: (action: BotanicAgentActionProposal) => boolean
   onActionIntent: (message: BotanicAgentMessage, action: BotanicAgentActionProposal, intent: BotanicAgentActionUserIntent) => void
@@ -921,6 +986,9 @@ type AgentConversationMessageProps = {
   onRunComposition?: (message: BotanicAgentMessage) => void
   onUsePrompt: (message: BotanicAgentMessage) => void
   onEdit: (content: string) => void
+  onRetryTurn?: () => void
+  recoveringTurn?: boolean
+  recoveryIssue?: { message: string; steps: string[] }
   onRetryDelivery: (messageId: string) => void
   onDiscardDelivery: (messageId: string) => void
   onFeedback: (message: BotanicAgentMessage, feedback: BotanicAgentMessage['feedback']) => void
@@ -931,6 +999,9 @@ type AgentConversationMessageProps = {
 
 export function AgentConversationMessage({
   message,
+  sourceMessage,
+  onLoadEarlierMessages,
+  projectId,
   timeline,
   timelineLoadingMore = false,
   onLoadMoreTimeline,
@@ -940,19 +1011,24 @@ export function AgentConversationMessage({
   isLatestEvaluable = false,
   sessionId,
   runs,
+  runCancelling = false,
   artifacts,
+  artifactIndexStatus,
+  artifactIndexHasMore,
   contextOptionIds,
   mentionCatalog,
   generationModels,
   executionMode,
-  planning,
+  planning, canvasWritebackBlocked = false,
   promptUsePending,
   plannerModel,
   executingActionId,
   submittingMessageId,
   promptDraft,
-  onContinueResultContext,
+  onContinueArtifact,
   onShowResults,
+  onShowTasks,
+  onRetryArtifacts,
   onFocusNodes,
   onAnswerClarification,
   onLocateNode,
@@ -970,6 +1046,9 @@ export function AgentConversationMessage({
   onRunComposition,
   onUsePrompt,
   onEdit,
+  onRetryTurn,
+  recoveringTurn,
+  recoveryIssue,
   onRetryDelivery,
   onDiscardDelivery,
   onFeedback,
@@ -990,7 +1069,6 @@ export function AgentConversationMessage({
     setFeedbackMemoryDraft('')
     setFeedbackMemorySaved(false)
   }, [message.id, message.feedback])
-  const utilitySurface = useAgentMessageUtilitySurface({ streaming, isLatestEvaluable, messageId: message.id })
   const dimensionLabel = (dimension: string) => locale === 'en'
     ? ({ person: 'Person', pose: 'Pose', product: 'Product', garment: 'Garment', scene: 'Scene', composition: 'Composition', style: 'Style', lighting: 'Lighting' }[dimension] ?? dimension)
     : creativeDimensionLabel(dimension as Parameters<typeof creativeDimensionLabel>[0])
@@ -998,21 +1076,51 @@ export function AgentConversationMessage({
     ? `${plan.output.count} image${plan.output.count === 1 ? '' : 's'}`
     : botanicAgentPlanSheetCountLabel(plan)
   const linkedRun = message.runId ? runs.find((run) => run.id === message.runId) : undefined
+  const isRunLinkedMessage = botanicAgentMessageIsRunLinked(message, linkedRun)
+  const messageBusy = streaming || runCancelling || Boolean(isRunLinkedMessage && linkedRun && shouldRestoreBotanicAgentRuntimeSteps(linkedRun.status))
+  const utilitySurface = useAgentMessageUtilitySurface({ streaming: messageBusy, isLatestEvaluable, messageId: message.id })
   const bobPlays = useBobSaysPlays(`message:${message.id}`)
   // 进行中的状态由 runtime feed / 底部进度条直播；对话里不画第二张「正在生成」卡。
   if (message.kind === 'run' && linkedRun && shouldRestoreBotanicAgentRuntimeSteps(linkedRun.status)) return null
   const runArtifacts = message.runId
     ? artifacts.filter((artifact) => artifact.provenance.runId === message.runId)
     : []
-  const outputNodeIds = runArtifacts.flatMap((artifact) => artifact.provenance.sourceNodeIds ?? [])
-  const lockedContextIds = botanicAgentContextSnapshotNodeIds(linkedRun?.plan.contextSnapshot, contextOptionIds)
-  const continueNodeIds = [...new Set(outputNodeIds.length ? outputNodeIds : lockedContextIds)]
+  const availableNodeIds = new Set(contextOptionIds)
+  const outputNodeIds = [...new Set(runArtifacts.flatMap(agentArtifactTargetNodeIds))].filter((id) => availableNodeIds.has(id))
+  const editableRunArtifacts = runArtifacts.filter((artifact) => (artifact.url && (artifact.kind === 'image' || artifact.kind === 'video')) || agentArtifactTargetNodeIds(artifact).some((id) => availableNodeIds.has(id)))
   const planPrompt = message.plan ? promptDraft ?? message.plan.prompt : ''
+  const messageSources = splitAgentMessageSources(message.content).sources
+  const inlineCitationSources = timelineInlineCitationSources(timeline)
+  const textSources = messageSources.filter((source) => {
+    try {
+      const url = new URL(source)
+      if (!['https:', 'http:'].includes(url.protocol)) return true
+      inlineCitationSources.push({ hostname: url.hostname, href: url.href })
+      return false
+    } catch { return true }
+  })
+  const genericWebSources = new Set(['互联网', '网页', 'Internet', 'Web'])
+  const projectSources = [...new Set(textSources)].filter((source) => !inlineCitationSources.length || !genericWebSources.has(source))
 
   const isLiveRunMessage = message.role === 'assistant' && Boolean(message.runId) && (message.kind === 'run' || message.kind === 'notice')
   const planSubmitted = message.status === 'submitted'
+  const planStopped = Number.isFinite(message.turnCancellationRequestedAt)
   const runMediaArtifacts = runArtifacts.filter((artifact) => artifact.url && (artifact.kind === 'image' || artifact.kind === 'video'))
   const inlineRunResults = runMediaArtifacts.slice(0, inlineRunResultLimit)
+  const continueResultControl = editableRunArtifacts.length === 1
+    ? <button type="button" className="agent-run-message__action" onClick={() => onContinueArtifact(editableRunArtifacts[0])}><ContinueChatIcon /><span>{t('继续修改', 'Continue editing')}</span></button>
+    : editableRunArtifacts.length > 1 ? <BotanicSelect
+      className="agent-run-result-picker"
+      value={editableRunArtifacts[0].id}
+      ariaLabel={t('选择要修改的结果', 'Choose a result to edit')}
+      options={editableRunArtifacts.map((artifact) => ({ value: artifact.id, label: agentArtifactDisplayName(artifact, linkedRun, locale) }))}
+      renderTrigger={() => <span>{t('继续修改', 'Continue editing')}</span>}
+      renderOption={(option) => {
+        const artifact = editableRunArtifacts.find((item) => item.id === option.value)!
+        return <span className="agent-run-result-picker__option">{artifact.kind === 'image' && artifact.url ? <img src={artifact.url} alt="" /> : null}<span>{option.label}</span></span>
+      }}
+      onChange={(id) => { const artifact = editableRunArtifacts.find((item) => item.id === id); if (artifact) onContinueArtifact(artifact) }}
+    /> : null
 
   // 结算后时间线已经报了「已出图 / 出图失败」；回执里同一句不再占第二行。部分完成仍用正文。
   const hideSettledStatusCopy = Boolean(
@@ -1029,7 +1137,7 @@ export function AgentConversationMessage({
     isLatestAssistant,
     isLargeReply: bobMessageIsLargeReply(message),
   })
-  const bob = message.role === 'assistant'
+  const bob = message.role === 'assistant' && isLatestAssistant
     ? bobReplyPresentation({
       allowsSays: allowsSays && !prefersReducedMotion(),
       streaming,
@@ -1039,19 +1147,35 @@ export function AgentConversationMessage({
     })
     : null
   const utilityActions = botanicAgentMessageUtilityActions(message)
-  const showUtilities = !streaming && botanicAgentMessageHasUtilities(utilityActions)
-  // 结算后有图：正文 → 产物 → 过程；过程默认已折叠，不挡主阅读。
-  const runResults = message.kind === 'run' && inlineRunResults.length
+  const showUtilities = !messageBusy && botanicAgentMessageHasUtilities(utilityActions)
+  const runResults = isRunLinkedMessage && inlineRunResults.length
     ? <AgentAttachments variant="grid" className={`agent-run-message__results${!streaming ? ' is-featured' : ''}`} aria-label={t('本次任务结果', 'Task results')}>
-      {inlineRunResults.map((artifact) => <AgentAttachment key={artifact.id} data={attachmentFromArtifact(artifact)}>
+      {inlineRunResults.map((artifact) => {
+        const sourceNodeIds = agentArtifactTargetNodeIds(artifact).filter((id) => availableNodeIds.has(id))
+        return <AgentAttachment key={artifact.id} data={attachmentFromArtifact({ ...artifact, label: agentArtifactDisplayName(artifact, linkedRun, locale) })} onActivate={sourceNodeIds.length ? () => onFocusNodes(sourceNodeIds) : onShowResults}>
         <AgentAttachmentPreview decorative={false} />
-      </AgentAttachment>)}
-      {runMediaArtifacts.length > inlineRunResults.length ? <button type="button" className="agent-run-message__more" onClick={onShowResults}>
-        {t(`查看全部 ${runMediaArtifacts.length} 项`, `View all ${runMediaArtifacts.length} results`)}
+        </AgentAttachment>
+      })}
+      {artifactIndexHasMore || runMediaArtifacts.length > inlineRunResults.length ? <button type="button" className="agent-run-message__more" onClick={onShowResults}>
+        {artifactIndexHasMore ? t('查看更多结果', 'View more results') : t(`查看全部 ${runMediaArtifacts.length} 项`, `View all ${runMediaArtifacts.length} results`)}
       </button> : null}
     </AgentAttachments>
     : null
-  const resultsFirst = Boolean(runResults && !streaming)
+  const resultReadState = botanicAgentRunResultReadState(isRunLinkedMessage ? linkedRun : undefined, runMediaArtifacts.length > 0, {
+    pageReady: artifactIndexStatus === 'ready', hasMore: artifactIndexHasMore, failed: artifactIndexStatus === 'error' || artifactIndexStatus === 'error-more',
+  })
+  const resultState = resultReadState === 'error'
+    ? <div className="agent-run-message__result-state is-error" role="alert"><span>{t('结果读取失败', 'Unable to load results')}</span><button type="button" onClick={() => void onRetryArtifacts()}>{t('重试', 'Retry')}</button></div>
+    : resultReadState === 'more'
+      ? <div className="agent-run-message__result-state" role="status"><span>{t('结果尚未载入', 'Results not loaded yet')}</span><button type="button" onClick={() => void onRetryArtifacts()}>{t('加载结果', 'Load results')}</button></div>
+      : resultReadState === 'missing'
+        ? <div className="agent-run-message__result-state" role="status"><span>{t('未找到结果', 'No result found')}</span><button type="button" onClick={() => onShowTasks(linkedRun?.id)}>{t('查看任务', 'View task')}</button></div>
+        : resultReadState === 'loading' ? <p className="agent-run-message__result-state" role="status">{t('结果同步中…', 'Syncing results…')}</p> : null
+  const pendingLabel = linkedRun && shouldRestoreBotanicAgentRuntimeSteps(linkedRun.status)
+    ? t('正在生成…', 'Generating…')
+    : timeline?.blocks.some((block) => block.type === 'step' || block.type === 'raw_group')
+      ? t('正在执行…', 'Running…')
+      : t('正在规划…', 'Planning…')
   const messageProse = message.kind === 'composition' && message.composition
     ? <AgentCompositionCard
       composition={message.composition}
@@ -1064,46 +1188,45 @@ export function AgentConversationMessage({
     : !hideSettledStatusCopy && !message.plan && !message.question && (message.content || message.mentions?.length || streaming) ? (message.role === 'assistant'
       ? streaming
         ? message.content
-          ? <AgentPromptResponse content={message.content} prompt={message.prompt} mentionCatalog={mentionCatalog} />
+          ? <AgentPromptResponse content={message.content} prompt={message.prompt} mentionCatalog={mentionCatalog} showSources={false} />
           // 时间线画得出内容时进度在上面；空时间线仍要占位，不能让气泡整段空白。
-          : timeline && agentTimelineHasRenderableContent(timeline) ? null : <p className="agent-message__pending">{t('正在规划这一步…', 'Planning the next step…')}</p>
+          : timeline && agentTimelineHasRenderableContent(timeline) ? null : <Shimmer as="p" className="agent-message__pending" duration={1.8}>{pendingLabel}</Shimmer>
         : <AgentCollapsibleContent content={message.content} prompt={message.prompt} mentionCatalog={mentionCatalog} />
       : <AgentMessageRichContent content={message.content} mentions={message.mentions} catalogs={mentionCatalog} />) : null
 
-  return <article className={`agent-message is-${message.role} is-${message.kind}${timeline ? ' has-timeline' : ''}${allowsSays ? ' is-bob-large' : ''}${showUtilities ? utilitySurface.className : ''}`} role={liveStatus ? 'status' : undefined} aria-live={liveStatus ? 'polite' : undefined} aria-busy={streaming || undefined}>
-    <div className="agent-message__role" data-bob-mood={bob?.mood} data-bob-says={bob?.says}>{bob ? <BobCharacter mood={bob.mood} says={bob.says} saysCycles={bob.cycles} onSaysComplete={() => bobPlays.markPlayed(bob.says)} /> : <span>{t('你', 'You')}</span>}</div>
-    <div className="agent-message__body">
-      {resultsFirst ? null : timeline ? <AgentMessageTimeline timeline={timeline} loadingMore={timelineLoadingMore} onLoadMore={onLoadMoreTimeline} /> : null}
-      {messageProse}
+  return <Message from={message.role} data-settled={botanicAgentMessageIsSettled(message, linkedRun, streaming || runCancelling)} className={`agent-message is-${message.role} is-${message.kind}${timeline ? ' has-timeline' : ''}${allowsSays ? ' is-bob-large' : ''}${showUtilities ? utilitySurface.className : ''}`} role={liveStatus ? 'status' : undefined} aria-live={liveStatus ? 'polite' : undefined} aria-busy={messageBusy || undefined}>
+    {bob ? <div className="agent-message__role" data-bob-mood={bob.mood} data-bob-says={bob.says}><BobCharacter mood={bob.mood} says={bob.says} saysCycles={bob.cycles} onSaysComplete={() => bobPlays.markPlayed(bob.says)} /></div> : null}
+    <MessageContent className="agent-message__body">
+      <AgentReferenceUsageDetails usage={timeline?.references} catalog={mentionCatalog} nodeIds={contextOptionIds} onLocateNode={onLocateNode}
+        projectId={projectId} sessionId={sessionId} plannerModel={plannerModel} disabled={streaming || agentBusy}
+        onPrepareReference={serverPersistenceEnabled && projectId
+          ? (nodeId, signal) => prepareAgentReference(projectId, nodeId, plannerModel, signal) : undefined} />
+      {timeline ? <AgentMessageTimeline timeline={timeline} loadingMore={timelineLoadingMore} onLoadMore={onLoadMoreTimeline} /> : null}
       {runResults}
-      {resultsFirst && timeline ? <AgentMessageTimeline timeline={timeline} loadingMore={timelineLoadingMore} onLoadMore={onLoadMoreTimeline} /> : null}
+      {resultState}
+      {messageProse}
+      {message.role === 'assistant' && (projectSources.length || inlineCitationSources.length) ? <div className="agent-message__sources" aria-label={t('引用', 'Citations')}>
+        <AgentMarkdownSources sources={projectSources} catalogs={mentionCatalog} onLocate={(id) => onFocusNodes([id])} />
+        <AgentInlineCitation sources={inlineCitationSources} />
+      </div> : null}
       {message.role === 'assistant' && botanicAgentMessageOffersVisualPrompt(message) ? <div className="agent-run-message__actions" aria-label={t('Prompt 操作', 'Prompt actions')}>
         <button type="button" disabled={planning || promptUsePending} onClick={() => onUsePrompt(message)}>{promptUsePending ? t('等待确认', 'Awaiting approval') : t('用这段 Prompt 生成', 'Generate with this prompt')}</button>
       </div> : null}
+      {message.role === 'assistant' && message.status === 'failed' && onRetryTurn ? <div className="agent-run-message__actions" aria-label={t('失败恢复', 'Failure recovery')}>
+        <button className="is-retry" type="button" disabled={planning || recoveringTurn} onClick={onRetryTurn}>{recoveringTurn ? t('正在核对…', 'Checking…') : recoveryIssue ? t('刷新状态', 'Refresh status') : t('恢复本轮', 'Recover turn')}</button>
+      </div> : null}
+      {message.status === 'failed' && recoveryIssue ? <div className="agent-run-message__recovery" role="alert">
+        <p>{recoveryIssue.message}</p>
+        {recoveryIssue.steps.length ? <details><summary>{t('涉及的操作', 'Affected operations')}</summary><ul>{recoveryIssue.steps.map((step) => <li key={step}>{step}</li>)}</ul></details> : null}
+      </div> : null}
       {message.review ? <AgentReviewDecision review={message.review} pending={reviewDecisionPending} onDecision={onReviewDecision ? (decision) => onReviewDecision(message, decision) : undefined} /> : null}
-      {message.runId && !message.plan ? (() => {
-        const actions = [
-          ...(outputNodeIds.length ? [{ key: 'locate', label: t('定位画布', 'Locate on canvas'), onClick: () => onFocusNodes(outputNodeIds), icon: <PinNodeIcon /> }] : []),
-          ...(message.kind === 'run' && continueNodeIds.length > 0
-            ? [{ key: 'continue', label: t('继续修改', 'Continue editing'), onClick: () => onContinueResultContext(continueNodeIds, outputNodeIds.length), icon: <ContinueChatIcon /> }]
-            : []),
-        ]
-        if (!actions.length) return null
-        return <div className="agent-run-message__bar" aria-label={t('结果操作', 'Result actions')}>
-          {actions.map((action) => <button type="button" key={action.key} className="agent-run-message__icon" onClick={action.onClick} aria-label={action.label} data-tooltip={action.label}>{action.icon}</button>)}
-        </div>
-      })() : null}
-      {message.question ? message.status === 'answered' ? <AgentClarificationCard
-        clarification={message.question}
-        generationModels={generationModels}
-        state="completed"
-        onSubmit={(answers) => onAnswerClarification(message, answers)}
-      /> : <AgentClarificationCard
-        clarification={message.question}
-        generationModels={generationModels}
-        state={planning ? 'submitting' : 'idle'}
-        onSubmit={(answers) => onAnswerClarification(message, answers)}
-      /> : null}
+      {isRunLinkedMessage && !message.plan && (outputNodeIds.length > 0 || continueResultControl) ? <div className="agent-run-message__bar" aria-label={t('结果操作', 'Result actions')}>
+        {outputNodeIds.length ? <button type="button" className="agent-run-message__action" onClick={() => onFocusNodes(outputNodeIds)}><PinNodeIcon /><span>{t('定位画布', 'Locate on canvas')}</span></button> : null}
+        {continueResultControl}
+      </div> : null}
+      {message.question ? <AgentClarificationMessage message={message} sourceMessage={sourceMessage} runs={runs} projectId={projectId} sessionId={sessionId} onLoadEarlierMessages={onLoadEarlierMessages}
+        generationModels={generationModels} busy={planning} onShowTask={onShowTasks}
+        onRestart={() => onEdit(message.question!.originalInstruction)} onSubmit={(answers) => onAnswerClarification(message, answers)} /> : null}
       {message.plan ? (() => {
         const plan = message.plan
         const pendingActionCount = botanicAgentPendingConfirmationCount(plan.actions)
@@ -1177,7 +1300,7 @@ export function AgentConversationMessage({
           </div> : null}
           {confirmableActions.length ? <div className="agent-message__actions" aria-label={t('待确认行动', 'Actions awaiting approval')}>
             {confirmableActions.map((action) => {
-              // 已执行或已跳过的行动卡收成一行，只有仍需处理的卡片保持展开。
+              const writebackPending = action.result?.canvasWritebackPending === true
               const settled = action.status === 'succeeded' || action.status === 'dismissed'
               const body = <>
                 {action.toolName === 'canvas_action_set' && action.preview ? <AgentCanvasActionPreview preview={action.preview} locale={locale} /> : null}
@@ -1188,7 +1311,7 @@ export function AgentConversationMessage({
                   <div className="agent-action-card__result"><span>{action.result ? t('已执行', 'Executed') : t('已确认生效', 'Confirmed applied')}</span>{action.result?.canvasNodeIds?.length ? <small>{t(`已创建 ${action.result.canvasNodeIds.length} 个画布节点`, `${action.result.canvasNodeIds.length} canvas nodes created`)}</small> : !action.result ? <small>{t('未重放工具，也未生成虚构输出', 'No tool replay or fabricated output')}</small> : null}{action.result?.canvasNodeId ? <button type="button" className="agent-icon-button" aria-label={t('在画布定位结果', 'Locate result on canvas')} title={t('在画布定位', 'Locate on canvas')} onClick={() => onLocateNode(action.result!.canvasNodeId!)}><FocusIcon /></button> : null}</div>
                   {action.result?.artifacts?.length ? <AgentActionResultArtifacts artifacts={action.result.artifacts} onLocateNode={onLocateNode} locale={locale} /> : null}
                 </> : null}
-                {action.status === 'running' ? <div className="agent-action-card__running"><span>{t('执行状态待确认', 'Execution status needs confirmation')}</span><button type="button" disabled={executingActionId === action.id} onClick={() => onActionIntent(message, action, 'check_status')}>{executingActionId === action.id ? t('确认中…', 'Checking…') : t('确认状态', 'Check status')}</button></div> : null}
+                {action.status === 'running' ? <div className="agent-action-card__running"><span>{writebackPending ? canvasWritebackBlocked ? t('结果已完成，等待画布同步', 'Result ready; waiting for canvas sync') : t('结果已完成，等待回写', 'Result ready to add to canvas') : t('执行状态待确认', 'Execution status needs confirmation')}</span><button type="button" disabled={executingActionId === action.id || (writebackPending && canvasWritebackBlocked)} onClick={() => onActionIntent(message, action, 'check_status')}>{executingActionId === action.id ? t('确认中…', 'Checking…') : writebackPending ? t('继续回写', 'Add to canvas') : t('确认状态', 'Check status')}</button></div> : null}
                 {action.status === 'uncertain' ? <div className="agent-action-card__running"><span>{t('结果未知，为避免重复操作已停止自动重试。请先到目标系统核对。', 'Outcome unknown. Automatic retry is blocked to avoid duplication; verify the target system first.')}</span><div className="agent-action-card__buttons"><button type="button" className="is-secondary" disabled={executingActionId === action.id} onClick={() => onActionIntent(message, action, 'confirmed_not_applied')}>{t('确认未生效，可重试', 'Not applied; allow retry')}</button><button type="button" disabled={executingActionId === action.id} onClick={() => onActionIntent(message, action, 'confirmed_applied')}>{t('已在目标系统生效', 'Applied in target system')}</button></div></div> : null}
                 {action.status === 'awaiting_confirmation' ? <div className="agent-action-card__buttons">
                   <button type="button" className="is-secondary" onClick={() => onDismissAction(message, action)}>{t('跳过', 'Skip')}</button>
@@ -1225,7 +1348,7 @@ export function AgentConversationMessage({
                     onCountChange: (count: number) => onCommitPlanOutputCount(message, count),
                   }
                   : {})}
-                disabled={submittingMessageId === message.id}
+                disabled={submittingMessageId === message.id || planStopped}
                 onChange={(settings) => onCommitPlanSettings(message, settings)}
               />
               {contextItems.length ? <AgentPlanContextChips items={contextItems} mentionCatalog={mentionCatalog} /> : null}
@@ -1243,7 +1366,7 @@ export function AgentConversationMessage({
             {/* 停在这里一定有原因，必须说清楚，否则用户只会觉得“自动模式没生效”。 */}
             {autoPauseHint ? <small className="agent-plan__auto-paused">{autoPauseHint}</small> : null}
             {/* 信任按理由逐条交出：勾一次，这一类以后不再拦。外部行动和模型推断意图不在这里。 */}
-            {waivableReason ? <label className="agent-plan__waiver">
+            {waivableReason && !planStopped ? <label className="agent-plan__waiver">
               <input
                 type="checkbox"
                 checked={false}
@@ -1254,27 +1377,37 @@ export function AgentConversationMessage({
                 ? t('多张出图以后直接执行', 'Run multi-image plans without asking')
                 : t('这类出图以后直接执行', 'Run image plans without asking')}</span>
             </label> : null}
-            <button type="button" className="agent-plan__confirm" disabled={submittingMessageId === message.id || blockedByActions} onClick={() => onConfirmPlan(message)}>{locale === 'en' ? (submittingMessageId === message.id ? 'Submitting…' : blockedByActions ? 'Confirm the actions below' : message.status === 'failed' ? 'Retry generation' : `Generate ${plan.output.count} image${plan.output.count === 1 ? '' : 's'}`) : botanicAgentPlanConfirmActionLabel(plan, submittingMessageId === message.id ? 'submitting' : blockedByActions ? 'blocked' : message.status === 'failed' ? 'failed' : 'ready')}</button>
+            {planStopped ? <span role="status">{t('已请求停止', 'Stop requested')}</span> : <button type="button" className="agent-plan__confirm" disabled={submittingMessageId === message.id || blockedByActions} onClick={() => onConfirmPlan(message)}>{locale === 'en' ? (submittingMessageId === message.id ? 'Submitting…' : blockedByActions ? 'Confirm the actions below' : message.status === 'failed' ? 'Retry generation' : `Generate ${plan.output.count} image${plan.output.count === 1 ? '' : 's'}`) : botanicAgentPlanConfirmActionLabel(plan, submittingMessageId === message.id ? 'submitting' : blockedByActions ? 'blocked' : message.status === 'failed' ? 'failed' : 'ready')}</button>}
           </div>}
         </>
+        const planShell = (className: string, content: ReactNode) => <Plan className={className} defaultOpen isStreaming={planning && !planSubmitted}>
+          <PlanHeader>
+            <div>
+              <PlanTitle>{planSubmitted ? t('已提交计划', 'Submitted plan') : t('生成计划', 'Generation plan')}</PlanTitle>
+              <PlanDescription>{planSubmitted ? t('本次执行的确认回执', 'Confirmation receipt for this run') : t('检查参数与行动后执行', 'Review settings and actions before running')}</PlanDescription>
+            </div>
+            <PlanAction><PlanTrigger aria-label={planSubmitted ? t('展开已提交计划', 'Expand submitted plan') : t('展开生成计划', 'Expand generation plan')} /></PlanAction>
+          </PlanHeader>
+          <PlanContent>{content}</PlanContent>
+        </Plan>
         // 已提交：提示词 + 规格芯片当回执；对话里不放任务入口。
         if (planSubmitted) {
           const receiptHeadline = presentBotanicAgentPlanSummary(plan.summary)
-          const receiptActions = Boolean(outputNodeIds.length || continueNodeIds.length)
-          return <div className="agent-message__plan is-submitted">
-          {timeline || !receiptHeadline ? null : <header className="agent-plan__receipt-header">
-            <strong>{receiptHeadline}</strong>
-          </header>}
-          {recipe}
-          {receiptActions ? <div className="agent-plan__receipt-actions" aria-label={t('结果操作', 'Result actions')}>
-            {outputNodeIds.length ? <button type="button" className="agent-run-message__icon" aria-label={t('定位画布', 'Locate on canvas')} data-tooltip={t('定位画布', 'Locate on canvas')} onClick={() => onFocusNodes(outputNodeIds)}><PinNodeIcon /></button> : null}
-            {continueNodeIds.length ? <button type="button" className="agent-run-message__icon" aria-label={t('继续修改', 'Continue editing')} data-tooltip={t('继续修改', 'Continue editing')} onClick={() => onContinueResultContext(continueNodeIds, outputNodeIds.length)}><ContinueChatIcon /></button> : null}
-          </div> : null}
-        </div>
+          const receiptActions = Boolean(outputNodeIds.length || continueResultControl)
+          return planShell('agent-message__plan is-submitted', <>
+            {timeline || !receiptHeadline ? null : <header className="agent-plan__receipt-header">
+              <strong>{receiptHeadline}</strong>
+            </header>}
+            {recipe}
+            {receiptActions ? <div className="agent-plan__receipt-actions" aria-label={t('结果操作', 'Result actions')}>
+              {outputNodeIds.length ? <button type="button" className="agent-run-message__action" onClick={() => onFocusNodes(outputNodeIds)}><PinNodeIcon /><span>{t('定位画布', 'Locate on canvas')}</span></button> : null}
+              {continueResultControl}
+            </div> : null}
+          </>)
         }
-        return <div className="agent-message__plan">{recipe}</div>
+        return planShell('agent-message__plan', recipe)
       })() : null}
-    </div>
+    </MessageContent>
     {message.role === 'user' && message.deliveryStatus === 'failed' ? <small className="agent-message__delivery-status is-failed" role="alert">{t('同步失败', 'Sync failed')} <button type="button" onClick={() => onRetryDelivery(message.id)}>{t('重试', 'Retry')}</button> <button type="button" onClick={() => onDiscardDelivery(message.id)}>{t('不再同步', 'Discard')}</button></small> : null}
     {showUtilities ? <AgentMessageUtilities
       message={message}
@@ -1307,5 +1440,5 @@ export function AgentConversationMessage({
       <button type="submit" disabled={!feedbackMemoryDraft.trim()}>{t('保存到项目记忆', 'Save to project memory')}</button>
     </form> : null}
     {feedbackMemorySaved ? <small className="agent-feedback-memory__saved" role="status">{t('已保存到项目记忆。', 'Saved to project memory.')}</small> : null}
-  </article>
+  </Message>
 }

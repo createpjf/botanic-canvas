@@ -38,12 +38,12 @@ test('queue 最多3条且 FIFO/删除/预览稳定,不提前创建消息', () =>
   assert.equal(agentQueuedInstructionPreview({ ...item(0), content: 'x'.repeat(100) }).endsWith('…'), true)
 })
 
-test('settlement 只在 completed 执行,failed/idle空输入弹回;快照覆盖flush时UI且target fail closed', () => {
+test('settlement 只在 completed 执行,failed/idle空输入弹回;快照覆盖flush时UI且target fail closed', async () => {
   assert.equal(agentInstructionQueueSettlement({ queueLength: 1, planning: true, runtimePhase: 'completed', instruction: '' }), 'wait')
   assert.equal(agentInstructionQueueSettlement({ queueLength: 1, planning: false, runtimePhase: 'completed', instruction: '' }), 'execute')
   assert.equal(agentInstructionQueueSettlement({ queueLength: 1, planning: false, runtimePhase: 'failed', instruction: '' }), 'restore')
   assert.equal(agentInstructionQueueSettlement({ queueLength: 1, planning: false, runtimePhase: 'failed', instruction: '新草稿' }), 'wait')
-  const resolved = resolveAgentInstructionExecutionContext({
+  const resolved = await resolveAgentInstructionExecutionContext({
     snapshot,
     current: { ...snapshot, plannerModel: 'model-new', mountedSkillIds: ['skill-new'] },
     currentTarget: undefined,

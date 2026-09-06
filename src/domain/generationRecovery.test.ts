@@ -1,5 +1,24 @@
 import assert from 'node:assert/strict'
+import type { BotanicAgentRun } from './agent.ts'
+import { generationRetryState } from './generationRecovery.ts'
 import test from 'node:test'
+
+test('旧结果卡按当前分支判断补图，补齐、取消和补图执行中均不重复提交', () => {
+  const first = { ...succeededJob('first', 'generation', 1), batchCount: 2, missingOutputCount: 1, agentRun: { runId: 'run', branchId: 'branch' } }
+  const retry = { ...first, id: 'retry', batchCount: 1, missingOutputCount: 0 }
+  const branch = { id: 'branch', status: 'failed', activeJobId: 'first', jobIds: ['first'], outputCount: 1 }
+  const run = { id: 'run', status: 'partial', plan: { output: { candidatesPerItem: 2 } }, branches: [branch] } as BotanicAgentRun
+  assert.equal(generationRetryState(first, [first], [run]).missingCount, 1)
+  assert.equal(generationRetryState(first, [first], [run]).canRetry, true)
+  for (const status of ['queued', 'running', 'succeeded', 'cancelled'] as const) {
+    const next = { ...run, branches: [{ ...run.branches[0], status, activeJobId: 'retry', jobIds: ['first', 'retry'] }] }
+    assert.equal(generationRetryState(first, [first, retry], [next]).canRetry, false)
+    assert.equal(generationRetryState(first, [first, retry], [next]).requestedCount, 2)
+  }
+  assert.equal(generationRetryState(first, [first, retry], [{ ...run, status: 'cancelled' }]).canRetry, false)
+  assert.equal(generationRetryState({ ...first, agentRun: undefined, status: 'cancelled' }, [first], []).canRetry, false)
+  assert.equal(generationRetryState(first, [first], []).canRetry, false)
+})
 import type { CanvasNode, GenerationJob } from './canvas.ts'
 import { findUnknownSubmissionAnchor, matchUnresolvedGenerationTaskJobs } from './generationRecovery.ts'
 

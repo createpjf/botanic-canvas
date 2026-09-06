@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { agentTimelineEventFromStream } from './agentChatStream.ts'
 import {
   agentTimelineOrbState,
   agentTimelineStepToolName,
@@ -7,6 +8,7 @@ import {
   applyAgentConversationStreamEvent,
   createAgentTimeline,
   displayWebSourceHostname,
+  mergeTimelineWebSources,
   persistAgentLiveTimeline,
   isAgentPipelineTimelineStep,
   projectBotanicAgentRunOntoTimeline,
@@ -19,6 +21,7 @@ import {
 import {
   agentMcpServerIdFromLabel,
   agentToolAccordionElapsedLabel,
+  agentToolDurationLabel,
   agentToolIconKey,
   conversationTimelineStepTitle,
   presentAgentTimelineConversation,
@@ -109,7 +112,7 @@ test('实时事件按到达顺序形成思考和语义步骤，同一工具调�
     'step:search:已搜索 29 个网站',
   ])
   assert.deepEqual(semanticBlocks[0], {
-    id: 'thinking', type: 'thinking', status: 'done', startedAt: 1_000, endedAt: 1_200, text: '先核地址',
+    id: 'thinking', type: 'thinking', status: 'done', startedAt: 1_000, endedAt: 1_200, text: '',
   })
   assert.equal(semanticBlocks.filter((block) => block.type === 'step' && block.sourceToolIds.includes('search-1')).length, 1)
   const rawGroup = timeline.blocks.find((block) => block.type === 'raw_group')
@@ -169,7 +172,7 @@ test('回答增量写入正文，不进入时间线旁白', () => {
     'step:search:已搜索 25 个网站',
   ])
   const thinking = state.timeline.blocks.find((block) => block.type === 'thinking')
-  assert.equal(thinking?.type === 'thinking' ? thinking.text : '', '先核地址')
+  assert.equal(thinking?.type === 'thinking' ? thinking.text : '', '')
   assert.equal(thinking?.type === 'thinking' ? thinking.status : '', 'done')
 })
 
@@ -182,13 +185,14 @@ test('工具后新的 reasoning 独立成段，工具 why 直接成为安全步�
     receivedAt: 1_100,
   })
   timeline = reduceAgentTimeline(timeline, { type: 'reasoning', step: 1, delta: '再整理可执行方案。', receivedAt: 1_200 })
+  assert.equal(timeline.blocks.some((block) => block.type === 'thinking' && block.text === '再整理可执行方案。'), true)
   timeline = reduceAgentTimeline(timeline, { type: 'done', receivedAt: 1_300 })
 
   const blocks = timeline.blocks.filter((block) => block.type !== 'raw_group')
   assert.deepEqual(blocks.map((block) => block.type), ['thinking', 'step', 'thinking'])
-  assert.equal(blocks[0].type === 'thinking' ? blocks[0].text : '', '先读取画布。')
+  assert.equal(blocks[0].type === 'thinking' ? blocks[0].text : '', '')
   assert.equal(blocks[1].type === 'step' ? blocks[1].summary : '', '确认当前选中节点与参考素材')
-  assert.equal(blocks[2].type === 'thinking' ? blocks[2].text : '', '再整理可执行方案。')
+  assert.equal(blocks[2].type === 'thinking' ? blocks[2].text : '', '')
 })
 
 test('错误事件收束思考并把当前运行步骤标记为失败', () => {
@@ -421,6 +425,8 @@ test('tool-call accordion：按到达顺序追加，进行中展开，耗时与�
   assert.equal(live.groups[0].status, 'running')
   assert.deepEqual(live.groups[0].rows.map((row) => row.id), ['read-1'])
   assert.equal(live.groups[0].rows[0].verb, '正在读取')
+  assert.equal(live.groups[0].rows[0].durationMs, 300)
+  assert.equal(agentToolDurationLabel(live.groups[0].rows[0].durationMs, 'zh-CN'), '<1秒')
   assert.equal(agentToolAccordionElapsedLabel(live.elapsedMs, 'zh-CN'), '已处理 0秒')
 
   timeline = reduceAgentTimeline(timeline, {
@@ -585,7 +591,7 @@ test('失败的步骤必须带上原因，恢复成功后清掉', () => {
   assert.equal(healed?.error, undefined)
 })
 
-test('连续搜索按 hostname 去重累加站点；项目检索即使带 hits 也不出 pill', () => {
+test('连续搜索保留同站不同页面；项目检索即使带 hits 也不出 pill', () => {
   let timeline = createAgentTimeline(1_000)
   timeline = reduceAgentTimeline(timeline, {
     type: 'tool',
@@ -623,6 +629,7 @@ test('连续搜索按 hostname 去重累加站点；项目检索即使带 hits �
   assert.deepEqual(search?.type === 'step' ? search.sources : undefined, [
     { hostname: 'www.andlight.cn', url: 'https://www.andlight.cn/', title: '和光' },
     { hostname: 'fcbarcelona.com', url: 'https://fcbarcelona.com/' },
+    { hostname: 'andlight.cn', url: 'https://andlight.cn/about' },
     { hostname: 'nytimes.com', url: 'https://www.nytimes.com/' },
   ])
   assert.equal(search?.type === 'step' ? search.count : 0, 4)
@@ -679,6 +686,20 @@ test('raw 只收起网页搜索行，保留 web_fetch；客户端只解析有界
   ])
 })
 
+test('来源贯穿清洗和合并按完整 URL 去重，同站路径及查询参数不丢失', () => {
+  const first = { hostname: 'example.com', url: 'https://example.com/one?q=1' }
+  const second = { hostname: 'example.com', url: 'https://example.com/two?q=1' }
+  const third = { hostname: 'example.com', url: 'https://example.com/two?q=2' }
+  assert.deepEqual(mergeTimelineWebSources([first], safeTimelineWebSources([
+    { ...first, url: 'https://EXAMPLE.com:443/one?q=1' }, second, third,
+  ])), [first, second, third])
+  assert.equal(safeTimelineWebSources([
+    { ...first, url: 'https://elsewhere.example/one' },
+    { ...first, url: 'https://user:pass@example.com/one' },
+    { ...first, url: 'javascript:alert(1)' },
+  ]), undefined)
+})
+
 test('没有错误文案时不编造一个', () => {
   // 失败但没带原因是另一回事：如实留空，由界面回落到通用状态文案。
   const state = reduceAgentTimeline(createAgentTimeline(1_000), {
@@ -709,6 +730,16 @@ test('aborted 工具是中性未执行终态,时间线与 accordion 都不显示
   assert.equal(accordion?.groups[0]?.status, 'aborted')
   assert.equal(accordion?.groups[0]?.rows[0]?.status, 'aborted')
   assert.equal(accordion?.groups[0]?.rows[0]?.verb, '未执行')
+  const stopped = projectBotanicAgentRunOntoTimeline({
+    id: 'stopped-run', status: 'cancelled', branches: [
+      { id: 'done', label: '主图', status: 'succeeded', attempt: 0, jobIds: [], outputCount: 1, updatedAt: 2 },
+      { id: 'stopped', label: '变体', status: 'cancelled', attempt: 0, jobIds: [], outputCount: 0, updatedAt: 3 },
+    ],
+  }, undefined, 4).blocks.filter(block => block.type === 'step')
+  assert.equal(stopped[1].status, 'succeeded', '取消不把已有成功分支改成失败')
+  assert.equal(stopped[2].status, 'aborted')
+  assert.equal(conversationTimelineStepTitle(stopped[2], 'zh-CN'), '已停止')
+  assert.equal(conversationTimelineStepTitle(stopped[2], 'en'), 'Stopped')
 })
 
 test('本地 read 延迟300ms显示、可见后稳定600ms,快速成功折叠但外部调用不隐藏', () => {
@@ -756,6 +787,31 @@ test('流式attempt切换清除失败前缀,重复/迟到chunk不污染当前答
   assert.equal(state.content, '最终答案完整')
   assert.equal(state.timeline.stream?.attemptId, 'text')
   assert.equal(state.timeline.stream?.previewRevision, 2)
+})
+
+test('整轮包含末段答复用时，并行工具汇总不把重叠区间相加', () => {
+  let timeline = reduceAgentTimeline(createAgentTimeline(1200), agentTimelineEventFromStream({
+    type: 'accepted', turnId: 'turn-1', runtimeTurn: { id: 'turn-1', projectId: 'project-1', createdAt: 1000 }, observer: { url: '/turn-1' },
+  }, 1500))
+  assert.deepEqual(timeline.timing, { startedAt: 1000, live: true })
+  const events = [
+    { id: 'mcp-a', status: 'running', at: 1000 },
+    { id: 'mcp-b', status: 'running', at: 2000 },
+    { id: 'mcp-a', status: 'succeeded', at: 4000 },
+    { id: 'mcp-b', status: 'succeeded', at: 5000 },
+  ] as const
+  for (const event of events) timeline = reduceAgentTimeline(timeline, {
+    type: 'tool', step: 0, receivedAt: event.at,
+    toolCall: { ...toolCall(event.id, 'mcp_call', '调用 MCP：figma.get_file', event.status), risk: 'external' },
+  })
+  timeline = reduceAgentTimeline(timeline, agentTimelineEventFromStream({
+    type: 'done', runtimeTurn: { id: 'turn-1', projectId: 'project-1', status: 'completed', createdAt: 1000, updatedAt: 6000 },
+  }, 900_000))
+  const view = presentAgentToolAccordion(timeline, 'zh-CN', 900_000)!
+  assert.equal(view.elapsedMs, 5000)
+  assert.equal(view.groups[0].rows[0].durationMs, 4000)
+  assert.equal(presentAgentToolAccordion(persistAgentLiveTimeline({}, 'message-1', timeline, 1_000_000)['message-1'])?.elapsedMs, 5000)
+  assert.equal(presentAgentToolAccordionFromCalls([toolCall('old', 'web_fetch', '读取网页', 'succeeded')], 'zh-CN', 1000, 900_000)?.elapsedMs, 0)
 })
 
 test('awaiting_confirmation 不折叠成 running，MCP 行派生 server 目标', () => {

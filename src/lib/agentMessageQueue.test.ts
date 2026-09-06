@@ -30,10 +30,10 @@ function fixture(messageId: string, createdAt: number, sessionId = 'session-a') 
 
 test('断网消息持久化后，新队列实例可恢复同一条待发消息', () => {
   const storage = createMemoryStorage()
-  const first = createAgentMessageQueue({ storage, deliver: async () => undefined })
+  const first = createAgentMessageQueue({ storage, deliver: async (item) => item.message })
   first.enqueue(fixture('m-1', 10))
 
-  const restored = createAgentMessageQueue({ storage, deliver: async () => undefined })
+  const restored = createAgentMessageQueue({ storage, deliver: async (item) => item.message })
   assert.deepEqual(restored.list().map((item) => ({ messageId: item.message.id, status: item.status })), [
     { messageId: 'm-1', status: 'queued' },
   ])
@@ -41,7 +41,7 @@ test('断网消息持久化后，新队列实例可恢复同一条待发消息',
 
 test('离线队列只持久化 Message 操作，不保存完整 Session 快照', () => {
   const storage = createMemoryStorage()
-  const queue = createAgentMessageQueue({ storage, deliver: async () => undefined })
+  const queue = createAgentMessageQueue({ storage, deliver: async (item) => item.message })
 
   queue.enqueue(fixture('m-incremental', 10))
 
@@ -61,7 +61,7 @@ test('旧版完整 Session 队列可迁移为增量操作', () => {
     queuedAt: 10,
   }]))
 
-  const [restored] = createAgentMessageQueue({ storage, deliver: async () => undefined }).list()
+  const [restored] = createAgentMessageQueue({ storage, deliver: async (item) => item.message }).list()
 
   assert.equal(restored.sessionId, 'session-a')
   assert.equal('session' in restored, false)
@@ -73,7 +73,7 @@ test('按创建时间顺序重放，成功后从本地队列移除', async () =>
   const queue = createAgentMessageQueue({
     storage: createMemoryStorage(),
     now: () => queuedAt++,
-    deliver: async (item) => { delivered.push(item.message.id) },
+    deliver: async (item) => { delivered.push(item.message.id); return item.message },
   })
   queue.enqueue(fixture('m-2', 20))
   queue.enqueue(fixture('m-1', 10))
@@ -81,7 +81,10 @@ test('按创建时间顺序重放，成功后从本地队列移除', async () =>
   const result = await queue.flush()
 
   assert.deepEqual(delivered, ['m-1', 'm-2'])
-  assert.deepEqual(result, { delivered: ['m-1', 'm-2'], failed: [], pending: [] })
+  assert.deepEqual(result, { delivered: ['m-1', 'm-2'], failed: [], pending: [], receipts: [
+    { sessionId: 'session-a', message: fixture('m-1', 10).message },
+    { sessionId: 'session-a', message: fixture('m-2', 20).message },
+  ] })
   assert.deepEqual(queue.list(), [])
 })
 
@@ -89,7 +92,7 @@ test('同一消息再次入队时用最新内容覆盖尚未发送的快照', as
   const delivered: Array<{ id: string; status?: string }> = []
   const queue = createAgentMessageQueue({
     storage: createMemoryStorage(),
-    deliver: async (item) => { delivered.push({ id: item.message.id, status: item.message.status }) },
+    deliver: async (item) => { delivered.push({ id: item.message.id, status: item.message.status }); return item.message },
   })
   queue.enqueue(fixture('m-1', 10))
   const updated = fixture('m-1', 10)
@@ -102,6 +105,28 @@ test('同一消息再次入队时用最新内容覆盖尚未发送的快照', as
   assert.deepEqual(queue.list(), [])
 })
 
+test('缺失或错配的保存回执不移除消息，重试取得原消息回执后才放行', async () => {
+  const input = fixture('m-receipt', 10)
+  const storage = createMemoryStorage()
+  let receipt: BotanicAgentMessage | undefined
+  const queue = createAgentMessageQueue({ storage, deliver: async () => receipt! })
+  queue.enqueue(input)
+
+  assert.deepEqual((await queue.flush()).delivered, [])
+  assert.throws(() => assertAgentMessageQueueItemDelivered(queue, input.message.id))
+  assert.equal(JSON.parse(storage.value)[0].message.id, input.message.id)
+
+  receipt = fixture('another-message', 10).message
+  assert.deepEqual((await queue.flush()).delivered, [])
+  assert.throws(() => assertAgentMessageQueueItemDelivered(queue, input.message.id))
+
+  receipt = { ...input.message, updatedAt: 30 }
+  const result = await queue.flush()
+  assert.deepEqual(result.receipts, [{ sessionId: input.sessionId, message: receipt }])
+  assert.doesNotThrow(() => assertAgentMessageQueueItemDelivered(queue, input.message.id))
+  assert.equal(storage.value, '[]')
+})
+
 test('行动 Message 发送中收到新状态时保留新版，刷新恢复并继续提交终态', async () => {
   const storage = createMemoryStorage()
   let releaseFirstDelivery: (() => void) | undefined
@@ -112,6 +137,7 @@ test('行动 Message 发送中收到新状态时保留新版，刷新恢复并�
     deliver: async (item) => {
       deliveredStatuses.push(item.message.plan?.actions?.[0].status ?? '')
       if (deliveredStatuses.length === 1) await firstDelivery
+      return item.message
     },
   })
   const running = fixture('m-action', 10)
@@ -147,13 +173,13 @@ test('行动 Message 发送中收到新状态时保留新版，刷新恢复并�
   const flushing = queue.flush()
   queue.enqueue(uncertain)
 
-  const restored = createAgentMessageQueue({ storage, deliver: async () => undefined })
+  const restored = createAgentMessageQueue({ storage, deliver: async (item) => item.message })
   assert.equal(restored.list()[0]?.message.plan?.actions?.[0].status, 'uncertain')
   releaseFirstDelivery?.()
   const result = await flushing
 
   assert.deepEqual(deliveredStatuses, ['running', 'uncertain'])
-  assert.deepEqual(result, { delivered: ['m-action'], failed: [], pending: [] })
+  assert.deepEqual(result, { delivered: ['m-action'], failed: [], pending: [], receipts: [{ sessionId: 'session-a', message: uncertain.message }] })
   assert.deepEqual(queue.list(), [])
 })
 
@@ -162,11 +188,13 @@ test('初始 Message 发送中收到 accepted 时保留 turnId 并补交链接�
   let releaseFirstDelivery: (() => void) | undefined
   const firstDelivery = new Promise<void>((resolve) => { releaseFirstDelivery = resolve })
   const deliveredTurnIds: Array<string | undefined> = []
+  const canonical = { ...fixture('m-turn', 10).message, turnId: 'turn-durable', updatedAt: 30 }
   const queue = createAgentMessageQueue({
     storage,
     deliver: async (item) => {
       deliveredTurnIds.push(item.message.turnId)
       if (deliveredTurnIds.length === 1) await firstDelivery
+      return item.message.turnId ? canonical : item.message
     },
   })
   const initial = fixture('m-turn', 10)
@@ -177,12 +205,14 @@ test('初始 Message 发送中收到 accepted 时保留 turnId 并补交链接�
   const flushing = queue.flush()
   queue.enqueue(linked)
 
-  const restored = createAgentMessageQueue({ storage, deliver: async () => undefined })
+  const restored = createAgentMessageQueue({ storage, deliver: async (item) => item.message })
   assert.equal(restored.list()[0]?.message.turnId, 'turn-durable')
   releaseFirstDelivery?.()
-  await flushing
+  const result = await flushing
 
   assert.deepEqual(deliveredTurnIds, [undefined, 'turn-durable'])
+  assert.deepEqual(result.receipts, [{ sessionId: 'session-a', message: canonical }])
+  assert.equal(storage.value, '[]')
   assert.deepEqual(queue.list(), [])
 })
 
@@ -200,6 +230,7 @@ test('auto plan 的 pending PUT 发送中收到 submitted/runId 时补交最终�
         turnId: item.message.turnId,
       })
       if (delivered.length === 1) await pendingDelivery
+      return item.message
     },
   })
   const pending = fixture('agent-turn-result-turn-auto', 10)
@@ -232,7 +263,7 @@ test('auto plan 的 pending PUT 发送中收到 submitted/runId 时补交最终�
   const flushing = queue.flush()
   queue.enqueue(submitted)
 
-  const restored = createAgentMessageQueue({ storage, deliver: async () => undefined })
+  const restored = createAgentMessageQueue({ storage, deliver: async (item) => item.message })
   assert.deepEqual({
     status: restored.list()[0]?.message.status,
     runId: restored.list()[0]?.message.runId,
@@ -252,7 +283,7 @@ test('同一项目、会话和消息不会重复入队或重复提交', async ()
   const delivered: string[] = []
   const queue = createAgentMessageQueue({
     storage: createMemoryStorage(),
-    deliver: async (item) => { delivered.push(item.idempotencyKey) },
+    deliver: async (item) => { delivered.push(item.idempotencyKey); return item.message },
   })
   const item = fixture('m-1', 10)
   queue.enqueue(item)
@@ -271,6 +302,7 @@ test('网络错误保留队首并停止本轮重放，online 后可继续', asyn
     deliver: async (item) => {
       if (!online) throw Object.assign(new Error('offline'), { status: 0 })
       delivered.push(item.message.id)
+      return item.message
     },
   })
   queue.enqueue(fixture('m-1', 10))
@@ -292,6 +324,7 @@ test('一个 Session 的可重试错误不阻塞其他 Session', async () => {
     deliver: async (item) => {
       if (item.sessionId === 'session-a') throw Object.assign(new Error('busy'), { status: 503 })
       delivered.push(item.message.id)
+      return item.message
     },
   })
   queue.enqueue(fixture('m-a', 10, 'session-a'))
@@ -300,7 +333,7 @@ test('一个 Session 的可重试错误不阻塞其他 Session', async () => {
   const result = await queue.flush()
 
   assert.deepEqual(delivered, ['m-b'])
-  assert.deepEqual(result, { delivered: ['m-b'], failed: [], pending: ['m-a'] })
+  assert.deepEqual(result, { delivered: ['m-b'], failed: [], pending: ['m-a'], receipts: [{ sessionId: 'session-b', message: fixture('m-b', 20, 'session-b').message }] })
 })
 
 test('本地存储写入失败时 fail closed，不允许继续提交', () => {
@@ -308,7 +341,7 @@ test('本地存储写入失败时 fail closed，不允许继续提交', () => {
     read: () => '[]',
     write: () => { throw new DOMException('quota', 'QuotaExceededError') },
   }
-  const queue = createAgentMessageQueue({ storage, deliver: async () => undefined })
+  const queue = createAgentMessageQueue({ storage, deliver: async (item) => item.message })
 
   assert.throws(() => queue.enqueue(fixture('m-quota', 10)), (error: unknown) => (
     (error as { code?: string }).code === 'AGENT_MESSAGE_QUEUE_STORAGE_FAILED'
@@ -326,7 +359,7 @@ test('损坏的单条队列记录进入 quarantine，其余记录仍可恢复', 
     quarantine(value: string) { quarantined.push(value) },
   }
 
-  const queue = createAgentMessageQueue({ storage, deliver: async () => undefined })
+  const queue = createAgentMessageQueue({ storage, deliver: async (item) => item.message })
 
   assert.deepEqual(queue.list().map((item) => item.message.id), ['m-valid'])
   assert.equal(quarantined.length, 1)
@@ -339,9 +372,10 @@ test('snapshot PUT 未 durable 时 Turn POST 为 0，重连 PUT 成功后同 key
   let postCount = 0
   const queue = createAgentMessageQueue({
     storage: createMemoryStorage(),
-    deliver: async () => {
+    deliver: async (item) => {
       putCount += 1
       if (!online) throw Object.assign(new Error('offline'), { status: 0, code: 'NETWORK_OFFLINE' })
+      return item.message
     },
   })
   const pending = fixture('m-turn-snapshot', 10)
@@ -378,6 +412,7 @@ test('明确业务错误标记失败且不再自动重放，不阻塞后续消�
     deliver: async (item) => {
       if (item.message.id === 'm-1') throw Object.assign(new Error('无权限'), { status: 403, code: 'PROJECT_WRITE_FORBIDDEN' })
       delivered.push(item.message.id)
+      return item.message
     },
   })
   queue.enqueue(fixture('m-1', 10))
@@ -386,7 +421,7 @@ test('明确业务错误标记失败且不再自动重放，不阻塞后续消�
   const first = await queue.flush()
   const second = await queue.flush()
 
-  assert.deepEqual(first, { delivered: ['m-2'], failed: ['m-1'], pending: [] })
+  assert.deepEqual(first, { delivered: ['m-2'], failed: ['m-1'], pending: [], receipts: [{ sessionId: 'session-a', message: fixture('m-2', 20).message }] })
   assert.deepEqual(second, { delivered: [], failed: ['m-1'], pending: [] })
   assert.deepEqual(delivered, ['m-2'])
   assert.equal(queue.list()[0]?.status, 'failed')
@@ -401,6 +436,7 @@ test('失败消息可由用户手动重新排队，并沿用原幂等键只提�
     deliver: async (item) => {
       if (!allowed) throw Object.assign(new Error('无权限'), { status: 403, code: 'PROJECT_WRITE_FORBIDDEN' })
       delivered.push(item.idempotencyKey)
+      return item.message
     },
   })
   queue.enqueue(fixture('m-retry', 10))
@@ -409,7 +445,7 @@ test('失败消息可由用户手动重新排队，并沿用原幂等键只提�
   allowed = true
   assert.equal(queue.retry('m-retry')?.status, 'queued')
   assert.equal(queue.retry('m-retry')?.status, 'queued')
-  assert.deepEqual(await queue.flush(), { delivered: ['m-retry'], failed: [], pending: [] })
+  assert.deepEqual(await queue.flush(), { delivered: ['m-retry'], failed: [], pending: [], receipts: [{ sessionId: 'session-a', message: fixture('m-retry', 10).message }] })
   assert.deepEqual(delivered, ['agent-message-m-retry'])
   assert.deepEqual(queue.list(), [])
 })

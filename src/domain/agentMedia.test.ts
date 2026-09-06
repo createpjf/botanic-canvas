@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { collectAgentMediaSources, collectAgentVisionMediaSources, prepareAgentMediaSources, replaceMediaSources } from './agentMedia.ts'
-import type { CanvasDocument } from './canvas.ts'
+import { collectAgentMediaSources, collectAgentVisionMediaSources, prepareAgentMediaSources, replaceMediaSources, resolveAgentResultImage } from './agentMedia.ts'
+import type { CanvasDocument, ResultNodeData } from './canvas.ts'
 
 function documentFixture(): CanvasDocument {
   return {
@@ -39,6 +39,33 @@ test('Agent 执行前找出结果图、原始参考与批量素材', () => {
     '/assets/model.webp',
     '/api/media/media_scene',
   ])
+})
+
+test('节点缩略图缺失时只恢复原 Job 的确切输出，不借用旁图或已移除结果', () => {
+  const document = documentFixture()
+  const data = document.nodes[0].data as ResultNodeData
+  data.image = ''
+  data.jobId = 'job-original'
+  data.candidateId = 'output-original'
+  document.generationJobs = [{
+    id: 'job-original', resultNodeId: 'result-1', status: 'succeeded', kind: 'initial',
+    createdAt: 1, updatedAt: 2, batchCount: 2, outputCount: 2, provider: 'mock', model: 'gpt-image-2',
+    outputs: [{ id: 'side-image', image: '/api/media/media_side' }, { id: 'output-original', image: '/api/media/media_original' }],
+  }]
+  assert.equal(resolveAgentResultImage(document, 'result-1'), '/api/media/media_original')
+  assert.equal(collectAgentMediaSources(document, 'result-1')[0], '/api/media/media_original')
+  assert.deepEqual(collectAgentVisionMediaSources(document, ['result-1']), ['/api/media/media_original'])
+  document.generationJobs[0].dismissedOutputIds = ['output-original']
+  assert.equal(resolveAgentResultImage(document, 'result-1'), undefined)
+  document.generationJobs[0].dismissedOutputIds = []
+  data.candidateId = undefined
+  assert.equal(resolveAgentResultImage(document, 'result-1'), undefined, '多图缺候选身份不能猜第一张')
+  document.generationJobs[0].outputs = [{ id: 'output-original', image: '/api/media/media_original' }]
+  assert.equal(resolveAgentResultImage(document, 'result-1'), '/api/media/media_original')
+  data.jobId = 'missing-job'
+  assert.equal(resolveAgentResultImage(document, 'result-1'), undefined, '已有 jobId 不能退回别的任务')
+  document.nodes = []
+  assert.equal(resolveAgentResultImage(document, 'result-1'), undefined, '历史 Job 不复活已删节点')
 })
 
 test('看图只收集当前引用的图片节点，跳过视频', () => {

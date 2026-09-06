@@ -54,6 +54,19 @@ test('已打开旧缓存且没有本地编辑时立即接受服务器权威画�
   assert.equal(resolved.document.name, '其他设备的新版本')
 })
 
+test('画布兼容视图未携带取消回执时，保留从同一Job读取的权威确认', () => {
+  const current = document('project-1', 100, '当前')
+  const remote = document('project-1', 200, '远端')
+  const job = { id: 'job', status: 'cancelled', updatedAt: 90 } as CanvasDocument['generationJobs'][number]
+  const cancel = { requestedAt: 80, workerReleased: true, signalAcknowledgedAt: 90 } as NonNullable<typeof job.cancel>
+  current.generationJobs = [{ ...job, cancel }]
+  remote.generationJobs = [job, { ...job, id: 'new-attempt' }]
+  const resolved = resolveRemoteCanvasRefresh({ current, remote, baselineUpdatedAt: 100, hasPendingDraft: false })
+  assert.equal(resolved.applied, true)
+  assert.deepEqual(resolved.document.generationJobs[0].cancel, cancel)
+  assert.equal(resolved.document.generationJobs[1].cancel, undefined)
+})
+
 test('远端返回前发生本地编辑时不覆盖当前画布', () => {
   const cached = document('project-1', 100, '旧缓存')
   const edited = document('project-1', 300, '当前电脑正在编辑')

@@ -174,7 +174,7 @@ export function presentationWebSources(output, limit = MAX_SEARCH_HITS) {
     if (!classified.ok) return
     const hostname = String(classified.hostname || '').trim()
     if (!hostname || hostname.length > MAX_PRESENTATION_HOSTNAME) return
-    const key = hostname.replace(/^www\./iu, '').toLocaleLowerCase()
+    const key = classified.href
     if (!key || seen.has(key)) return
     seen.add(key)
     const title = typeof item.title === 'string'

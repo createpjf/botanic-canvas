@@ -1,7 +1,7 @@
 import type { Edge } from '@xyflow/react'
 import type { CanvasDocument, CanvasNode, GenerationJob, ResultNodeData } from '../domain/canvas.ts'
 
-function mergeGenerationJob(current: GenerationJob | undefined, recovered: GenerationJob) {
+export function mergeGenerationJob(current: GenerationJob | undefined, recovered: GenerationJob) {
   const preferRecovered = !current
     || recovered.updatedAt >= current.updatedAt
     || (recovered.outputs?.length ?? 0) > (current.outputs?.length ?? 0)
@@ -153,7 +153,11 @@ export function mergeRecoveredGenerationJobs(current: CanvasDocument, recovered:
     recoveredOutputNodes.set(node.id, node)
   }
 
-  const recoveredAgentNodeIds = agentWorkflowNodeIds(recovered, recovered.generationJobs)
+  const recoveredAgentNodeIds = agentWorkflowNodeIds(recovered, [...jobsById.values()])
+  for (const node of recovered.nodes) {
+    const identity = resultOutputIdentity(node)
+    if (identity && !recoverableOutputs.get(identity.jobId)?.has(identity.outputId)) recoveredAgentNodeIds.delete(node.id)
+  }
 
   const acceptedWorkflowNodeIds = new Set<string>()
   const nodes = current.nodes.map((node) => {

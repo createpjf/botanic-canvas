@@ -19,16 +19,20 @@ test('Supabase 三个 Message 写路径都显式声明 entityReferences 保留�
 
   for (const source of [direct, sync, capabilityProbe]) {
     assert.match(source, /p_preserve_entity_references:\s*true/u)
+    assert.match(source, /p_preserve_clarification_answers:\s*true/u)
   }
   assert.match(sync, /p_preserve_thread_summary:\s*true/u)
   assert.match(capabilityProbe, /p_preserve_thread_summary:\s*true/u)
 })
 
-test('direct PUT 与 Canvas sync 都把 entityReferences 冲突稳定映射为同一业务码', () => {
+test('direct PUT 与 Canvas sync 共用冲突翻译，确认与引用冲突不丢业务码', () => {
   const direct = between('async putAgentMessage(', 'async putAgentMemoryItem(')
   const sync = between('async function syncAgentStateFromDocument(', 'async function assertAgentDerivedFieldWriterAvailable(')
-  for (const source of [direct, sync]) {
-    assert.match(source, /23514/u)
-    assert.match(source, /AGENT_MESSAGE_ENTITY_REFERENCES_CONFLICT/u)
-  }
+  assert.match(direct, /fail\(error\)/u)
+  assert.match(sync, /fail\(rpcError\)/u)
+  const common = between('function fail(', 'function userFromProfile(')
+  assert.match(common, /23514/u)
+  assert.match(common, /AGENT_MESSAGE_ENTITY_REFERENCES_CONFLICT/u)
+  assert.match(common, /AGENT_MESSAGE_ANSWER_CONFLICT/u)
+  assert.match(common, /throw productError\(conflict\[1\], conflict\[0\]\)/u)
 })

@@ -902,6 +902,7 @@ test('失败任务有部分输出时，Artifact 未完成不得清恢复标记�
   assert.equal(storedJob.outputs.length, 1)
   assert.equal(storedJob.projectWritebackPending, true)
   assert.notEqual(storedRun.status, 'failed')
+  assert.notEqual(storedRun.status, 'partial')
 
   artifactReady = true
   await processJob(storedJob.id)
@@ -909,7 +910,7 @@ test('失败任务有部分输出时，Artifact 未完成不得清恢复标记�
   assert.equal(refreshCount, 2)
   assert.equal(generated, 1)
   assert.equal(storedJob.projectWritebackPending, undefined)
-  assert.equal(storedRun.status, 'failed')
+  assert.equal(storedRun.status, 'partial')
 })
 
 test('Provider 失败前未 await 的最后一个成功 variant 仍保留在失败任务中', async () => {

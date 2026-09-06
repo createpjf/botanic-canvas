@@ -8,11 +8,17 @@ import {
 } from '../../domain/agent.ts'
 import type { BotanicAgentInstructionOptions } from '../../domain/agentInstructionRouting'
 import type { GenerationSizeOverride } from '../../domain/generationOutputSize'
-import type { AgentQueuedInstruction } from './agentComposerQueue.ts'
+import type { AgentInstructionExecutionSnapshot, AgentQueuedInstruction } from './agentComposerQueue.ts'
 import type { AgentComposerPendingPastes } from './agentComposerPaste.ts'
+import type { AgentContextItem } from './agentWorkspace.types.ts'
 
 /** 指令选项的形状由路由领域模块拥有；这里只是重试命令沿用的别名。 */
-export type AgentInstructionRetryOptions = BotanicAgentInstructionOptions
+export type AgentInstructionRetryOptions = BotanicAgentInstructionOptions & {
+  sourceTurnId?: string
+  clarificationMessageId?: string
+  clarificationId?: string
+  executionSnapshot?: AgentInstructionExecutionSnapshot
+}
 
 export type AgentFailedInstruction = {
   instruction: string
@@ -23,11 +29,46 @@ export type AgentFailedInstruction = {
 }
 
 export function resolveAgentRetrySourceMessage(
-  messages: BotanicAgentMessage[],
+  messages: readonly BotanicAgentMessage[],
   sourceMessageId?: string,
 ): BotanicAgentMessage | undefined {
   if (!sourceMessageId) return undefined
   return messages.find((message) => message.role === 'user' && message.id === sourceMessageId)
+}
+
+export function resolveAgentPersistedFailedTurnRetry(input: {
+  messages: readonly BotanicAgentMessage[]
+  contextOptions: readonly AgentContextItem[]
+  plannerModel: string
+  session: Pick<BotanicAgentSession, 'executionMode' | 'mountedSkillIds'>
+}): { message: BotanicAgentMessage; sourceMessage: BotanicAgentMessage; executionSnapshot: AgentInstructionExecutionSnapshot } | undefined {
+  const failedMessage = [...input.messages].reverse().find((message) => message.role === 'assistant' && message.status === 'failed' && Boolean(message.turnId?.trim()))
+  if (!failedMessage) return undefined
+  const sourceMessage = (failedMessage.sourceMessageId ? resolveAgentRetrySourceMessage(input.messages, failedMessage.sourceMessageId) : undefined)
+    ?? input.messages.find((message) => message.role === 'user' && message.turnId === failedMessage.turnId && message.turnRequestSnapshot)
+  const executionSnapshot = resolveAgentPersistedExecutionSnapshot({ ...input, sourceMessage })
+  if (!sourceMessage || !executionSnapshot) return undefined
+  return { message: failedMessage, sourceMessage, executionSnapshot }
+}
+
+/** 确认接续与失败恢复都沿用原请求，不采用此刻 Composer 中的另一组选择。 */
+export function resolveAgentPersistedExecutionSnapshot(input: {
+  sourceMessage?: Pick<BotanicAgentMessage, 'turnRequestSnapshot'>
+  contextOptions: readonly AgentContextItem[]
+}): AgentInstructionExecutionSnapshot | undefined {
+  const snapshot = input.sourceMessage?.turnRequestSnapshot
+  if (!snapshot?.plannerModel?.trim() || (snapshot.executionMode !== 'manual' && snapshot.executionMode !== 'auto')
+    || typeof snapshot.hasTarget !== 'boolean' || !Array.isArray(snapshot.contextNodeIds)
+    || (snapshot.hasTarget && !snapshot.selectedResultNodeId?.trim())) return undefined
+  return {
+    plannerModel: snapshot.plannerModel,
+    executionMode: snapshot.executionMode,
+    mountedSkillIds: [...(snapshot.mountedSkillIds ?? [])],
+    sessionContextNodeIds: [...snapshot.contextNodeIds],
+    contextItems: input.contextOptions.filter((item) => snapshot.contextNodeIds.includes(item.id)).map((item) => ({ ...item })),
+    targetNodeId: snapshot.hasTarget ? snapshot.selectedResultNodeId : null,
+    groupId: '', generationOverrides: {},
+  }
 }
 
 export function nextAgentSuggestionIndex(

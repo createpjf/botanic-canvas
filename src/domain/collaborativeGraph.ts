@@ -212,6 +212,7 @@ function applyNodeRecords(
       ...(baseline.type ? { type: baseline.type } : {}),
       ...clone(geometry),
       ...clone(config),
+      position: clone(geometry.position ?? baseline.position),
     } as CanvasNode)
     orderById.set(id, typeof record?.order === 'number' && Number.isInteger(record.order)
       ? record.order

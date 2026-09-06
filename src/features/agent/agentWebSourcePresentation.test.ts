@@ -4,7 +4,9 @@ import test from 'node:test'
 
 const source = readFileSync(new URL('./AgentConversationMessage.tsx', import.meta.url), 'utf8')
 const pills = readFileSync(new URL('../../components/AgentWebSourcePills.tsx', import.meta.url), 'utf8')
+const markdown = readFileSync(new URL('./AgentMarkdown.tsx', import.meta.url), 'utf8')
 const styles = readFileSync(new URL('../../styles.css', import.meta.url), 'utf8')
+const citation = readFileSync(new URL('../../components/ai-elements/inline-citation.tsx', import.meta.url), 'utf8')
 
 test('web_search 与 web_fetch 共用来源面板，折叠时从可访问树和焦点序列移除', () => {
   assert.match(source, /if \(timelineStepShowsWebSources\(block, toolItems\)\)/u)
@@ -21,4 +23,15 @@ test('来源 hostname 完整可访问且不向第三方图标服务泄露', () =
   assert.doesNotMatch(pills, /<img\b|\bsrc=/u)
   assert.match(styles, /\.agent-timeline-search-source span \{[^}]*overflow-wrap: anywhere/u)
   assert.doesNotMatch(styles, /\.agent-timeline-search-source span \{[^}]*text-overflow: ellipsis/u)
+})
+
+test('最终引用去重且没有可见的来源标题', () => {
+  assert.match(pills, /uniqueWebSources\(sources\)/u)
+  assert.match(markdown, /new Set\(sources\.map/u)
+  assert.doesNotMatch(markdown, /<span>\{locale === 'en' \? 'Sources' : '来源'\}<\/span>/u)
+  assert.match(markdown, /aria-label=\{locale === 'en' \? 'Sources' : '来源'\}/u)
+  assert.match(pills, /safeTimelineWebSources\(sources\.map/u)
+  assert.match(citation, /PopoverPrimitive\.Trigger asChild/u)
+  assert.match(citation, /PopoverPrimitive\.Close/u)
+  assert.doesNotMatch(citation, /HoverCard/u)
 })

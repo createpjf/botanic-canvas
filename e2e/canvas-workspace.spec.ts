@@ -21,6 +21,8 @@ const healthResponse = {
 }
 
 async function stubReadOnlyRuntime(page: Page) {
+  // 本地打包预览没有 Vercel 统计端点；仅替代这两个外部脚本，不过滤应用错误。
+  await page.route(/\/_vercel\/(insights|speed-insights)\/script\.js(?:\?.*)?$/, (route) => route.fulfill({ status: 200, contentType: 'text/javascript', body: '' }))
   await page.route('**/api/health', async (route) => {
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(healthResponse) })
   })
@@ -28,7 +30,7 @@ async function stubReadOnlyRuntime(page: Page) {
 
 async function injectAssistantMessage(page: Page, message: { id: string; content: string; kind?: 'text' | 'notice' | 'run' }) {
   await page.evaluate(async ({ id, content, kind }) => {
-    const loadStore = new Function('return import("/src/store/canvasStore.ts")') as () => Promise<{
+    const loadStore = new Function('return import(performance.getEntriesByType("resource").find(entry => new URL(entry.name).pathname === "/src/store/canvasStore.ts")?.name || "/src/store/canvasStore.ts")') as () => Promise<{
       useCanvasStore: { getState: () => {
         ensureAgentSession: () => string
         appendAgentMessage: (sessionId: string, message: unknown) => void
@@ -188,6 +190,7 @@ test('project to canvas and Agent surfaces stay ordered across reload', async ({
   }).toPass({ timeout: 10_000 })
   await expect(page.getByRole('button', { name: '返回项目' })).toBeEnabled()
 
+  await expect(page.getByRole('button', { name: '换场景' })).toBeVisible()
   await page.getByRole('button', { name: '换场景' }).click()
   const composer = page.getByRole('combobox', { name: '提示词' })
   await expect(composer).toHaveValue('替换场景和光线。人物、服装、商品保持。')
@@ -236,7 +239,7 @@ test('Agent Session 被刷新清掉后，模式切换与发送会自动恢复', 
   await expect(page.getByRole('complementary', { name: 'Botanic Agent' })).toBeVisible()
 
   await page.evaluate(async () => {
-    const loadStore = new Function('return import("/src/store/canvasStore.ts")') as () => Promise<{
+    const loadStore = new Function('return import(performance.getEntriesByType("resource").find(entry => new URL(entry.name).pathname === "/src/store/canvasStore.ts")?.name || "/src/store/canvasStore.ts")') as () => Promise<{
       useCanvasStore: {
         getState: () => { document: Record<string, unknown> }
         setState: (state: { document: Record<string, unknown> }) => void
@@ -306,10 +309,11 @@ test('Agent 离线消息跨页面实例恢复，联网后只按原幂等键提�
     const storage = module.createLocalStorageAgentMessageQueueStorage('e2e-offline-recovery')
     const queue = module.createAgentMessageQueue({
       storage,
-      deliver: async (item: { idempotencyKey: string }) => {
+      deliver: async (item: { idempotencyKey: string; message: unknown }) => {
         const deliveries = JSON.parse(localStorage.getItem('botanic:e2e-agent-deliveries') || '[]') as string[]
         deliveries.push(item.idempotencyKey)
         localStorage.setItem('botanic:e2e-agent-deliveries', JSON.stringify(deliveries))
+        return item.message
       },
     })
     const first = await queue.flush()
@@ -322,7 +326,7 @@ test('Agent 离线消息跨页面实例恢复，联网后只按原幂等键提�
     }
   })
   expect(recovered).toEqual({
-    first: { delivered: ['message-e2e'], failed: [], pending: [] },
+    first: { delivered: ['message-e2e'], failed: [], pending: [], receipts: [{ sessionId: 'session-e2e', message: { id: 'message-e2e', role: 'user', kind: 'text', content: '离线消息', createdAt: 2 } }] },
     second: { delivered: [], failed: [], pending: [] },
     remaining: 0,
     deliveries: ['agent-message-message-e2e'],
@@ -336,7 +340,7 @@ test('Agent 生成卡片默认收起已完成步骤与提示词差异，主内�
   await page.getByRole('button', { name: '描述目标', exact: true }).click()
 
   await page.evaluate(async () => {
-    const loadStore = new Function('return import("/src/store/canvasStore.ts")') as () => Promise<{
+    const loadStore = new Function('return import(performance.getEntriesByType("resource").find(entry => new URL(entry.name).pathname === "/src/store/canvasStore.ts")?.name || "/src/store/canvasStore.ts")') as () => Promise<{
       useCanvasStore: { getState: () => {
         ensureAgentSession: () => string
         appendAgentMessage: (sessionId: string, message: unknown) => void
@@ -367,7 +371,7 @@ test('Agent 生成卡片默认收起已完成步骤与提示词差异，主内�
 
   await expect(page.getByText('提示词')).toBeVisible()
   const toolAccordion = page.locator('.agent-tool-accordion')
-  const toolTitle = toolAccordion.getByRole('button', { name: /^推理摘要/ })
+  const toolTitle = toolAccordion.getByRole('button', { name: /^(执行记录|用时)/ })
   const promptDiff = page.locator('details.agent-prompt-review__compare')
   await expect(toolAccordion).toBeVisible()
   await expect(promptDiff).toBeVisible()
@@ -388,7 +392,7 @@ test('已提交生成卡直接展示提示词与规格芯片', async ({ page }) 
   await page.getByRole('button', { name: '描述目标', exact: true }).click()
 
   await page.evaluate(async () => {
-    const loadStore = new Function('return import("/src/store/canvasStore.ts")') as () => Promise<{
+    const loadStore = new Function('return import(performance.getEntriesByType("resource").find(entry => new URL(entry.name).pathname === "/src/store/canvasStore.ts")?.name || "/src/store/canvasStore.ts")') as () => Promise<{
       useCanvasStore: { getState: () => {
         ensureAgentSession: () => string
         appendAgentMessage: (sessionId: string, message: unknown) => void
@@ -546,10 +550,10 @@ test('最新短消息只 mood，大回复限次 wow 且 28px 不出字', async (
   expect(largeSlotBox, '大回复头像槽应保持紧凑').toBeTruthy()
   expect(largeSlotBox!.width).toBeLessThan(40)
   expect(largeVisualBox, '大回复头像视觉应放大').toBeTruthy()
-  expect(largeVisualBox!.height).toBeGreaterThan(35)
+  await expect.poll(async () => (await largeRole.locator('svg').boundingBox())?.height ?? 0).toBeGreaterThan(35)
 
-  await expect(shortRole).toHaveAttribute('data-bob-mood', 'idle')
-  await expect(shortRole).toHaveAttribute('data-bob-says', 'none')
+  await expect(shortRole).toHaveCount(0)
+  await expect(agent.locator('.agent-message__role')).toHaveCount(1)
 
   await expect(largeRole).toHaveAttribute('data-bob-says', 'none', { timeout: 12_000 })
   await expect(largeRole).toHaveAttribute('data-bob-mood', 'listening')
@@ -563,7 +567,7 @@ const PNG_40x30 =
 
 async function addPngAsset(page: Page, name: string) {
   await page.evaluate(async ({ image, fileName }) => {
-    const loadStore = new Function('return import("/src/store/canvasStore.ts")') as () => Promise<{
+    const loadStore = new Function('return import(performance.getEntriesByType("resource").find(entry => new URL(entry.name).pathname === "/src/store/canvasStore.ts")?.name || "/src/store/canvasStore.ts")') as () => Promise<{
       useCanvasStore: { getState: () => { addUploadedAssetsToCanvas: (assets: unknown[]) => void } }
     }>
     const { useCanvasStore } = await loadStore()
@@ -635,7 +639,7 @@ test('重连期间画布写入与批量恢复保持暂停且不返回 phantom ID
   await expect(page.locator('.react-flow__node-generate:visible')).toHaveCount(1)
 
   const result = await page.evaluate(async () => {
-    const loadStore = new Function('return import("/src/store/canvasStore.ts")') as () => Promise<{
+    const loadStore = new Function('return import(performance.getEntriesByType("resource").find(entry => new URL(entry.name).pathname === "/src/store/canvasStore.ts")?.name || "/src/store/canvasStore.ts")') as () => Promise<{
       useCanvasStore: {
         getState: () => {
           document: { nodes: { id: string }[]; batchVariationRuns: unknown[] }
@@ -711,7 +715,7 @@ test('共享模板远端写入完成后遇到重连仍报告成功', async ({ pa
   await page.getByRole('button', { name: '图片生成', exact: true }).click()
 
   const result = await page.evaluate(async () => {
-    const loadStore = new Function('return import("/src/store/canvasStore.ts")') as () => Promise<{
+    const loadStore = new Function('return import(performance.getEntriesByType("resource").find(entry => new URL(entry.name).pathname === "/src/store/canvasStore.ts")?.name || "/src/store/canvasStore.ts")') as () => Promise<{
       useCanvasStore: {
         getState: () => {
           sharedTemplates: Array<{ name: string }>
@@ -764,7 +768,7 @@ test('远端画布刷新失败会中断重连恢复链', async ({ page }) => {
   await page.getByRole('button', { name: '新建项目' }).click()
 
   const rejected = await page.evaluate(async () => {
-    const loadStore = new Function('return import("/src/store/canvasStore.ts")') as () => Promise<{
+    const loadStore = new Function('return import(performance.getEntriesByType("resource").find(entry => new URL(entry.name).pathname === "/src/store/canvasStore.ts")?.name || "/src/store/canvasStore.ts")') as () => Promise<{
       useCanvasStore: {
         getState: () => {
           persistenceStatus: string
@@ -851,7 +855,7 @@ test('两张图可从右侧引用拖到左侧上下文', async ({ page }) => {
   const targetId = await targetNode.getByLabel('添加上下文').getAttribute('data-nodeid')
   if (!targetId) throw new Error('右图节点不存在')
   await page.evaluate(async (nodeId) => {
-    const loadStore = new Function('return import("/src/store/canvasStore.ts")') as () => Promise<{
+    const loadStore = new Function('return import(performance.getEntriesByType("resource").find(entry => new URL(entry.name).pathname === "/src/store/canvasStore.ts")?.name || "/src/store/canvasStore.ts")') as () => Promise<{
       useCanvasStore: { getState: () => { document: { nodes: { id: string; position: { x: number; y: number } }[] }; setNodes: (nodes: unknown[]) => void } }
     }>
     const { useCanvasStore } = await loadStore()

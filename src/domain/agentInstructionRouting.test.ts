@@ -29,7 +29,7 @@ function message(partial: Partial<BotanicAgentMessage> & Pick<BotanicAgentMessag
 test('执行语按序落点：待确认计划、待答确认卡、历史定稿 Prompt，最后才提示', () => {
   const base = { instruction: '直接生成', options: {}, hasVisualContext: true }
   const pendingPlan = message({ id: 'plan-1', role: 'assistant', kind: 'plan', status: 'pending', plan: { intent: 'initial_generation' } as never })
-  const pendingQuestion = message({ id: 'question-1', role: 'assistant', kind: 'question', status: 'pending', question: { id: 'q', question: '?', originalInstruction: '', fields: [] } })
+  const pendingQuestion = message({ id: 'question-1', role: 'assistant', kind: 'question', status: 'pending', sourceMessageId: 'input-1', question: { id: 'q', question: '?', originalInstruction: '', fields: [] } })
   const promptMessage = message({ id: 'prompt-1', role: 'assistant', prompt: '海边礁石人像，黄金时刻逆光' })
 
   const confirm = resolveBotanicAgentInstructionEntry({ ...base, messages: [promptMessage, pendingQuestion, pendingPlan] })
@@ -38,6 +38,11 @@ test('执行语按序落点：待确认计划、待答确认卡、历史定稿 P
 
   const answerFirst = resolveBotanicAgentInstructionEntry({ ...base, messages: [promptMessage, pendingQuestion] })
   assert.deepEqual(answerFirst, { kind: 'notice', notice: 'answer_pending_question' })
+  assert.deepEqual(resolveBotanicAgentInstructionEntry({ ...base, messages: [promptMessage, { ...pendingQuestion, sourceMessageId: undefined }] }), { kind: 'notice', notice: 'nothing_to_confirm' }, '不可恢复的旧确认不能让执行语误用更早的 Prompt')
+  const historicalQuestion = { ...pendingQuestion, turnId: 'turn-old' }
+  assert.equal(resolveBotanicAgentInstructionEntry({ ...base, messages: [promptMessage, historicalQuestion],
+    runs: [{ id: 'run-old', plan: { turnId: 'turn-old' } }],
+  }).kind, 'route', '真实 Run 已接续的历史问题不能继续拦截执行语')
 
   // 执行语没有画面信息：沿用最近定稿 Prompt，以 previous_prompt 进入生成，不写进简报。
   const reuse = resolveBotanicAgentInstructionEntry({ ...base, messages: [promptMessage] })
@@ -138,7 +143,7 @@ test('生成草案的追问卡带回 Prompt 来源与本轮生成结论', () => 
   const draft = prepareBotanicAgentGenerationDraft({
     ...draftBase,
     decision: { kind: 'generation', mediaKind: 'image', promptSource: 'instruction' },
-    options: {},
+    options: { clarificationAnswers: { delivery_preset: 'custom' } },
     generationModels: [imageModel],
     executionMode: 'manual',
     synthesizedPrompt: '海边礁石人像，黄金时刻逆光',

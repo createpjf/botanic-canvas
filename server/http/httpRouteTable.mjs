@@ -28,6 +28,7 @@ export const botanicHttpRoutePatterns = Object.freeze({
   agentSessionContextCompactions: /^\/api\/projects\/([^/]+)\/agent-sessions\/([^/]+)\/context-compactions$/,
   agentSessionMessages: /^\/api\/projects\/([^/]+)\/agent-sessions\/([^/]+)\/messages$/,
   projectAgentArtifacts: /^\/api\/projects\/([^/]+)\/agent-artifacts$/,
+  projectAgentReferencePreparation: /^\/api\/projects\/([^/]+)\/agent-references\/prepare$/,
   agentSession: /^\/api\/projects\/([^/]+)\/agent-sessions\/([^/]+)$/,
   agentSessionReadingAnchor: /^\/api\/projects\/([^/]+)\/agent-sessions\/([^/]+)\/reading-anchor$/,
   agentMessage: /^\/api\/projects\/([^/]+)\/agent-sessions\/([^/]+)\/messages\/([^/]+)$/,

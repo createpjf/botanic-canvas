@@ -68,6 +68,7 @@ test('Agent Chat 只有服务端与本轮用户同时允许时才下发 raw reas
 })
 
 test('Agent Chat 不吞掉视觉上下文总字节超限', async () => {
+  const events = []
   const largeDocument = {
     id: 'project-chat', edges: [],
     nodes: Array.from({ length: 4 }, (_, index) => ({
@@ -85,6 +86,7 @@ test('Agent Chat 不吞掉视觉上下文总字节超限', async () => {
     flockAgentModels: ['deepseek-v4-flash', 'gemini-3.7-flash'], agentVisionModel: 'gemini-3.7-flash',
   }, {
     document: largeDocument,
+    onEvent: (event) => events.push(event),
     resolveVisionMedia: async () => ({ mimeType: 'image/png', buffer: Buffer.alloc(5 * 1024 * 1024) }),
     fetchImpl: async () => {
       providerCalls += 1
@@ -92,6 +94,12 @@ test('Agent Chat 不吞掉视觉上下文总字节超限', async () => {
     },
   }), (caught) => caught?.code === 'AGENT_VISION_BYTES_EXCEEDED' && caught?.statusCode === 413)
   assert.equal(providerCalls, 0)
+  assert.equal(events[0]?.type, 'attempt')
+  const feedback = events.find((event) => event.type === 'references')
+  assert.equal(feedback?.attemptId, 'chat_vision')
+  assert.equal(feedback.items.length, 1, '不把未完成准备的其他引用误报为读取失败')
+  assert.equal(feedback.items[0].reason, 'too_large')
+  assert.equal(JSON.stringify(feedback).includes('data:'), false)
 })
 
 test('Agent Chat 归一明确 context overflow，且无 Model Context 时不自行重试', async () => {
@@ -460,7 +468,7 @@ test('流式旁白在对应工具事件前到达，工具完成后可继续追�
     },
   })
 
-  assert.deepEqual(events.map((event) => event.type === 'attempt'
+  assert.deepEqual(events.filter((event) => event.type !== 'references').map((event) => event.type === 'attempt'
     ? `attempt:${event.attemptId}`
     : event.type === 'answer'
       ? `answer:${event.attemptId}:${event.chunkIndex}:${event.delta}`

@@ -106,6 +106,18 @@ test('任务已成功但本地结果节点为空时原位补图，并保留本�
   assert.equal(merged.generationJobs[0].outputs?.length, 1)
 })
 
+test('删除后迟到的 Agent 恢复响应不能借工作流节点白名单复活已删除输出', () => {
+  const outputs = [{ id: 'one', image: '/api/media/one' }, { id: 'two', image: '/api/media/two' }]
+  const original = { ...job('job-a', outputs), agentRun: { runId: 'run-a', branchId: 'branch-a' }, generateNodeId: 'generate-a', resultNodeId: 'one' }
+  const two = resultNode('two', { x: 500, y: 300 }, { jobId: 'job-a', candidateId: 'two', image: outputs[1].image })
+  const current = document([generateNode(), two], [], [{ ...original, outputs: [outputs[1]], dismissedOutputIds: ['one'] }])
+  const stale = document([generateNode(), two, resultNode('one-pending', { x: 500, y: 0 }, { jobId: 'job-a', candidateId: 'one', image: outputs[0].image })], [{ id: 'resurrected', source: 'generate-a', target: 'one-pending' }], [original])
+  const merged = mergeRecoveredGenerationJobs(current, stale)
+  assert.deepEqual(merged.nodes.filter(node => node.type === 'result').map(node => node.id), ['two'])
+  assert.equal(merged.edges.some(edge => edge.target === 'one-pending'), false)
+  assert.deepEqual(merged.generationJobs[0].dismissedOutputIds, ['one'])
+})
+
 test('一次任务的 N 个输出全部恢复为独立节点，并补齐必要连线', () => {
   const current = document([
     generateNode(),

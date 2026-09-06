@@ -9,7 +9,6 @@ import {
   PanOnScrollMode,
   Panel,
   Position,
-  ReactFlow,
   SelectionMode,
   useReactFlow,
   useViewport,
@@ -85,6 +84,7 @@ import {
   workspaceLocationFromHash,
   type WorkspaceLocation,
   type WorkspaceView,
+  createWorkspaceNavigation,
 } from './canvasWorkspaceNavigation'
 import { useWorkspaceProjectCoordinator } from './workspaceProjectCoordinator'
 import { useCanvasWorkspaceSynchronization } from './useCanvasWorkspaceSynchronization'
@@ -115,6 +115,7 @@ import { useProductI18n, useProductMessages } from '../../i18n/react'
 import { localizeProductError } from '../../i18n/core'
 import { canvasSystemLabel } from './canvasI18n'
 import { useBobSaysPlays } from '../agent/useBobSaysPlays'
+import { Canvas } from '../../components/ai-elements/canvas'
 
 const workspaceMessages = {
   'zh-CN': {
@@ -1032,6 +1033,8 @@ export default function CanvasWorkspace({
   })
   const [workspaceRestoring, setWorkspaceRestoring] = useState(initialWorkspaceLocation.view === 'canvas')
   const [workspaceRestored, setWorkspaceRestored] = useState(false)
+  const [workspaceLoadFailed, setWorkspaceLoadFailed] = useState<WorkspaceLocation | null>(null)
+  const workspaceNavigatorRef = useRef<ReturnType<typeof createWorkspaceNavigation> | null>(null)
   const [closingWorkspaceTabId, setClosingWorkspaceTabId] = useState<string | null>(null)
   const [viewportRestoring, setViewportRestoring] = useState(initialWorkspaceLocation.view === 'canvas')
   const workspaceView = workspaceLocation.view
@@ -1048,7 +1051,7 @@ export default function CanvasWorkspace({
     loadMoreCollaborationActivities,
     reloadCollaborationActivities,
   } = useCanvasWorkspaceSynchronization({
-    workspaceActive: workspaceRestored && workspaceView === 'canvas',
+    workspaceActive: workspaceRestored && workspaceView === 'canvas' && !workspaceRestoring && !workspaceLoadFailed && document.id === workspaceLocation.projectId,
     currentUserId: currentUser?.id,
     refreshAgentSessionMessagesRef,
   })
@@ -1138,7 +1141,10 @@ export default function CanvasWorkspace({
   }, [document.id])
 
   const workspaceNavigationRunRef = useRef(0)
+  const workspaceNavigationStateRef = useRef({ workspaceLocation, workspaceRestored, workspaceRestoring })
+  workspaceNavigationStateRef.current = { workspaceLocation, workspaceRestored, workspaceRestoring }
   const setWorkspaceView = useCallback((view: WorkspaceView, projectId?: string, historyMode: WorkspaceHistoryMode = 'push') => {
+    const { workspaceLocation, workspaceRestored, workspaceRestoring } = workspaceNavigationStateRef.current
     workspaceNavigationRunRef.current += 1
     const location: WorkspaceLocation = view === 'canvas'
       ? { view, projectId: projectId ?? useCanvasStore.getState().document.id }
@@ -1157,13 +1163,15 @@ export default function CanvasWorkspace({
     runWorkspaceTransition(workspaceTransitionDirection(workspaceLocation.view, view), () => {
       flushSync(updateLocation)
     })
-  }, [currentUser?.id, workspaceLocation, workspaceRestored, workspaceRestoring])
+  }, [currentUser?.id])
 
   const returnToProjectLibrary = useCallback(() => {
     // 关闭最后一个标签必须走浏览器真实导航。history.replaceState 不会触发 hashchange，
     // 会让地址栏已经是 /projects 但 React 仍停在旧画布。
     const location: WorkspaceLocation = { view: 'projects' }
     workspaceNavigationRunRef.current += 1
+    workspaceNavigatorRef.current?.cancel()
+    setWorkspaceLoadFailed(null)
     setWorkspaceRestoring(false)
     writeWorkspaceLocationFallback(location, currentUser?.id)
     const targetHash = workspaceHash(location)
@@ -1175,15 +1183,18 @@ export default function CanvasWorkspace({
   }, [currentUser?.id])
 
   const handleWorkspaceProjectOpened = useCallback((projectId: string) => {
+    workspaceNavigatorRef.current?.cancel()
+    setWorkspaceRestoring(false)
+    setWorkspaceLoadFailed(null)
     setWorkspaceView('canvas', projectId)
   }, [setWorkspaceView])
 
   const handleWorkspaceProjectDeleted = useCallback((projectId: string) => {
     setWorkspaceTabIds((current) => current.filter((id) => id !== projectId))
     if (workspaceLocation.view === 'canvas' && workspaceLocation.projectId === projectId) {
-      setWorkspaceView('projects', undefined, 'replace')
+      returnToProjectLibrary()
     }
-  }, [setWorkspaceView, workspaceLocation])
+  }, [returnToProjectLibrary, workspaceLocation])
 
   const {
     projects: workspaceProjects,
@@ -1201,7 +1212,7 @@ export default function CanvasWorkspace({
       ? `${workspaceView}:${workspaceLocation.projectId ?? ''}`
       : null,
     navigationSequence: workspaceNavigationRunRef,
-    openDocument,
+    openDocument: (projectId) => workspaceNavigatorRef.current?.open({ view: 'canvas', projectId }) ?? Promise.resolve(false),
     openNewDocument,
     renameDocument,
     createDocumentFromTemplate,
@@ -1221,137 +1232,47 @@ export default function CanvasWorkspace({
   }, [workspaceLocation])
 
   useEffect(() => {
-    if (!hydrated || workspaceRestored) return
-
-    let active = true
-    let finished = false
-    const finishRestore = (view: WorkspaceView, projectId?: string) => {
-      if (!active || finished) return
-      finished = true
-      window.clearTimeout(restoreTimeout)
-      setWorkspaceRestoring(false)
-      setWorkspaceRestored(true)
-      setWorkspaceView(view, projectId, 'replace')
-    }
-    // 无论浏览器存储或第三方请求处于何种异常状态，首次路由恢复都必须可退出。
-    const restoreTimeout = window.setTimeout(() => finishRestore('projects'), 45_000)
-    const restoreWorkspaceLocation = async () => {
-      let location = workspaceLocationFromHash(window.location.hash) ?? initialWorkspaceLocation
-
-      while (active) {
-        if (location.view !== 'canvas') {
-          finishRestore(location.view)
-          return
+    if (!hydrated) return
+    const navigation = createWorkspaceNavigation({
+      openDocument: async (projectId, signal) => {
+        markProjectOpenStarted(projectId)
+        return await openDocument(projectId, signal) && useCanvasStore.getState().document.id === projectId
+      },
+      onStart: (location) => {
+        workspaceNavigationRunRef.current += 1
+        setWorkspaceLoadFailed(null)
+        setWorkspaceLocation(location)
+        setWorkspaceRestoring(location.view === 'canvas')
+        if (!sameWorkspaceLocation(location, workspaceLocationFromHash(window.location.hash))) {
+          writeWorkspaceHash(location, workspaceNavigationStateRef.current.workspaceRestored ? 'push' : 'replace')
         }
-
-        let opened = false
-        try {
-          markProjectOpenStarted(location.projectId!)
-          opened = await openDocument(location.projectId!)
-        } catch {
-          // 项目读取失败时不能一直保留“正在恢复”遮罩；退回项目页，由列表提供重试入口。
-          finishRestore('projects')
-          return
-        }
-        if (!active) return
-        const latestHashLocation = workspaceLocationFromHash(window.location.hash) ?? initialWorkspaceLocation
-        if (!sameWorkspaceLocation(location, latestHashLocation)) {
-          location = latestHashLocation
-          continue
-        }
-
-        finishRestore(opened ? 'canvas' : 'projects', opened ? location.projectId : undefined)
-        return
-      }
-    }
-
-    void restoreWorkspaceLocation()
-    return () => {
-      active = false
-      window.clearTimeout(restoreTimeout)
-    }
-  }, [hydrated, initialWorkspaceLocation, openDocument, setWorkspaceView, workspaceRestored])
-
-  useEffect(() => {
-    if (!hydrated || !workspaceRestored) return
-
-    let active = true
-    let running = false
-    let pendingLocation: WorkspaceLocation | null = null
-
-    const queueLatestHashLocation = () => {
-      const location = workspaceLocationFromHash(window.location.hash)
-      if (!location) return
-      workspaceNavigationRunRef.current += 1
-      pendingLocation = location
-      setWorkspaceLocation(location)
-      setWorkspaceRestoring(location.view === 'canvas')
-      if (!running) void runNavigationQueue()
-    }
-
-    const runNavigationQueue = async () => {
-      if (running) return
-      running = true
-
-      while (active && pendingLocation) {
-        const location = pendingLocation
-        pendingLocation = null
-
-        if (location.view !== 'canvas') {
-          if (sameWorkspaceLocation(location, workspaceLocationFromHash(window.location.hash))) {
-            setWorkspaceView(location.view, undefined, 'none')
-            setWorkspaceRestoring(false)
-          }
-          continue
-        }
-
-        let opened = false
-        const openTimeout = window.setTimeout(() => {
-          if (!active) return
-          if (sameWorkspaceLocation(location, workspaceLocationFromHash(window.location.hash))) {
-            setWorkspaceView('projects', undefined, 'replace')
-            setWorkspaceRestoring(false)
-          }
-        }, 45_000)
-        try {
-          markProjectOpenStarted(location.projectId!)
-          opened = await openDocument(location.projectId!)
-        } catch {
-          if (sameWorkspaceLocation(location, workspaceLocationFromHash(window.location.hash))) {
-            setWorkspaceView('projects', undefined, 'replace')
-            setWorkspaceRestoring(false)
-          }
-          continue
-        } finally {
-          window.clearTimeout(openTimeout)
-        }
-        if (!active) break
-
-        const latestHashLocation = workspaceLocationFromHash(window.location.hash)
-        if (pendingLocation || !sameWorkspaceLocation(location, latestHashLocation)) {
-          pendingLocation ??= latestHashLocation
-          continue
-        }
-
-        setWorkspaceView(opened ? 'canvas' : 'projects', opened ? location.projectId : undefined, opened ? 'none' : 'replace')
+      },
+      onFinish: (location) => {
+        setWorkspaceRestored(true)
         setWorkspaceRestoring(false)
-      }
-
-      running = false
-      if (active && pendingLocation) void runNavigationQueue()
-    }
+        setWorkspaceView(location.view, location.projectId, 'none')
+      },
+      onError: (location) => {
+        setWorkspaceRestored(true)
+        setWorkspaceRestoring(false)
+        setWorkspaceLoadFailed(location)
+      },
+    })
+    workspaceNavigatorRef.current = navigation
     const onWorkspaceHistoryChange = () => {
-      queueLatestHashLocation()
+      const location = workspaceLocationFromHash(window.location.hash)
+      if (location) void navigation.open(location)
     }
-
+    void navigation.open(workspaceLocationFromHash(window.location.hash) ?? initialWorkspaceLocation)
     window.addEventListener('hashchange', onWorkspaceHistoryChange)
     window.addEventListener('popstate', onWorkspaceHistoryChange)
     return () => {
-      active = false
+      navigation.cancel()
+      workspaceNavigatorRef.current = null
       window.removeEventListener('hashchange', onWorkspaceHistoryChange)
       window.removeEventListener('popstate', onWorkspaceHistoryChange)
     }
-  }, [hydrated, openDocument, setWorkspaceView, workspaceRestored])
+  }, [hydrated, initialWorkspaceLocation, openDocument, setWorkspaceView])
 
   const beginProjectTabRename = useCallback((project: WorkspaceProject) => {
     setProjectTabNameDraft(project.name)
@@ -2124,15 +2045,16 @@ export default function CanvasWorkspace({
     .map((node) => node.id))
   const selectedGenerateModel = availableModels.find((model) => model.id === selectedGenerateData?.settings.model)
 
-  if (canvasHydrationFailed) {
+  if (canvasHydrationFailed || workspaceLoadFailed) {
     return (
       <main className={canvasClassName}>
         <section className="canvas-pane canvas-loading" aria-label={t.initFailed}>
           <div>
             <span className="panel-eyebrow">BOTANIC CANVAS</span>
-            <strong>{t.initFailed}</strong>
-            <p>{t.initFailedDetail}</p>
-            <button type="button" onClick={hydrateCanvas}>{t.retry}</button>
+            <strong role="alert">{workspaceLoadFailed ? locale === 'en' ? 'Unable to load project' : '项目读取失败' : t.initFailed}</strong>
+            {!workspaceLoadFailed ? <p>{t.initFailedDetail}</p> : null}
+            <button type="button" onClick={() => workspaceLoadFailed ? void workspaceNavigatorRef.current?.open(workspaceLoadFailed, true) : hydrateCanvas()}>{t.retry}</button>
+            {workspaceLoadFailed ? <button type="button" onClick={returnToProjectLibrary}>{locale === 'en' ? 'Back to projects' : '返回项目'}</button> : null}
           </div>
         </section>
       </main>
@@ -2206,7 +2128,7 @@ export default function CanvasWorkspace({
         }}
       >
         <header className="tab-bar" data-node-id="894:230346">
-          <button className="home-tab" onClick={() => { void refreshWorkspaceProjects(); setWorkspaceView('projects') }} aria-label={t.backProjects}><HomeIcon /> <span>{t.projects}</span></button>
+          <button className="home-tab" onClick={() => { void refreshWorkspaceProjects(); returnToProjectLibrary() }} aria-label={t.backProjects}><HomeIcon /> <span>{t.projects}</span></button>
           <span className="tab-divider" />
           <nav className="project-tabs" aria-label={t.openProjects}>
             {workspaceTabs.map((project) => {
@@ -2269,7 +2191,7 @@ export default function CanvasWorkspace({
           </button>
         </header>
 
-        <ReactFlow
+        <Canvas
           nodes={renderedNodes}
           edges={renderedEdges}
           nodeTypes={canvasNodeTypes}
@@ -2412,7 +2334,7 @@ export default function CanvasWorkspace({
           ) : null}
           <CanvasDropBridge onReady={setScreenToFlowPosition} />
           {realtimeReadOnly ? <Panel position="top-center" className={`canvas-realtime-status is-${realtimeStatus}`}>
-            <div role={realtimeStatus === 'blocked' ? 'alert' : 'status'} aria-live="polite"><i aria-hidden="true" /><span>{realtimeBlockingCopy.title}</span><small>{realtimeBlockingCopy.detail}</small>{realtimeStatus === 'blocked' ? <button type="button" onClick={() => void retryBlockedCanvasSync()}>{t.retry}</button> : null}</div>
+            <div role={realtimeStatus === 'blocked' ? 'alert' : 'status'} aria-live="polite"><i aria-hidden="true" /><span>{realtimeBlockingCopy.title}</span><small>{collaborationAwareness.realtimeRetryError ?? realtimeBlockingCopy.detail}</small>{realtimeStatus === 'blocked' ? <button type="button" disabled={collaborationAwareness.realtimeRetrying} onClick={() => void retryBlockedCanvasSync().catch(() => undefined)}>{t.retry}</button> : null}</div>
           </Panel> : null}
           <Panel position="top-left" className="task-flow-focus-panel"><TaskFlowFocus taskKey={latestTaskKey} nodes={latestTaskNodes} /></Panel>
           {historyFocusRequest ? <FocusCanvasNode
@@ -2468,7 +2390,7 @@ export default function CanvasWorkspace({
             viewport={restoredViewport}
             onRestored={completeViewportRestore}
           />
-        </ReactFlow>
+        </Canvas>
 
         <Suspense fallback={null}>{batchVariationProgressRun ? <BatchVariationProgress
           run={batchVariationProgressRun}
@@ -2533,7 +2455,7 @@ export default function CanvasWorkspace({
           onSaveArtifact={agentBridge.saveArtifact}
           onContinueArtifact={agentBridge.continueArtifact}
           onLoadMoreArtifacts={agentBridge.loadMoreArtifacts}
-          onUseResultContext={agentBridge.useResultContext}
+          onUseResultContext={agentBridge.useResultContext} onRetryRealtimeSync={retryBlockedCanvasSync}
           onRetryPersistence={retryAgentCanvasPersistence}
           onRefreshRemote={refreshAgentCanvasFromRemote}
           onBindBrand={bindProjectBrand}

@@ -70,6 +70,8 @@ export function resolveRemoteCanvasRefresh({
   return {
     document: {
       ...remote,
+      // 兼容画布视图可能不含回执；不能抹掉已从独立 Job 读到的停止事实。
+      generationJobs: remote.generationJobs.map(job => ({ ...job, cancel: job.cancel ?? current.generationJobs.find(item => item.id === job.id)?.cancel })),
       agentSessions: reconcileAgentSessionsAfterDocumentSync(current.agentSessions, remote.agentSessions),
     },
     applied: true,

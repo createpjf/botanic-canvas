@@ -3,6 +3,7 @@ import type { BotanicAgentStreamEvent } from './agentChatStream.ts'
 import type { BotanicAgentTurnResult } from './agentTurnContract.ts'
 import type { TimelineStepKind, TimelineToolPresentation } from './agentTimeline.ts'
 import { safeTimelineWebSources } from './agentTimelineWebSources.ts'
+import { readAgentReferenceUsage } from './agentReferenceUsage.ts'
 import { AGENT_TOOL_CALL_PUBLIC_RISK_VALUES, AGENT_TOOL_CALL_PUBLIC_STATUS_VALUES } from './agentProtocol.generated.ts'
 
 /**
@@ -51,6 +52,8 @@ export type BotanicAgentObservedTurn<TResult = BotanicAgentTurnResult> = {
   id: string
   projectId: string
   status: BotanicAgentTurnRuntimeStatus
+  createdAt?: number
+  updatedAt?: number
   result?: TResult
   error?: { code?: string; message?: string }
   outputPreview?: {
@@ -58,6 +61,8 @@ export type BotanicAgentObservedTurn<TResult = BotanicAgentTurnResult> = {
     truncated?: boolean; updatedAt: number
   }
   lastSequence?: number
+  /** 服务端按 Run.plan.turnId 派生，供历史确认跳转，不另建本地关联。 */
+  linkedRunIds?: string[]
 }
 
 const outputPreviewAttemptId = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$/u
@@ -138,6 +143,7 @@ export function pendingBotanicAgentTurnProjection<T extends BotanicAgentTurnLink
   return messages
     .filter((message) => (
       message.role === 'user'
+      && !message.id.startsWith('agent-answer-') // 确认答案关联原 Turn，但不是可重新提交的原始请求。
       && message.status !== 'failed'
       && (
         Boolean(message.turnId?.trim())
@@ -187,6 +193,16 @@ export function hasBotanicAgentTurnCancellationIntent(
   return Number.isFinite(message.turnCancellationRequestedAt) || Number.isFinite(transientRequestedAt)
 }
 
+/** accepted 尚未到达时，Stop 只绑定当前异步操作，不能污染同会话的下一轮。 */
+export function markBotanicAgentCancellationPending(pending: Set<string>, operationKey?: string) {
+  if (operationKey?.trim()) pending.add(operationKey)
+}
+
+export function takeBotanicAgentCancellationPending(pending: Set<string>, operationKey?: string) {
+  if (!operationKey?.trim()) return false
+  return pending.delete(operationKey)
+}
+
 /** generation 首轮与刷新恢复共用同一份 continuation，避免漏掉模型给出的设置提示。 */
 export function botanicAgentTurnGenerationContinuation(
   turn: Extract<BotanicAgentTurnResult, { kind: 'generation' }>,
@@ -218,10 +234,12 @@ export function botanicAgentTurnGenerationContinuation(
  * generation continuation 只能使用 Turn 快照中的目标。null 表示当轮本来就是
  * 初始生成；指定节点已删除或不可用时明确失败，禁止猜测当前选中。
  */
-export function resolveBotanicAgentContinuationTarget<T>(
+export async function resolveBotanicAgentContinuationTarget<T extends { id: string }>(
   targetNodeId: string | null | undefined,
-  resolveTarget: (nodeId: string) => T | undefined,
-): T | undefined {
+  resolveTarget: (nodeId: string, signal?: AbortSignal) => T | undefined | Promise<T | undefined>,
+  signal?: AbortSignal,
+): Promise<T | undefined> {
+  signal?.throwIfAborted()
   if (targetNodeId === null) return undefined
   if (targetNodeId === undefined) {
     const error = new Error('旧 Agent 回合缺少原选中结果的稳定身份，已停止恢复以避免改错图。')
@@ -229,9 +247,10 @@ export function resolveBotanicAgentContinuationTarget<T>(
     throw error
   }
   const normalizedTargetNodeId = targetNodeId.trim()
-  const target = normalizedTargetNodeId ? resolveTarget(normalizedTargetNodeId) : undefined
-  if (target) return target
-  const error = new Error('原 Agent 回合选择的结果已不存在，已停止恢复以避免改错图。')
+  const target = normalizedTargetNodeId ? await resolveTarget(normalizedTargetNodeId, signal) : undefined
+  signal?.throwIfAborted()
+  if (target?.id === normalizedTargetNodeId) return target
+  const error = new Error('暂时无法读取原结果，已停止恢复以避免改错图。请核对原图和同步状态后重试。')
   Object.assign(error, { code: 'AGENT_TURN_TARGET_NOT_FOUND' })
   throw error
 }
@@ -483,6 +502,15 @@ function safePresentation(value: unknown): TimelineToolPresentation | undefined 
 
 /** 把持久化事件恢复成 UI 已认识的安全事件；生命周期事件不进入工具时间线。 */
 export function agentTurnEventAsStreamEvent(event: BotanicAgentTurnEventRecord): BotanicAgentStreamEvent | undefined {
+  if (event.type === 'turn.output_preview.updated' && event.payload?.charCount === 0
+    && typeof event.payload.attemptId === 'string' && outputPreviewAttemptId.test(event.payload.attemptId)
+    && Number.isSafeInteger(event.payload.revision) && Number(event.payload.revision) > 0) {
+    return { type: 'attempt', action: 'start', attemptId: event.payload.attemptId, sequence: event.sequence, occurredAt: event.createdAt }
+  }
+  if (event.type === 'turn.references') {
+    const references = readAgentReferenceUsage(event.payload)
+    return references ? { type: 'references', ...references, sequence: event.sequence, occurredAt: event.createdAt } : undefined
+  }
   if (event.type !== 'turn.tool' || !event.payload || typeof event.payload !== 'object' || Array.isArray(event.payload)) return undefined
   const payload = event.payload
   const name = boundedStringValue(payload.toolName, 120, 'agent_tool')
@@ -502,6 +530,7 @@ export function agentTurnEventAsStreamEvent(event: BotanicAgentTurnEventRecord):
     type: 'tool',
     step: Number.isInteger(payload.step) && Number(payload.step) >= 0 && Number(payload.step) <= 64 ? Number(payload.step) : 0,
     ...(Number.isInteger(event.sequence) ? { sequence: Number(event.sequence) } : {}),
+    ...(Number.isSafeInteger(event.createdAt) && Number(event.createdAt) >= 0 ? { occurredAt: Number(event.createdAt) } : {}),
     toolCall: {
       id: boundedStringValue(payload.toolCallId, 160, `turn-tool-${Number(event.sequence) || 0}`),
       name,

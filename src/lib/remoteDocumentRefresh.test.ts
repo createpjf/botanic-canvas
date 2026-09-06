@@ -1,6 +1,31 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { discardLocalDraftAndRefreshRemote, persistAcceptedRemoteRefresh } from './remoteDocumentRefresh.ts'
+import { discardLocalDraftAndRefreshRemote, persistAcceptedRemoteRefresh, previewAgentTargetDocument } from './remoteDocumentRefresh.ts'
+
+test('Agent 原图恢复只返回已确认版本，前后检查 pending 且不落盘', async () => {
+  const steps: string[] = []
+  const remote = { id: 'original', revision: 7 }
+  assert.equal(await previewAgentTargetDocument(
+    async () => { steps.push('read'); return remote },
+    async () => { steps.push('pending'); return false },
+    (value) => value.id === 'original' && value.revision >= 7,
+  ), remote)
+  assert.deepEqual(steps, ['pending', 'read', 'pending'])
+  await assert.rejects(previewAgentTargetDocument(async () => remote, async () => false, () => false), { code: 'AGENT_TARGET_SYNC_PENDING' })
+})
+
+test('Agent 原图读期间出现待同步删除或取消时，不交出旧快照', async () => {
+  let pending = false
+  await assert.rejects(previewAgentTargetDocument(
+    async () => { pending = true; return 'remote' },
+    async () => pending, () => true,
+  ), { code: 'AGENT_TARGET_SYNC_PENDING' })
+  const controller = new AbortController()
+  await assert.rejects(previewAgentTargetDocument(
+    async () => { controller.abort(); return 'remote' },
+    async () => false, () => true, controller.signal,
+  ), { name: 'AbortError' })
+})
 
 test('选择云端版本时先丢弃本地草稿，再读取并缓存云端文档', async () => {
   const steps: string[] = []

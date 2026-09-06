@@ -57,12 +57,13 @@ test('搜索结果丢掉私网链接，并截断摘要', () => {
   assert.equal(hostnameFromUrl(hits[0].url), 'www.andlight.cn')
 })
 
-test('展示摘要只下发公开 hostname，去掉重复站、私网、snippet 和 query', () => {
+test('展示摘要按完整 URL 去重，保留同站不同页，去掉私网与原始检索内容', () => {
   const sources = presentationWebSources({
     query: '不要下发检索词',
     hits: [
       { title: '和光', url: 'https://www.andlight.cn/', hostname: 'www.andlight.cn', snippet: '品牌官网不要下发' },
-      { title: '重复 www', url: 'https://andlight.cn/about', hostname: 'andlight.cn', snippet: '同一站' },
+      { title: '重复地址', url: 'https://WWW.ANDLIGHT.CN:443/', snippet: '跳过重复' },
+      { title: '关于和光', url: 'https://andlight.cn/about', hostname: 'andlight.cn', snippet: '同一站' },
       { title: '巴萨', url: 'https://fcbarcelona.com/', hostname: 'fcbarcelona.com', snippet: '俱乐部' },
       { title: '内网', url: 'https://10.0.0.8/secret', hostname: '10.0.0.8', snippet: '不可见' },
       { title: '无地址', snippet: '跳过' },
@@ -70,6 +71,7 @@ test('展示摘要只下发公开 hostname，去掉重复站、私网、snippet 
   })
   assert.deepEqual(sources, [
     { hostname: 'www.andlight.cn', url: 'https://www.andlight.cn/', title: '和光' },
+    { hostname: 'andlight.cn', url: 'https://andlight.cn/about', title: '关于和光' },
     { hostname: 'fcbarcelona.com', url: 'https://fcbarcelona.com/', title: '巴萨' },
   ])
   assert.equal(JSON.stringify(sources).includes('不要下发'), false)

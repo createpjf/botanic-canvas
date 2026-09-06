@@ -14,7 +14,7 @@ type AgentActionPatch = Partial<Pick<
 export type AgentMessagePatch = Partial<Pick<
   BotanicAgentMessage,
   'kind' | 'content' | 'runId' | 'turnId' | 'turnCancellationRequestedAt' | 'turnRequestSnapshot' | 'status' | 'feedback'
-  | 'plan' | 'question' | 'composition' | 'deliveryStatus' | 'review' | 'sourceMessageId' | 'sourceNodeIds'
+  | 'plan' | 'question' | 'prompt' | 'composition' | 'deliveryStatus' | 'review' | 'sourceMessageId' | 'sourceNodeIds'
   | 'targetArtifactVersionId' | 'planFingerprint'
 >>
 
@@ -30,7 +30,7 @@ export function upsertBotanicAgentMessageProjection(input: {
   const source = input.message.role === 'assistant' && input.message.turnId
     ? (input.activeTurnInputMessage?.turnId === input.message.turnId
         ? input.activeTurnInputMessage
-        : input.session?.messages.find((message) => message.role === 'user' && message.turnId === input.message.turnId))
+        : input.session?.messages.find((message) => message.role === 'user' && message.turnId === input.message.turnId && message.turnRequestSnapshot))
     : undefined
   const message = {
     ...input.message,
@@ -43,7 +43,7 @@ export function upsertBotanicAgentMessageProjection(input: {
   input.update(existing, {
     kind: message.kind, content: message.content, runId: message.runId, turnId: message.turnId,
     turnCancellationRequestedAt: message.turnCancellationRequestedAt, status: message.status,
-    feedback: message.feedback, plan: message.plan, question: message.question,
+    feedback: message.feedback, plan: message.plan, question: message.question, prompt: message.prompt,
     composition: message.composition, review: message.review, sourceMessageId: message.sourceMessageId,
     sourceNodeIds: message.sourceNodeIds, targetArtifactVersionId: message.targetArtifactVersionId,
     planFingerprint: message.planFingerprint,

@@ -115,10 +115,15 @@ test('Supabase Session Message 与 Canvas 同步只走新原子 RPC，缺迁移 
     assert.match(writer, /AGENT_DERIVED_FIELDS_ATOMIC_WRITE_REQUIRED/u)
     assert.doesNotMatch(writer, /from\('agent_sessions'\)|from\('agent_messages'\)|\.upsert\(/u)
   }
-  for (const writer of [sync, putMessage]) {
-    assert.match(writer, /AGENT_MESSAGE_ROLE_CONFLICT/u)
-    assert.match(writer, /AGENT_MESSAGE_TURN_REQUEST_CONFLICT/u)
-  }
+  // 两条原子写路径委托同一个错误边界，不再要求在调用处复制业务码。
+  assert.match(sync, /fail\(rpcError\)/u)
+  assert.match(putMessage, /fail\(error\)/u)
+  const conflictBoundary = slice(supabase, 'function fail(', 'function userFromProfile(')
+  assert.match(conflictBoundary, /23514/u)
+  assert.match(conflictBoundary, /AGENT_MESSAGE_ROLE_CONFLICT/u)
+  assert.match(conflictBoundary, /AGENT_MESSAGE_TURN_REQUEST_CONFLICT/u)
+  assert.match(conflictBoundary, /AGENT_MESSAGE_ANSWER_CONFLICT/u)
+  assert.match(conflictBoundary, /throw productError\(conflict\[1\], conflict\[0\]\)/u)
   const projectWrite = slice(
     supabase,
     'async writeProject(userId, document, expectedRevision, expectedGraphRevision)',

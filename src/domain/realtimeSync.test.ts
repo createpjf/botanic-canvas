@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { deriveCanvasSyncStatus, parseProjectRealtimeEvent, projectRealtimeConnectionOpened, shouldRefreshFromRealtimeEvent } from './realtimeSync.ts'
+import { canvasSyncFailureMessage, deriveCanvasSyncStatus, parseProjectRealtimeEvent, projectRealtimeConnectionOpened, shouldRefreshFromRealtimeEvent } from './realtimeSync.ts'
 
 test('首次连接不触发恢复，断线重连后触发恢复', () => {
   assert.deepEqual(parseProjectRealtimeEvent({ type: 'realtime.ready', projectId: 'project-1', protocol: 2 }, 'project-1'), {
@@ -99,6 +99,13 @@ test('只接受当前项目且格式有效的 CRDT 增量', () => {
     syncProtocolEpoch: 2, graphRevision: 7, updateBase64: 'AQID',
   }
   assert.deepEqual(parseProjectRealtimeEvent(ready, 'project-1'), ready)
+  // 完整握手包含累积文档，不能套用单次写入增量的700KB限制。
+  const fullSnapshot = { ...ready, updateBase64: 'A'.repeat(944_176) }
+  assert.equal(parseProjectRealtimeEvent(fullSnapshot, 'project-1'), fullSnapshot)
+  assert.equal(parseProjectRealtimeEvent({
+    type: 'canvas.crdt.update', projectId: 'project-1', update: fullSnapshot.updateBase64,
+  }, 'project-1'), undefined)
+  assert.equal(parseProjectRealtimeEvent({ ...ready, updateBase64: 'A'.repeat(32 * 1024 * 1024 + 4) }, 'project-1'), undefined)
   assert.equal(parseProjectRealtimeEvent({ ...ready, schemaVersion: 1 }, 'project-1'), undefined)
   assert.equal(parseProjectRealtimeEvent({ ...ready, syncProtocolEpoch: 0 }, 'project-1'), undefined)
   const nack = {
@@ -119,6 +126,11 @@ test('连接、握手与 Outbox 共同决定用户可见同步状态', () => {
   assert.equal(deriveCanvasSyncStatus({ connectionState: 'reconnecting', handshakeReady: false, pendingCount: 2 }), 'offline_pending')
   assert.equal(deriveCanvasSyncStatus({ connectionState: 'connected', handshakeReady: false, pendingCount: 0 }), 'syncing')
   assert.equal(deriveCanvasSyncStatus({ connectionState: 'connected', handshakeReady: true, pendingCount: 0, blocked: true }), 'blocked')
+  assert.equal(canvasSyncFailureMessage('CANVAS_HANDSHAKE_TIMEOUT', 'zh-CN'), '协作连接超时，请重试。')
+  assert.equal(canvasSyncFailureMessage('PERMISSION_REVOKED', 'zh-CN'), '没有画布编辑权限，请恢复权限后重试。')
+  assert.equal(canvasSyncFailureMessage('CANVAS_COLLABORATION_UNAVAILABLE', 'en'), 'Collaboration is unavailable. Reopen the project.')
+  assert.equal(canvasSyncFailureMessage('secret-provider-body', 'zh-CN'), '同步受阻，请重试或重新打开项目。')
+  assert.equal(canvasSyncFailureMessage(undefined, 'zh-CN'), undefined)
 })
 
 test('只接受可用于清理 Outbox 的 durable canvas ACK', () => {

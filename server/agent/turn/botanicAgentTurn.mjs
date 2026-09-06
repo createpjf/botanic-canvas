@@ -12,12 +12,13 @@ import {
   resolveBotanicAgentVisionParts,
 } from '../semantic/botanicAgentVision.mjs'
 import { captionAgentVisionModel, nativeAgentVisionModel } from '../semantic/botanicAgentVisionCapability.mjs'
+import { createAgentReferenceUsage, publishAgentReferencePreparationFailure, sampleWithAgentReferences } from '../semantic/botanicAgentReferenceUsage.mjs'
 import { botanicAgentContextToolSourceLabels, createBotanicAgentReadToolDefinitions } from '../tools/botanicAgentContextTools.mjs'
 import { botanicAgentWebResearchSourceLabels, createBotanicAgentWebResearchTools } from '../tools/botanicAgentWebTools.mjs'
 import { botanicAgentOperationalSourceLabels, createBotanicAgentOperationalToolDefinitions } from '../tools/botanicAgentOperationalTools.mjs'
 import { renderThreadSummary } from '../thread/agentThreadSummary.mjs'
 import { canonicalHash } from '../../canonicalHash.mjs'
-import { estimateAgentContextTokens, truncateAgentContextText } from '../context/agentContextBudget.mjs'
+import { strictOverflowRetryConversation } from '../context/agentOverflowRetry.mjs'
 import {
   GENERATION_ASPECT_RATIOS,
   GENERATION_RESOLUTIONS,
@@ -46,9 +47,6 @@ const GENERATION_INTENTS = Object.freeze([
   'change_pose', 'change_style', 'batch_variation', 'redo_from_root',
 ])
 const TARGETED_GENERATION_INTENTS = new Set(GENERATION_INTENTS.filter((intent) => intent !== 'initial_generation'))
-const OVERFLOW_RETRY_TOKEN_BUDGET = 6_000
-const OVERFLOW_TOOL_CONTENT_TOKEN_BUDGET = 128
-const OVERFLOW_HISTORY_MESSAGE_TOKEN_BUDGET = 512
 
 function invalidRequest(message) {
   throw new BotanicAgentChatError(400, 'INVALID_REQUEST', message)
@@ -674,137 +672,6 @@ function turnSituationBriefing(input, locale = 'zh-CN') {
   return lines.join('\n')
 }
 
-function conversationEntryTokens(entry) {
-  return estimateAgentContextTokens(JSON.stringify(entry)) + 4
-}
-
-function compactedHistoricalToolArguments(raw) {
-  let identity = typeof raw === 'string' ? raw : ''
-  try { identity = JSON.parse(identity) } catch { /* 损坏参数仍用原文哈希定格。 */ }
-  return JSON.stringify({
-    _botanicCompacted: true,
-    argumentsHash: canonicalHash(identity),
-  })
-}
-
-function groupedAgentConversation(messages) {
-  const systems = []
-  const groups = []
-  for (let index = 0; index < messages.length; index += 1) {
-    const message = messages[index]
-    if (message?.role === 'system') {
-      systems.push(structuredClone(message))
-      continue
-    }
-    if (message?.role === 'assistant' && Array.isArray(message.tool_calls) && message.tool_calls.length) {
-      const callIds = new Set(message.tool_calls.map((call) => call?.id).filter(Boolean))
-      const paired = []
-      let cursor = index + 1
-      while (cursor < messages.length && messages[cursor]?.role === 'tool') {
-        if (callIds.has(messages[cursor].tool_call_id)) paired.push(structuredClone(messages[cursor]))
-        cursor += 1
-      }
-      groups.push({ kind: 'tool', messages: [structuredClone(message), ...paired] })
-      index = cursor - 1
-      continue
-    }
-    // 孤立 tool message 不能在严格重试里单独保留，否则 Provider
-    // 会因 assistant tool_call 缺失而拒绝整轮。
-    if (message?.role === 'tool') continue
-    groups.push({ kind: 'message', messages: [structuredClone(message)] })
-  }
-  return { systems, groups }
-}
-
-function compactAgentConversationGroup(group, { preserveContent = false } = {}) {
-  if (group.kind === 'tool') {
-    const [assistant, ...toolMessages] = group.messages
-    const assistantContent = typeof assistant.content === 'string'
-      ? truncateAgentContextText(assistant.content, OVERFLOW_TOOL_CONTENT_TOKEN_BUDGET, { marker: '…' }).text
-      : assistant.content
-    return {
-      kind: 'tool',
-      messages: [{
-        ...assistant,
-        content: assistantContent,
-        tool_calls: assistant.tool_calls.map((call) => ({
-          ...call,
-          function: {
-            ...call.function,
-            arguments: compactedHistoricalToolArguments(call?.function?.arguments),
-          },
-        })),
-      }, ...toolMessages.map((message) => ({
-        ...message,
-        content: truncateAgentContextText(
-          typeof message.content === 'string' ? message.content : JSON.stringify(message.content ?? null),
-          OVERFLOW_TOOL_CONTENT_TOKEN_BUDGET,
-          { marker: '…' },
-        ).text,
-      }))],
-    }
-  }
-  const [message] = group.messages
-  if (preserveContent || typeof message?.content !== 'string') return group
-  return {
-    kind: group.kind,
-    messages: [{
-      ...message,
-      content: truncateAgentContextText(
-        message.content,
-        OVERFLOW_HISTORY_MESSAGE_TOKEN_BUDGET,
-        { marker: '…' },
-      ).text,
-    }],
-  }
-}
-
-/**
- * 只用于 Provider 明确报 context overflow 的同一 model step 重试。
- * system 与当前用户输入保持原样；历史 tool_call + tool message 作为
- * 原子组保留，不会产生孤立 tool message，也不会再执行工具。
- */
-function strictOverflowRetryConversation(messages) {
-  const { systems, groups } = groupedAgentConversation(messages)
-  const latestUserIndex = groups.findLastIndex((group) => (
-    group.messages.some((message) => message?.role === 'user')
-  ))
-  const latestGroupIndex = groups.length - 1
-  const required = new Set([latestUserIndex, latestGroupIndex].filter((index) => index >= 0))
-  const compactGroups = groups.map((group, index) => compactAgentConversationGroup(group, {
-    preserveContent: index === latestUserIndex,
-  }))
-  const originalTokens = messages.reduce((sum, message) => sum + conversationEntryTokens(message), 0)
-  const systemTokens = systems.reduce((sum, message) => sum + conversationEntryTokens(message), 0)
-  const groupTokens = compactGroups.map((group) => (
-    group.messages.reduce((sum, message) => sum + conversationEntryTokens(message), 0)
-  ))
-  const requiredTokens = [...required].reduce((sum, index) => sum + groupTokens[index], systemTokens)
-  const target = Math.max(
-    requiredTokens,
-    Math.min(OVERFLOW_RETRY_TOKEN_BUDGET, Math.max(1, Math.floor(originalTokens * 0.6))),
-  )
-  let used = systemTokens
-  let optionalWindowClosed = false
-  const selected = new Set()
-  for (let index = compactGroups.length - 1; index >= 0; index -= 1) {
-    if (required.has(index)) {
-      selected.add(index)
-      used += groupTokens[index]
-      continue
-    }
-    if (optionalWindowClosed || used + groupTokens[index] > target) {
-      optionalWindowClosed = true
-      continue
-    }
-    selected.add(index)
-    used += groupTokens[index]
-  }
-  return [
-    ...systems,
-    ...compactGroups.flatMap((group, index) => selected.has(index) ? group.messages : []),
-  ]
-}
 
 function turnConfig(runtimeConfig, requestedModel) {
   try {
@@ -880,7 +747,7 @@ function turnThreadContextV2(snapshot, model) {
   }
 }
 
-async function executeTurnAttempt({ config, model, system, messages, registry, options, allowRawReasoning, snapshot, attempt }) {
+async function executeTurnAttempt({ config, model, system, messages, registry, options, allowRawReasoning, snapshot, attempt, references }) {
   // 传输差异(URL/header/timeout signal/SSE/错误分类)由 Model Provider 拥有;
   // 超时仍按单次模型调用计,不罩整轮 tool loop。fetchImpl 保留为测试 seam。
   const provider = options.modelProvider
@@ -898,6 +765,7 @@ async function executeTurnAttempt({ config, model, system, messages, registry, o
     }
   }
   await emitEvent({ type: 'attempt', action: 'start' })
+  await references?.publish(emitEvent)
   try {
     const result = await runAgentToolLoop({
       registry,
@@ -942,12 +810,12 @@ async function executeTurnAttempt({ config, model, system, messages, registry, o
             : undefined,
         })
         try {
-          return await provider.sample(request(turnMessages))
+          return await sampleWithAgentReferences(provider, request(turnMessages), references, emitEvent)
         } catch (caught) {
           // V2 统一由 ToolLoop 触发强制 compaction；legacy 才保留这里的
           // 唯一一次严格裁剪，避免一轮出现私有重试 + 统一重试共 3 次请求。
           if (caught?.code !== 'AGENT_CONTEXT_OVERFLOW' || options.modelContext !== undefined) throw caught
-          return await provider.sample(request(strictOverflowRetryConversation(turnMessages)))
+          return await sampleWithAgentReferences(provider, request(strictOverflowRetryConversation(turnMessages)), references, emitEvent)
         }
       },
     })
@@ -1095,6 +963,7 @@ export async function resolveBotanicAgentTurn(input, runtimeConfig, options = {}
     input.inputMessage?.mentions,
     input.selectedResultNodeId,
   )
+  const references = createAgentReferenceUsage(options.document, contextNodeIds)
   const ontology = buildBotanicAgentOntology(options.document, contextNodeIds)
   const memory = safeBotanicAgentMemory(options.document)
   const skills = botanicAgentSearchableSkills(effectiveProjectSkills, { builtIn: frozenBuiltInSkills })
@@ -1139,12 +1008,14 @@ export async function resolveBotanicAgentTurn(input, runtimeConfig, options = {}
       contextNodeIds,
       resolveMedia: options.resolveVisionMedia,
       signal: options.signal,
+      onFailure: references.failed,
       })
     } catch (caught) {
       if (options.signal?.aborted) {
         throw new BotanicAgentChatError(499, 'REQUEST_CANCELLED', 'Agent 请求已取消。', { cause: caught })
       }
       if (caught?.code === 'AGENT_VISION_BYTES_EXCEEDED') {
+        await publishAgentReferencePreparationFailure(references, options, options.resumeCheckpoint?.attempt?.id ?? (nativeVisionModel ? 'vision' : 'text'))
         throw new BotanicAgentChatError(caught.statusCode, caught.code, caught.message, { cause: caught })
       }
     }
@@ -1165,9 +1036,14 @@ export async function resolveBotanicAgentTurn(input, runtimeConfig, options = {}
   const visionContextBinding = nativeVisionModel ? primaryContextBinding : undefined
   const canAttemptVision = visionParts.length > 0 && Boolean(nativeVisionModel)
   if (canAttemptVision && resumeAttemptId !== 'text') {
+    references.prepared(visionParts, 'image')
     targetVision.ready = !input.hasTarget
       || options.requireTargetVision !== true
       || visionParts.some((part) => part.nodeId === input.selectedResultNodeId)
+    if (!targetVision.ready) {
+      await publishAgentReferencePreparationFailure(references, options, 'vision')
+      unavailableTargetVision()
+    }
     const visionSnapshot = stepSnapshotFor(nativeVisionModel, visionContextBinding)
     const boundVisionOptions = optionsForContext(visionContextBinding)
     let visionCheckpointBoundaryReached = Boolean(options.resumeCheckpoint)
@@ -1201,6 +1077,7 @@ export async function resolveBotanicAgentTurn(input, runtimeConfig, options = {}
         registry,
         snapshot: visionSnapshot,
         attempt: turnAttempt('vision', nativeVisionModel, visionSnapshot),
+        references,
         options: visionOptions,
         allowRawReasoning,
       }), input)
@@ -1217,6 +1094,7 @@ export async function resolveBotanicAgentTurn(input, runtimeConfig, options = {}
 
   // 降级路径：看图失败不弄坏整轮回合；识别结果只进当轮系统提示，不进任何持久化实体。
   targetVision.ready = !input.hasTarget || options.requireTargetVision !== true
+  references.prepared([], 'description')
   let visionDescriptions = []
   try {
     visionDescriptions = await describeBotanicAgentContextImages({
@@ -1226,6 +1104,7 @@ export async function resolveBotanicAgentTurn(input, runtimeConfig, options = {}
       resolveMedia: options.resolveVisionMedia,
       fetchImpl: options.visionFetchImpl ?? fetch,
       signal: options.signal,
+      onFailure: references.failed,
       ...(options.visionCache ? { cache: options.visionCache } : {}),
     })
   } catch (caught) {
@@ -1233,18 +1112,17 @@ export async function resolveBotanicAgentTurn(input, runtimeConfig, options = {}
       throw new BotanicAgentChatError(499, 'REQUEST_CANCELLED', 'Agent 请求已取消。', { cause: caught })
     }
     if (caught?.code === 'AGENT_VISION_BYTES_EXCEEDED') {
+      await publishAgentReferencePreparationFailure(references, options, 'text')
       throw new BotanicAgentChatError(caught.statusCode, caught.code, caught.message, { cause: caught })
     }
   }
   targetVision.ready = !input.hasTarget
     || options.requireTargetVision !== true
     || visionDescriptions.some((description) => description.nodeId === input.selectedResultNodeId)
+  references.prepared(visionDescriptions, 'description')
   if (!targetVision.ready) {
-    throw new BotanicAgentChatError(
-      503,
-      'AGENT_TARGET_VISION_UNAVAILABLE',
-      '未能读取当前目标图片，不能安全生成编辑计划。',
-    )
+    await publishAgentReferencePreparationFailure(references, options, 'text')
+    unavailableTargetVision()
   }
   const system = [
     baseSystem,
@@ -1268,6 +1146,7 @@ export async function resolveBotanicAgentTurn(input, runtimeConfig, options = {}
     registry,
     options: optionsForContext(primaryContextBinding),
     attempt: turnAttempt('text', config.model, textSnapshot),
+    references,
     allowRawReasoning,
   }), input)
 }

@@ -100,7 +100,7 @@ export type BotanicAgentClarification = {
   fields: BotanicAgentClarificationField[]
 }
 
-type BriefGenerationModel = Pick<GenerationModelOption, 'id' | 'label' | 'mediaKind'> & {
+export type BriefGenerationModel = Pick<GenerationModelOption, 'id' | 'label' | 'mediaKind'> & {
   aspectRatios?: readonly GenerationAspectRatio[]
   resolutions?: readonly GenerationResolution[]
 }
@@ -273,9 +273,11 @@ function inferInstruction(brief: BotanicCreativeBrief) {
         : undefined
   if (preset && !brief.output.deliveryPreset) {
     brief.output.deliveryPreset = preset
-    brief.output.aspectRatio = deliveryRatios[preset]
     brief.provenance.delivery_preset = 'user'
-    brief.provenance.aspect_ratio = 'inferred'
+    if (brief.provenance.aspect_ratio !== 'user') {
+      brief.output.aspectRatio = deliveryRatios[preset]
+      brief.provenance.aspect_ratio = 'inferred'
+    }
   }
 
   if (!brief.creative.promptDirection) {
@@ -335,6 +337,21 @@ export function botanicAgentClarificationAnswersComplete(
   return true
 }
 
+/** 确认卡与提交校验使用同一份模型能力，切模型后不能继续采用旧选项。 */
+export function botanicAgentClarificationFields(
+  fields: readonly BotanicAgentClarificationField[],
+  models: readonly BriefGenerationModel[],
+  answers: Record<string, string>,
+) {
+  const model = models.find((item) => item.id === answers.model)
+  return fields.map((field) => {
+    const values = field.id === 'aspect_ratio' ? model?.aspectRatios : field.id === 'resolution' ? model?.resolutions : undefined
+    return values?.length
+      ? { ...field, options: values.map((value) => field.options.find((option) => option.value === value) ?? { value, label: value }) }
+      : field
+  })
+}
+
 function mergeAnswers(
   brief: BotanicCreativeBrief,
   answers: Record<string, string> | undefined,
@@ -364,6 +381,9 @@ function mergeAnswers(
     if (preset !== 'custom') {
       next.output.aspectRatio = deliveryRatios[preset]
       next.provenance.aspect_ratio = 'inferred'
+    } else {
+      delete next.output.aspectRatio
+      delete next.provenance.aspect_ratio
     }
   }
   const aspectRatio = answer('aspect_ratio') as GenerationAspectRatio | undefined
@@ -418,7 +438,7 @@ function compileBriefPrompt(brief: BotanicCreativeBrief, locale: 'zh-CN' | 'en' 
   return details.length ? `${brief.originalInstruction}\n\n${briefHeading}\n- ${details.join('\n- ')}` : brief.originalInstruction
 }
 
-function completeAutomaticBrief(brief: BotanicCreativeBrief, model: BriefGenerationModel | undefined) {
+function completeBriefDefaults(brief: BotanicCreativeBrief, model: BriefGenerationModel | undefined) {
   if (!brief.output.aspectRatio && brief.output.deliveryPreset !== 'custom') {
     const ratio = defaultAspectRatioForModel(model)
     if (ratio) {
@@ -453,10 +473,12 @@ export function advanceBotanicCreativeBrief(input: AdvanceBotanicCreativeBriefIn
       return { kind: 'failed', brief: current, code: 'MODEL_UNAVAILABLE', message: locale === 'en' ? 'The selected image model is unavailable. Choose another model.' : '所选图片模型当前不可用，请重新选择。' }
     }
     const requestedAspectRatio = input.answers?.aspect_ratio?.trim() || input.requestedSettings?.aspectRatio
+      || (!input.answers?.delivery_preset && ['user', 'inferred'].includes(current.provenance.aspect_ratio ?? '') ? current.output.aspectRatio : undefined)
     if (requestedAspectRatio && !supportsValue(selectedModel.aspectRatios, requestedAspectRatio)) {
       return { kind: 'failed', brief: current, code: 'ASPECT_RATIO_UNSUPPORTED', message: locale === 'en' ? 'The selected model does not support this aspect ratio. Choose another ratio.' : '所选模型不支持这个画面比例，请重新选择。' }
     }
     const requestedResolution = input.answers?.resolution?.trim() || input.requestedSettings?.resolution
+      || (current.provenance.resolution === 'user' ? current.output.resolution : undefined)
     if (requestedResolution && !supportsValue(selectedModel.resolutions, requestedResolution)) {
       return { kind: 'failed', brief: current, code: 'RESOLUTION_UNSUPPORTED', message: locale === 'en' ? 'The selected model does not support this resolution. Choose another resolution.' : '所选模型不支持这个分辨率，请重新选择。' }
     }
@@ -470,7 +492,7 @@ export function advanceBotanicCreativeBrief(input: AdvanceBotanicCreativeBriefIn
   }
   const brief = mergeAnswers(current, input.answers, input.generationModels)
   const model = input.generationModels?.find((item) => item.id === brief.output.model)
-  if (input.executionMode === 'auto') completeAutomaticBrief(brief, model)
+  if (input.mode === 'generation' || input.executionMode === 'auto') completeBriefDefaults(brief, model)
   const resolutions = model?.resolutions?.length ? [...model.resolutions] : ['1K', '2K'] as GenerationResolution[]
   const fields: BotanicAgentClarificationField[] = []
   if (input.mode === 'generation' && !brief.output.aspectRatio) {

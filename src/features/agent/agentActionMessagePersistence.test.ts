@@ -8,6 +8,7 @@ import type {
 import {
   persistBotanicAgentActionMessageUpdate,
   persistBotanicAgentMessageUpdate,
+  upsertBotanicAgentMessageProjection,
 } from './agentActionMessagePersistence.ts'
 
 const action: BotanicAgentActionProposal = {
@@ -49,6 +50,22 @@ const session: BotanicAgentSession = {
   createdAt: 100,
   updatedAt: 110,
 }
+
+test('确认消息原位收口为 Prompt，保留可执行内容且不追加旧卡', () => {
+  const question: BotanicAgentMessage = { ...message, kind: 'question', plan: undefined,
+    question: { id: 'q', question: '优化方向', originalInstruction: '优化香水提示词', fields: [] } }
+  let updated: BotanicAgentMessage | undefined
+  const id = upsertBotanicAgentMessageProjection({
+    session: { ...session, messages: [question] },
+    message: { id: question.id, role: 'assistant', kind: 'text', status: 'answered', content: '已整理', prompt: '香水广告' },
+    append: () => assert.fail('已有确认不得追加新消息'),
+    update: (existing, patch) => { updated = { ...existing, ...patch }; return updated },
+  })
+  assert.equal(id, question.id)
+  assert.equal(updated?.kind, 'text')
+  assert.equal(updated?.prompt, '香水广告')
+  assert.equal(updated?.question, undefined)
+})
 
 test('行动状态同时更新本地视图和完整权威 Message，刷新后恢复最后状态', () => {
   const localStatuses: string[] = []

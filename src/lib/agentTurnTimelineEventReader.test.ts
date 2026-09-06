@@ -40,6 +40,8 @@ test('时间线 hydration 只分页读取 Turn Events，不进入 POST/observer 
   })
   assert.deepEqual(result.events.map((event) => event.type === 'tool' ? event.toolCall.id : event.type), ['search-1', 'fetch-1'])
   assert.equal(result.truncated, false)
+  assert.equal(result.turn?.status, 'completed')
+  assert.equal(result.hasNonReadTool, true) // 旧事件缺少 risk，不能用于证明可安全重放。
   assert.deepEqual(paths, [
     '/api/agent-turns/turn-1?after=0&limit=200',
     '/api/agent-turns/turn-1?after=2&limit=200',

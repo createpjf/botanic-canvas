@@ -121,6 +121,11 @@ export function createAgentBranchRetryService({
             && previousJob.agentRun.attempt !== sourceAttempt)))) {
         return { kind: 'error', status: 409, code: 'AGENT_BRANCH_RETRY_SOURCE_MISSING', message: '该分支缺少可重试的原始生成参数。' }
       }
+      const outputCount = previousJob.outputs?.length ?? 0
+      const retryCount = previousJob.batchCount - outputCount
+      if (!Number.isInteger(retryCount) || retryCount <= 0) {
+        return { kind: 'error', status: 409, code: 'AGENT_BRANCH_RETRY_NO_MISSING_OUTPUT', message: '没有需要补充的结果，请刷新任务。' }
+      }
       const rate = await securityControls.reserveMany({
         reservationId: `agent-branch-retry-output:${userId}:${run.projectId}:${runId}:${branchId}:${sourceAttempt}:${sourceJobId}`,
         windowMs: 24 * 60 * 60_000,
@@ -128,7 +133,7 @@ export function createAgentBranchRetryService({
           scope: 'generation-output',
           subject: userId,
           limit: config.security.generationOutputsPerDay,
-          cost: previousJob.batchCount,
+          cost: retryCount,
         }],
       })
       if (!rate.allowed) {
@@ -142,8 +147,19 @@ export function createAgentBranchRetryService({
         idempotencyKey,
         createdAt: requestedAt,
         updatedAt: requestedAt,
+        batchCount: retryCount,
+        rawInput: { ...previousJob.rawInput, batchCount: retryCount },
+        generationRecipe: previousJob.generationRecipe ? { ...previousJob.generationRecipe, batchCount: retryCount } : undefined,
+        resultNodeId: outputCount ? `agent-result-${jobId}` : previousJob.resultNodeId,
+        resultNodePosition: outputCount && previousJob.resultNodePosition
+          ? { ...previousJob.resultNodePosition, y: previousJob.resultNodePosition.y + outputCount * 370 }
+          : previousJob.resultNodePosition,
         outputs: [],
+        lateOutputs: [],
+        variants: [],
+        cancel: undefined,
         error: undefined,
+        errorCode: undefined,
         missingOutputCount: 0,
         partialError: undefined,
         idempotencyBinding,

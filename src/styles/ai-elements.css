@@ -50,6 +50,8 @@
 }
 
 .botanic-agent-shell {
+    --color-background: var(--background);
+    --color-muted-foreground: var(--muted-foreground);
     --background: oklch(1 0 0);
     --foreground: oklch(0.145 0 0);
     --card: oklch(1 0 0);
@@ -129,6 +131,11 @@
   width: 100%;
 }
 
+.botanic-agent-shell .ai-conversation,
+.botanic-agent-shell .ai-conversation__content {
+  min-width: 0;
+}
+
 .botanic-agent-shell .agent-markdown__response button {
   appearance: none;
   border: 0;
@@ -151,7 +158,7 @@
 
 .botanic-agent-shell .agent-markdown__response {
   display: grid;
-  gap: 12px;
+  gap: 8px;
 }
 
 .botanic-agent-shell .agent-markdown__response > :not(:last-child) {
@@ -208,4 +215,193 @@
   border: 0;
   border-radius: 7px;
   background: #f3f6f2;
+}
+
+/* AI Elements 展示层：只提供结构样式，执行状态仍由 Botanic 的 domain projection 决定。 */
+.botanic-agent-shell .ai-plan {
+  min-width: 0;
+}
+
+.botanic-agent-shell .agent-message__plan[data-slot="plan"] {
+  gap: 0;
+  overflow: hidden;
+}
+
+.botanic-agent-shell .ai-plan__header {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 2px 9px;
+  border-bottom: 1px solid #e5ede5;
+}
+
+.botanic-agent-shell .ai-plan__header > div:first-child {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.botanic-agent-shell .ai-plan__title {
+  margin: 0;
+  overflow: hidden;
+  color: #294936;
+  font-size: 13px;
+  font-weight: 720;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.botanic-agent-shell .ai-plan__description {
+  margin: 0;
+  color: #748278;
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.botanic-agent-shell .ai-plan__shimmer { --color-muted-foreground: #3c7650; }
+.botanic-agent-shell .ai-plan__action { flex: 0 0 auto; }
+.botanic-agent-shell .ai-plan__trigger {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #708178;
+  cursor: pointer;
+}
+.botanic-agent-shell .ai-plan__trigger:hover { background: #eef5ee; color: #2d633b; }
+.botanic-agent-shell .ai-plan__trigger svg { width: 16px; height: 16px; transition: transform 160ms ease; }
+.botanic-agent-shell .agent-message__plan[data-state="open"] .ai-plan__trigger svg { transform: rotate(180deg); }
+.botanic-agent-shell .ai-plan__content { min-width: 0; }
+.botanic-agent-shell .agent-message__plan[data-slot="plan"] > .ai-plan__content { display: grid; gap: 12px; padding-top: 10px; }
+.botanic-agent-shell .agent-message__plan.is-submitted[data-slot="plan"] > .ai-plan__content { gap: 8px; padding-top: 8px; }
+
+.botanic-agent-shell .ai-queue {
+  min-width: 0;
+}
+.botanic-agent-shell .agent-composer__queue.ai-queue {
+  gap: 5px;
+  padding: 7px 8px;
+  border: 1px solid #dce7dd;
+  border-radius: 10px;
+  background: #f8fbf7;
+}
+.botanic-agent-shell .ai-queue__section-trigger {
+  display: flex;
+  width: 100%;
+  min-height: 25px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 2px 3px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #63766a;
+  cursor: pointer;
+  text-align: start;
+}
+.botanic-agent-shell .ai-queue__section-trigger:hover { background: #edf5ed; color: #315d3b; }
+.botanic-agent-shell .ai-queue__section-label { display: inline-flex; align-items: center; gap: 5px; font-size: 10px; font-weight: 720; }
+.botanic-agent-shell .ai-queue__section-label > svg:first-child { width: 12px; height: 12px; transition: transform 140ms ease; }
+.botanic-agent-shell .ai-queue__section-trigger[data-state="closed"] .ai-queue__section-label > svg:first-child { transform: rotate(-90deg); }
+.botanic-agent-shell .ai-queue__section-label > svg:not(:first-child) { width: 13px; height: 13px; }
+.botanic-agent-shell .ai-queue__section-content { min-width: 0; }
+.botanic-agent-shell .agent-composer__queue-list.ai-queue__list { overflow-x: auto; scrollbar-width: thin; }
+.botanic-agent-shell .agent-composer__queue-list > ul { display: flex; min-width: max-content; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.botanic-agent-shell .agent-composer__queue-chip.ai-queue__item { display: flex; min-width: 0; align-items: center; padding: 0; }
+.botanic-agent-shell .ai-queue__item-actions { display: flex; align-items: center; }
+.botanic-agent-shell .ai-queue__item-action { font: inherit; }
+.botanic-agent-shell .agent-task-panel__queue { padding: 7px 8px; border: 1px solid #dce7dd; border-radius: 10px; background: #f8fbf7; }
+.botanic-agent-shell .agent-task-panel__queue-list > ul { display: grid; gap: 5px; margin: 5px 0 0; padding: 0; list-style: none; }
+.botanic-agent-shell .agent-task-panel__queue-item { display: grid; grid-template-columns: 10px minmax(0, 1fr); gap: 1px 7px; align-items: center; color: #496451; }
+.botanic-agent-shell .agent-task-panel__queue-item .ai-queue__indicator { width: 7px; height: 7px; border-radius: 50%; background: #4c8358; }
+.botanic-agent-shell .agent-task-panel__queue-item .ai-queue__item-content { overflow: hidden; font-size: 10px; font-weight: 720; text-overflow: ellipsis; white-space: nowrap; }
+.botanic-agent-shell .agent-task-panel__queue-item .ai-queue__item-description { grid-column: 2; color: #7b897f; font-size: 9px; }
+
+.botanic-agent-shell .ai-artifact { min-width: 0; overflow: hidden; border: 1px solid #dce7dd; border-radius: 10px; background: #fff; }
+.botanic-agent-shell .ai-artifact__header { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 10px; border-bottom: 1px solid #e6eee6; background: #f8fbf7; }
+.botanic-agent-shell .ai-artifact__title { min-width: 0; margin: 0; overflow: hidden; color: #3d5a45; font-size: 11px; font-weight: 720; line-height: 1.4; text-overflow: ellipsis; white-space: nowrap; }
+.botanic-agent-shell .ai-artifact__description { margin: 0; color: #76847a; font-size: 10px; }
+.botanic-agent-shell .ai-artifact__actions { display: flex; flex: 0 0 auto; align-items: center; gap: 3px; }
+.botanic-agent-shell .ai-artifact__action { display: grid; width: 26px; height: 26px; place-items: center; padding: 0; border: 0; border-radius: 6px; background: transparent; color: #6c7d71; cursor: pointer; }
+.botanic-agent-shell .ai-artifact__action:hover { background: #e7f1e8; color: #2d633b; }
+.botanic-agent-shell .ai-artifact__action-icon { width: 14px; height: 14px; }
+.botanic-agent-shell .ai-artifact__content { min-width: 0; padding: 9px; }
+.botanic-agent-shell .agent-action-card__artifact.ai-artifact { display: block; gap: 0; margin-top: 0; }
+.botanic-agent-shell .agent-action-card__artifact.ai-artifact .agent-action-card__struct { margin: 0; }
+.botanic-agent-shell .agent-action-card__artifact-text { margin: 0; }
+
+.botanic-agent-shell .ai-web-preview { min-width: 0; overflow: hidden; border: 1px solid #dce7dd; border-radius: 10px; background: #fff; }
+.botanic-agent-shell .ai-web-preview__navigation { display: flex; min-width: 0; align-items: center; padding: 8px 10px; border-bottom: 1px solid #e6eee6; background: #f8fbf7; }
+.botanic-agent-shell .ai-web-preview__url { display: inline-flex; min-width: 0; align-items: center; gap: 5px; overflow: hidden; color: #3e6948; font-size: 11px; font-weight: 650; text-decoration: none; text-overflow: ellipsis; white-space: nowrap; }
+.botanic-agent-shell .ai-web-preview__url:hover { text-decoration: underline; text-underline-offset: 3px; }
+.botanic-agent-shell .ai-web-preview__url svg { width: 12px; height: 12px; flex: 0 0 auto; }
+.botanic-agent-shell .ai-web-preview__url.is-unavailable { color: #87938a; }
+.botanic-agent-shell .ai-web-preview__body { display: grid; min-height: 54px; place-items: center; gap: 4px; padding: 10px; background: #fbfdfb; color: #607565; text-align: center; }
+.botanic-agent-shell .ai-web-preview__body > span { display: grid; width: 24px; height: 24px; place-items: center; border-radius: 7px; background: #e7f1e8; color: #3e774b; }
+.botanic-agent-shell .ai-web-preview__body strong { max-width: 100%; overflow: hidden; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+
+.botanic-agent-shell .ai-model-selector { display: inline-flex; min-width: 0; }
+.botanic-agent-shell .ai-model-selector__select { min-width: 0; }
+.botanic-agent-shell .ai-suggestions { min-width: 0; }
+.botanic-agent-shell .agent-workspace__starters.ai-suggestions { display: grid; }
+.botanic-agent-shell .agent-workspace__starter { text-align: start; white-space: normal; }
+
+.botanic-agent-shell .ai-inline-citation { display: inline; min-width: 0; }
+.botanic-agent-shell .ai-inline-citation__text { min-width: 0; transition: background-color 160ms ease, color 160ms ease; }
+.botanic-agent-shell .ai-inline-citation__trigger { min-width: 24px; min-height: 24px; max-width: 100%; margin-inline-start: 4px; border: 1px solid #cbdccc; background: #f4f8f3; color: #5b7561; cursor: pointer; font-size: 12px; font-weight: 650; line-height: 1.4; white-space: normal; overflow-wrap: anywhere; }
+.botanic-agent-shell .ai-inline-citation__trigger:hover { border-color: #91b097; background: #e8f2e8; color: #2d633b; }
+.botanic-agent-shell .ai-inline-citation__trigger:focus-visible { outline: 2px solid rgba(52, 105, 64, .48); outline-offset: 2px; }
+.botanic-agent-shell .ai-inline-citation__trigger[aria-disabled='true'] { cursor: default; }
+.botanic-agent-shell .ai-inline-citation__source { display: grid; min-width: 0; gap: 3px; }
+.botanic-agent-shell .ai-inline-citation__source strong { overflow: hidden; color: #385640; font-size: 10px; line-height: 1.4; text-overflow: ellipsis; white-space: nowrap; }
+.botanic-agent-shell .ai-inline-citation__source small { overflow: hidden; color: #7a8b7e; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.botanic-agent-shell .ai-inline-citation__source a { overflow: hidden; color: #6b8270; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.botanic-agent-shell .ai-inline-citation__source p { margin: 2px 0 0; color: #637268; font-size: 10px; line-height: 1.5; }
+
+/* Popover 内容通过 Portal 挂到 body，不能依赖 agent shell 的祖先选择器。 */
+.ai-inline-citation__body { z-index: 50; width: min(320px, calc(100vw - 24px)); max-height: min(60dvh, var(--radix-popover-content-available-height)); overflow-y: auto; padding: 12px; border: 1px solid #cdddcf; border-radius: 10px; background: #fff; box-shadow: 0 12px 28px rgba(28, 58, 35, .18); color: #385640; }
+.ai-inline-citation__body[data-state='open'] { animation: ai-inline-citation-in 140ms ease-out; }
+.ai-inline-citation__body[data-state='closed'] { animation: ai-inline-citation-out 100ms ease-in; }
+.ai-inline-citation__body .ai-inline-citation__source { display: grid; min-width: 0; gap: 3px; }
+.ai-inline-citation__body .ai-inline-citation__source :is(strong, small, a, p) { color: inherit; font-size: 12px; line-height: 1.5; white-space: normal; overflow-wrap: anywhere; }
+.ai-inline-citation__body .ai-inline-citation__source a { display: inline-flex; align-items: center; min-height: 24px; }
+.ai-inline-citation__close { min-width: 40px; min-height: 32px; margin-top: 8px; border: 0; border-radius: 6px; background: #edf5ed; color: inherit; font: inherit; font-size: 12px; cursor: pointer; }
+.ai-inline-citation__body :is(a, button):focus-visible { outline: 2px solid #346940; outline-offset: 2px; }
+@media (pointer: coarse) { .botanic-agent-shell .ai-inline-citation__trigger, .ai-inline-citation__close, .ai-inline-citation__body .ai-inline-citation__source a { min-height: 44px; } }
+@media (prefers-reduced-motion: reduce) { .ai-inline-citation__body[data-state] { animation: none; } }
+
+.botanic-agent-shell .agent-inline-citation { display: inline; margin-inline-start: 4px; vertical-align: baseline; }
+.ai-inline-citation__body .agent-inline-citation__sources { display: grid; gap: 10px; }
+
+@keyframes ai-inline-citation-in {
+  from { opacity: 0; transform: translateY(4px) scale(.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes ai-inline-citation-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+.botanic-agent-shell .ai-attachments { min-width: 0; }
+.botanic-agent-shell .ai-attachments.is-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 8px; }
+.botanic-agent-shell .ai-attachment { position: relative; min-width: 0; overflow: hidden; border: 1px solid #d5e1d6; border-radius: 9px; background: #f1f7f0; }
+.botanic-agent-shell .ai-attachment__preview { display: grid; place-items: center; overflow: hidden; color: #6f8a76; }
+.botanic-agent-shell .ai-attachment__preview.is-grid { aspect-ratio: 3 / 4; }
+.botanic-agent-shell .ai-attachment__preview img, .botanic-agent-shell .ai-attachment__preview video { display: block; width: 100%; height: 100%; object-fit: cover; }
+.botanic-agent-shell .ai-attachment__info { min-width: 0; padding: 5px 7px; }
+.botanic-agent-shell .ai-attachment__info span, .botanic-agent-shell .ai-attachment__info small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.botanic-agent-shell .ai-attachment__info span { color: #385640; font-size: 10px; }
+.botanic-agent-shell .agent-action-card__media-attachments { grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); }
+.botanic-agent-shell .agent-action-card__media-label { display: block; overflow: hidden; padding: 5px 7px; color: #526b59; font-size: 10px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+
+@media (prefers-reduced-motion: reduce) {
+  .botanic-agent-shell .ai-plan__trigger svg,
+  .botanic-agent-shell .ai-queue__section-label > svg:first-child { transition: none; }
 }

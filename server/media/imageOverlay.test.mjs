@@ -18,6 +18,12 @@ function solidPng(width, height, rgba) {
   return encodeRgbaPng({ width, height, rgba: pixels })
 }
 
+test('PNG 解压受声明的像素量约束，不能用小尺寸头展开超量数据', () => {
+  const oversized = solidPng(64, 64, [30, 60, 90, 255])
+  oversized.writeUInt32BE(1, 20)
+  assert.throws(() => decodeRgbaImage(oversized), (error) => error.code === 'ERR_BUFFER_TOO_LARGE')
+})
+
 test('白底标识会抠掉衬底，再原样贴进选区', () => {
   const base = decodeRgbaImage(solidPng(10, 10, [10, 20, 30, 255]))
   const markPixels = Buffer.alloc(4 * 4 * 4, 255)

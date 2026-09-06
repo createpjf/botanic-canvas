@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { BotanicAgentMessage } from '../../domain/agent'
+import type { BotanicAgentMessage, BotanicAgentRun } from '../../domain/agent'
 import { mergeAgentMessages } from '../../domain/agentMessageReadModel'
 import { listPersistentBotanicAgentSessionMessages } from '../../lib/agentApi'
 import { serverPersistenceEnabled } from '../../lib/productSession'
@@ -7,9 +7,10 @@ import { serverPersistenceEnabled } from '../../lib/productSession'
 export function useAgentSessionMessages(
   projectId: string,
   sessionId: string | undefined,
-  storeMessages: BotanicAgentMessage[],
+  source: { messages: BotanicAgentMessage[]; runs: BotanicAgentRun[] },
   enabled = true,
 ) {
+  const { messages: storeMessages, runs } = source
   const [apiMessages, setApiMessages] = useState<BotanicAgentMessage[]>([])
   const [loadedSessionId, setLoadedSessionId] = useState<string>()
   const [loading, setLoading] = useState(false)
@@ -67,8 +68,8 @@ export function useAgentSessionMessages(
   }, [enabled, loadingOlder, nextBefore, projectId, sessionId])
 
   const messages = useMemo(
-    () => mergeAgentMessages(loadedSessionId === sessionId ? apiMessages : [], storeMessages),
-    [apiMessages, loadedSessionId, sessionId, storeMessages],
+    () => mergeAgentMessages(loadedSessionId === sessionId ? apiMessages : [], storeMessages, runs),
+    [apiMessages, loadedSessionId, sessionId, storeMessages, runs],
   )
 
   return {

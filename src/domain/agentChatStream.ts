@@ -1,9 +1,11 @@
 import type { AgentToolCallTrace, BotanicAgentClarificationResponse, BotanicAgentPlan, BotanicAgentReasoningEntry } from './agent'
 import type { BotanicAgentChatResponse } from './agentChatContract'
 import type { BotanicAgentTurnResult } from './agentTurnContract'
-import type { TimelineToolPresentation } from './agentTimeline'
+import type { TimelineToolPresentation, AgentTimelineEvent } from './agentTimeline'
+import { readAgentReferenceUsage, type AgentReferenceUsageItem } from './agentReferenceUsage.ts'
 import type { ProductLocale } from '../i18n/core'
 import { AGENT_STREAM_EVENT_TYPE_VALUES } from './agentProtocol.generated.ts'
+import { timelineOperationTiming, validTimestamp } from './agentTimelineTiming.ts'
 
 /**
  * Agent 实时通道的事件契约（chat / turn / plan 共用）。
@@ -17,12 +19,12 @@ import { AGENT_STREAM_EVENT_TYPE_VALUES } from './agentProtocol.generated.ts'
  * 续读，因此它必须随事件体下发 —— 只写 SSE 的 `id:` 行不够：本仓库用 fetch 手工
  * 解析而不是原生 EventSource，`Last-Event-ID` 需要我们自己带上去。
  */
-export type BotanicAgentStreamEvent = ({ sequence?: number; attemptId?: string }) & (
+export type BotanicAgentStreamEvent = ({ sequence?: number; attemptId?: string; occurredAt?: number }) & (
   | { type: 'attempt'; action: 'start'; attemptId: string }
   | {
       type: 'accepted'
       turnId: string
-      runtimeTurn: { id: string; projectId: string }
+      runtimeTurn: { id: string; projectId: string; createdAt?: number }
       observer: { url: string }
     }
   | {
@@ -32,6 +34,7 @@ export type BotanicAgentStreamEvent = ({ sequence?: number; attemptId?: string }
         id: string
         status: 'queued' | 'running' | 'waiting_user' | 'cancelling' | 'completed' | 'failed' | 'cancelled'
         projectId: string
+        createdAt?: number
       }
       observer: { url: string }
     }
@@ -39,6 +42,7 @@ export type BotanicAgentStreamEvent = ({ sequence?: number; attemptId?: string }
   | { type: 'answer'; step: number; delta: string; chunkIndex?: number }
   | { type: 'answer_snapshot'; attemptId: string; revision: number; step: number; text: string; truncated?: boolean }
   | { type: 'tool'; step: number; toolCall: AgentToolCallTrace; presentation?: TimelineToolPresentation }
+  | { type: 'references'; attemptId: string; items: AgentReferenceUsageItem[] }
   | {
       type: 'done'
       response?: BotanicAgentChatResponse
@@ -48,8 +52,8 @@ export type BotanicAgentStreamEvent = ({ sequence?: number; attemptId?: string }
         id: string
         status: 'queued' | 'running' | 'waiting_user' | 'cancelling' | 'completed' | 'failed' | 'cancelled'
         projectId: string
-        updatedAt: number
-        createdAt: number
+        updatedAt?: number
+        createdAt?: number
       }
       result?: BotanicAgentTurnResult
       plan?: BotanicAgentPlan
@@ -66,9 +70,16 @@ const streamEventTypes: ReadonlySet<string> = new Set(AGENT_STREAM_EVENT_TYPE_VA
 
 function parseStreamEvent(payload: string): BotanicAgentStreamEvent[] {
   try {
-    const value = JSON.parse(payload) as { type?: unknown }
+    const value = JSON.parse(payload) as Record<string, unknown>
     if (!value || typeof value !== 'object' || typeof value.type !== 'string') return []
     if (!streamEventTypes.has(value.type)) return []
+    if (value.type === 'references') {
+      const references = readAgentReferenceUsage(value)
+      return references ? [{ ...references, type: 'references',
+        ...(typeof value.sequence === 'number' ? { sequence: value.sequence } : {}),
+        ...(typeof value.occurredAt === 'number' ? { occurredAt: value.occurredAt } : {}),
+      }] : []
+    }
     return [value as BotanicAgentStreamEvent]
   } catch {
     // 心跳、注释或截断片段不应中断整轮读取。
@@ -100,10 +111,39 @@ export function botanicAgentChatTransportErrorMessage(
   return message || fallback
 }
 
-/**
- * SSE 文本读取器。按事件边界解析，容忍跨网络块切断的行、CRLF、注释行与多行 data；
- * 无法解析的事件被跳过而不是让整轮失败。它是纯函数状态机，解码与网络留给调用方。
- */
+/** 流协议到时间线的边界映射；使用服务端事件时间，缺少时才取接收时间。 */
+export function agentTimelineEventFromStream(
+  event: BotanicAgentChatStreamEvent,
+  receivedAt: number,
+): AgentTimelineEvent {
+  const eventAt = Number.isSafeInteger(event.occurredAt) && Number(event.occurredAt) >= 0
+    ? Number(event.occurredAt)
+    : receivedAt
+  if (event.type === 'attempt') return { type: 'attempt', action: 'start', attemptId: event.attemptId, receivedAt: eventAt }
+  if (event.type === 'references') return { type: 'references', attemptId: event.attemptId, items: event.items, receivedAt: eventAt }
+  if (event.type === 'handoff' || event.type === 'accepted') return {
+    type: 'handoff', receivedAt: eventAt,
+    ...(validTimestamp(event.runtimeTurn?.createdAt) !== undefined ? { startedAt: validTimestamp(event.runtimeTurn?.createdAt) } : {}),
+  }
+  if (event.type === 'reasoning' || event.type === 'answer') return {
+    type: event.type, step: event.step, delta: event.delta,
+    ...(event.attemptId ? { attemptId: event.attemptId } : {}),
+    ...(event.chunkIndex === undefined ? {} : { chunkIndex: event.chunkIndex }), receivedAt: eventAt,
+  }
+  if (event.type === 'answer_snapshot') return {
+    type: 'answer_snapshot', attemptId: event.attemptId, revision: event.revision,
+    step: event.step, text: event.text, ...(event.truncated ? { truncated: true } : {}), receivedAt: eventAt,
+  }
+  if (event.type === 'tool') return {
+    type: event.type, step: event.step, toolCall: event.toolCall,
+    ...(event.attemptId ? { attemptId: event.attemptId } : {}),
+    ...(event.presentation ? { presentation: event.presentation } : {}), receivedAt: eventAt,
+  }
+  if (event.type === 'error') return { type: 'error', ...(event.message ? { message: event.message } : {}), receivedAt: eventAt }
+  return { type: 'done', receivedAt: eventAt, ...(event.runtimeTurn ? { timing: timelineOperationTiming(event.runtimeTurn) } : {}) }
+}
+
+/** SSE 文本读取器：容忍跨块、CRLF、注释及截断；解码与网络由调用方负责。 */
 export function createBotanicAgentChatStreamReader() {
   let buffer = ''
   let dataLines: string[] = []

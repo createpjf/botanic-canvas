@@ -507,7 +507,7 @@ test('WEB_ 工具失败回传给模型，不中断整轮对话', async () => {
   assert.equal(quotaModelCalls, 1, '配额错误不得回给模型继续重试')
 })
 
-test('web_search 从 hits 对象下发去重站点，字符串 sources 只用于计数', () => {
+test('web_search 从 hits 保留不同页面，字符串 sources 只用于计数', () => {
   assert.deepEqual(toolEventPresentation('web_search', {
     hitCount: 25,
     sources: Array.from({ length: 25 }, (_, index) => `source-${index}`),
@@ -524,7 +524,10 @@ test('web_search 从 hits 对象下发去重站点，字符串 sources 只用于
     kind: 'search',
     title: '已搜索 2 个网站',
     count: 2,
-    sources: [{ hostname: 'www.andlight.cn', url: 'https://www.andlight.cn/', title: '和光' }],
+    sources: [
+      { hostname: 'www.andlight.cn', url: 'https://www.andlight.cn/', title: '和光' },
+      { hostname: 'andlight.cn', url: 'https://andlight.cn/about', title: '重复' },
+    ],
   })
   assert.equal(JSON.stringify(presentation).includes('秘密检索词'), false)
   assert.equal(JSON.stringify(presentation).includes('snippet'), false)

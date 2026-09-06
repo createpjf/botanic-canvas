@@ -206,7 +206,11 @@ export function generationArtifactsFromJobReport(job, { document, now = Date.now
     : undefined)
   const conversion = collectWithRejections(outputs, (output) => {
     const outputId = text(output?.id, '生成输出标识', 240)
-    const outputImage = text(output?.image, '生成输出地址', 2_048)
+    // 本地 inline 媒体形态的输出是完整 data URL,远超地址长度上限;此时 Artifact
+    // 仍应入索引保留血缘,只是不带 url(url 本就可选,画布节点自身持有图片)。
+    const rawImage = typeof output?.image === 'string' ? output.image.trim() : ''
+    const isInlineImage = rawImage.startsWith('data:')
+    const outputImage = isInlineImage ? rawImage : text(output?.image, '生成输出地址', 2_048)
     const resultNode = !output.late && nodes.find((node) => node?.type === 'result'
       && node?.data?.jobId === job.id
       && (node?.data?.candidateId === outputId || (!node?.data?.candidateId && committedOutputs.length === 1)))
@@ -234,7 +238,7 @@ export function generationArtifactsFromJobReport(job, { document, now = Date.now
       label: output.late
         ? (mediaKind === 'video' ? '迟到视频（已隔离）' : '迟到图片（已隔离）')
         : resultNode?.data?.label?.trim() || (mediaKind === 'video' ? '生成视频' : '生成图片'),
-      url: outputImage,
+      ...(isInlineImage ? {} : { url: outputImage }),
       placement: output.late ? 'panel' : 'canvas',
       metadata: {
         source: 'generation',

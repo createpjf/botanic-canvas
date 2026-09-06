@@ -478,7 +478,7 @@ function progress(run) {
   if (run.branches.some((branch) => branch.status === 'running')) status = 'running'
   else if (run.branches.some((branch) => branch.status === 'queued')) status = 'queued'
   else if (completedBranchCount === run.branches.length) status = 'completed'
-  else if (completedBranchCount) status = 'partial'
+  else if (completedBranchCount || run.branches.some((branch) => branch.status === 'failed' && branch.outputCount > 0)) status = 'partial'
   else if (run.branches.every((branch) => branch.status === 'cancelled')) status = 'cancelled'
   else status = 'failed'
   return { ...run, status, completedBranchCount, failedBranchCount }
@@ -530,18 +530,21 @@ export function applyGenerationJobToAgentRun(run, job) {
     return run
   }
   const projectedOutputCount = Array.isArray(job.outputs) ? job.outputs.length : currentBranch.outputCount ?? 0
+  const incomplete = job.status === 'succeeded' && job.missingOutputCount > 0
+  const projectedStatus = incomplete ? 'failed' : job.status
+  const projectedError = incomplete ? job.partialError || '仍有图片未完成' : job.error
   if (currentUpdatedAt === now
     && currentBranch.activeJobId === job.id
-    && currentBranch.status === job.status
+    && currentBranch.status === projectedStatus
     && (currentBranch.outputCount ?? 0) === projectedOutputCount
-    && (currentBranch.error ?? undefined) === (job.error ?? undefined)) return run
+    && (currentBranch.error ?? undefined) === (projectedError ?? undefined)) return run
   const branches = run.branches.map((branch, index) => index !== branchIndex ? branch : {
     ...branch,
-    status: job.status,
+    status: projectedStatus,
     activeJobId: job.id,
     jobIds: [...new Set([...(branch.jobIds ?? []), job.id])],
     outputCount: projectedOutputCount,
-    ...(job.error ? { error: job.error } : { error: undefined }),
+    error: projectedError,
     updatedAt: now,
   })
   return progress({ ...run, branches, updatedAt: now })

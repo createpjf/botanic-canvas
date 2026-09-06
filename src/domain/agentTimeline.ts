@@ -1,5 +1,5 @@
 import { isBotanicAgentProcessLabel, type AgentToolCallTrace, type BotanicAgentRun, type BotanicAgentRunBranch } from './agent.ts'
-import type { BotanicAgentChatStreamEvent } from './agentChatStream.ts'
+import type { AgentReferenceUsage } from './agentReferenceUsage.ts'
 import {
   isCollapsedWebSearchToolName,
   isWebSourceToolName,
@@ -7,7 +7,16 @@ import {
   safeTimelineWebSources,
   type TimelineWebSource,
 } from './agentTimelineWebSources.ts'
-
+import {
+  firstTimelineJobCreatedAt,
+  joinTimelineTiming,
+  resolveBranchJob,
+  timelineJobTiming,
+  timelineOperationTiming,
+  validTimestamp,
+  type TimelineJobFailure,
+  type TimelineOperationTiming,
+} from './agentTimelineTiming.ts'
 export type { TimelineWebSource } from './agentTimelineWebSources.ts'
 export {
   displayWebSourceHostname,
@@ -63,19 +72,22 @@ export type TimelineBlock =
 
 export type AgentTimelineState = {
   blocks: TimelineBlock[]
+  timing?: TimelineOperationTiming
+  references?: AgentReferenceUsage
   /** Live-only attempt/chunk cursor;不进入durable Turn Event。 */
   stream?: { attemptId?: string; answerChunkIndex?: number; reasoningChunkIndex?: number; previewRevision?: number }
   truncation?: { loadedCount: number; nextAfter: number }
 }
 
 export type AgentTimelineEvent =
+  | ({ type: 'references'; receivedAt: number } & AgentReferenceUsage)
   | { type: 'attempt'; action: 'start'; attemptId: string; receivedAt: number }
   | { type: 'reasoning'; step: number; delta: string; attemptId?: string; chunkIndex?: number; receivedAt: number }
   | { type: 'answer'; step: number; delta: string; attemptId?: string; chunkIndex?: number; receivedAt: number }
   | { type: 'answer_snapshot'; attemptId: string; revision: number; step: number; text: string; truncated?: boolean; receivedAt: number }
   | { type: 'tool'; step: number; toolCall: AgentToolCallTrace; presentation?: TimelineToolPresentation; attemptId?: string; receivedAt: number }
-  | { type: 'handoff'; receivedAt: number }
-  | { type: 'done'; receivedAt: number }
+  | { type: 'handoff'; receivedAt: number; startedAt?: number }
+  | { type: 'done'; receivedAt: number; timing?: TimelineOperationTiming }
   | { type: 'error'; message?: string; receivedAt: number }
 
 export type TimelineStepBlock = Extract<TimelineBlock, { type: 'step' }>
@@ -355,7 +367,7 @@ function reduceToolEvent(state: AgentTimelineState, event: Extract<AgentTimeline
       status,
       kind: presentation.kind,
       title: presentation.kind === 'search' ? searchTitle(status, nextCount) : presentation.title,
-      startedAt: existing.startedAt ?? event.receivedAt,
+      startedAt: existing.startedAt ?? (incomingStatus === 'running' ? event.receivedAt : undefined),
       ...(status === 'running'
         ? { endedAt: undefined }
         : { endedAt: existing.endedAt ?? event.receivedAt }),
@@ -367,7 +379,7 @@ function reduceToolEvent(state: AgentTimelineState, event: Extract<AgentTimeline
       ...(stepFailureReason(items, existing.sourceToolIds) ? { error: stepFailureReason(items, existing.sourceToolIds) } : { error: undefined }),
     }, event.toolCall, presentation)
     blocks[existingIndex] = next
-    return { blocks: withRawGroup(blocks, items, rawGroup?.open ?? false) }
+    return { ...state, blocks: withRawGroup(blocks, items, rawGroup?.open ?? false) }
   }
 
   const last = blocks.at(-1)
@@ -380,10 +392,10 @@ function reduceToolEvent(state: AgentTimelineState, event: Extract<AgentTimeline
       sourceToolIds,
       status,
       title: searchTitle(status, nextCount),
-      startedAt: last.startedAt ?? event.receivedAt,
+      startedAt: last.startedAt,
       ...(status === 'running'
         ? { endedAt: undefined }
-        : { endedAt: last.endedAt ?? event.receivedAt }),
+        : { endedAt: event.receivedAt }),
       ...(event.toolCall.summary?.trim()
         ? { summary: event.toolCall.summary.trim() }
         : last.summary ? { summary: last.summary } : {}),
@@ -400,7 +412,7 @@ function reduceToolEvent(state: AgentTimelineState, event: Extract<AgentTimeline
       status: incomingStatus,
       kind: presentation.kind,
       title: presentation.kind === 'search' ? searchTitle(incomingStatus, count) : presentation.title,
-      startedAt: event.receivedAt,
+      ...(incomingStatus === 'running' ? { startedAt: event.receivedAt } : {}),
       ...(incomingStatus === 'running' ? {} : { endedAt: event.receivedAt }),
       ...(event.toolCall.summary?.trim() ? { summary: event.toolCall.summary.trim() } : {}),
       ...(count === undefined ? {} : { count }),
@@ -408,11 +420,12 @@ function reduceToolEvent(state: AgentTimelineState, event: Extract<AgentTimeline
       ...(event.toolCall.error?.trim() ? { error: event.toolCall.error.trim() } : {}),
     }, event.toolCall, presentation))
   }
-  return { blocks: withRawGroup(blocks, items, rawGroup?.open ?? false) }
+  return { ...state, blocks: withRawGroup(blocks, items, rawGroup?.open ?? false) }
 }
 
 export function createAgentTimeline(startedAt: number): AgentTimelineState {
   return {
+    timing: { startedAt, live: true },
     blocks: [{ id: 'thinking', type: 'thinking', status: 'running', startedAt, text: '' }],
   }
 }
@@ -427,7 +440,7 @@ export function persistAgentLiveTimeline(
   timeline: AgentTimelineState | undefined,
   receivedAt = Date.now(),
 ): Record<string, AgentTimelineState> {
-  if (!timeline?.blocks.length) return timelines
+  if (!timeline || (!timeline.blocks.length && !timeline.references)) return timelines
   return { ...timelines, [messageId]: reduceAgentTimeline(timeline, { type: 'done', receivedAt }) }
 }
 
@@ -435,29 +448,6 @@ export function persistAgentLiveTimeline(
  * 把一轮对话的实时事件拆到两处：回答增量追加到正文，思考/工具进入时间线。
  * 正文只出现一次；时间线不再复制旁白。
  */
-export function agentTimelineEventFromStream(
-  event: BotanicAgentChatStreamEvent,
-  receivedAt: number,
-): AgentTimelineEvent {
-  if (event.type === 'attempt') return { type: 'attempt', action: 'start', attemptId: event.attemptId, receivedAt }
-  if (event.type === 'handoff') return { type: 'handoff', receivedAt }
-  if (event.type === 'reasoning' || event.type === 'answer') return {
-    type: event.type, step: event.step, delta: event.delta,
-    ...(event.attemptId ? { attemptId: event.attemptId } : {}),
-    ...(event.chunkIndex === undefined ? {} : { chunkIndex: event.chunkIndex }), receivedAt,
-  }
-  if (event.type === 'answer_snapshot') return {
-    type: 'answer_snapshot', attemptId: event.attemptId, revision: event.revision,
-    step: event.step, text: event.text, ...(event.truncated ? { truncated: true } : {}), receivedAt,
-  }
-  if (event.type === 'tool') return {
-    type: event.type, step: event.step, toolCall: event.toolCall,
-    ...(event.attemptId ? { attemptId: event.attemptId } : {}),
-    ...(event.presentation ? { presentation: event.presentation } : {}), receivedAt,
-  }
-  if (event.type === 'error') return { type: 'error', ...(event.message ? { message: event.message } : {}), receivedAt }
-  return { type: 'done', receivedAt }
-}
 
 export function applyAgentConversationStreamEvent(
   state: { content: string; timeline: AgentTimelineState },
@@ -465,14 +455,14 @@ export function applyAgentConversationStreamEvent(
 ): { content: string; timeline: AgentTimelineState } {
   if (event.type === 'attempt') {
     if (state.timeline.stream?.attemptId === event.attemptId) return state
-    return { content: '', timeline: { ...createAgentTimeline(event.receivedAt), stream: { attemptId: event.attemptId } } }
+    return { content: '', timeline: { ...createAgentTimeline(state.timeline.timing?.startedAt ?? event.receivedAt), stream: { attemptId: event.attemptId } } }
   }
   if (event.type === 'answer_snapshot') {
     const cursor = state.timeline.stream
     if (!Number.isSafeInteger(event.revision) || event.revision < 1
       || (cursor?.previewRevision !== undefined && event.revision <= cursor.previewRevision)) return state
     const sameAttempt = cursor?.attemptId === event.attemptId
-    const timeline = sameAttempt ? state.timeline : createAgentTimeline(event.receivedAt)
+    const timeline = sameAttempt ? state.timeline : createAgentTimeline(state.timeline.timing?.startedAt ?? event.receivedAt)
     return {
       content: event.text.slice(0, 12_288),
       timeline: {
@@ -515,7 +505,9 @@ export function applyAgentConversationStreamEvent(
 }
 
 export function reduceAgentTimeline(prev: AgentTimelineState, event: AgentTimelineEvent): AgentTimelineState {
-  if (event.type === 'attempt' || event.type === 'handoff') return prev
+  if (event.type === 'references') return { ...prev, references: { attemptId: event.attemptId, items: event.items } }
+  if (event.type === 'attempt') return prev
+  if (event.type === 'handoff') return event.startedAt === undefined ? prev : { ...prev, timing: { startedAt: event.startedAt, live: true } }
   if (event.type === 'reasoning') {
     const rawGroup = timelineRawGroup(prev.blocks)
     const blocks = semanticBlocks(prev.blocks)
@@ -528,37 +520,41 @@ export function reduceAgentTimeline(prev: AgentTimelineState, event: AgentTimeli
         startedAt: event.receivedAt,
         text: event.delta,
       })
-      return { blocks: rawGroup ? withRawGroup(blocks, rawGroup.items, rawGroup.open) : blocks }
+      return { ...prev, blocks: rawGroup ? withRawGroup(blocks, rawGroup.items, rawGroup.open) : blocks }
     }
     const active = blocks[activeIndex]
     if (active.type === 'thinking') blocks[activeIndex] = { ...active, text: `${active.text}${event.delta}` }
-    return { blocks: rawGroup ? withRawGroup(blocks, rawGroup.items, rawGroup.open) : blocks }
+    return { ...prev, blocks: rawGroup ? withRawGroup(blocks, rawGroup.items, rawGroup.open) : blocks }
   }
   // 回答属于气泡正文，不进入时间线；连续工具步骤因此不会被旁白打断。
   if (event.type === 'answer' || event.type === 'answer_snapshot') return prev
   if (event.type === 'tool') return reduceToolEvent(prev, event)
   if (event.type === 'done') {
     return {
-      blocks: prev.blocks.map((block) => block.type === 'thinking' && block.status === 'running'
-        ? { ...block, status: 'done', endedAt: event.receivedAt }
+      ...prev,
+      timing: event.timing ?? { ...prev.timing, endedAt: prev.timing?.endedAt ?? event.receivedAt, live: false },
+      blocks: prev.blocks.map((block) => block.type === 'thinking'
+        ? { ...block, text: '', status: 'done', endedAt: block.endedAt ?? event.receivedAt }
         : block),
     }
   }
+  prev = { ...prev, timing: { ...prev.timing, endedAt: event.receivedAt, live: false } }
   const rawGroup = timelineRawGroup(prev.blocks)
   const blocks = semanticBlocks(prev.blocks).map((block): TimelineBlock => {
-    if (block.type === 'thinking' && block.status === 'running') return { ...block, status: 'done', endedAt: event.receivedAt }
+    if (block.type === 'thinking') return { ...block, text: '', status: 'done', endedAt: block.endedAt ?? event.receivedAt }
     if (block.type === 'step' && block.status === 'running') return { ...block, status: 'failed' }
     return block
   })
-  if (!rawGroup) return { blocks }
+  if (!rawGroup) return { ...prev, blocks }
   const items = rawGroup.items.map((item) => item.status === 'running'
     ? { ...item, status: 'failed' as const, ...(event.message ? { error: event.message } : {}) }
     : item)
-  return { blocks: withRawGroup(blocks, items, rawGroup.open) }
+  return { ...prev, blocks: withRawGroup(blocks, items, rawGroup.open) }
 }
 
 function branchStepStatus(status: BotanicAgentRunBranch['status']): TimelineStepBlock['status'] {
-  if (status === 'failed' || status === 'cancelled') return 'failed'
+  if (status === 'cancelled') return 'aborted'
+  if (status === 'failed') return 'failed'
   if (status === 'succeeded') return 'succeeded'
   return 'running'
 }
@@ -566,22 +562,9 @@ function branchStepStatus(status: BotanicAgentRunBranch['status']): TimelineStep
 function runSubmitStatus(run: Pick<BotanicAgentRun, 'status' | 'branches'>): TimelineStepBlock['status'] {
   if (run.status === 'awaiting_confirmation') return 'running'
   // 已经分支出图，提交本身过了；Run 失败写在出图步骤上，不重复标提交失败。
-  if ((run.status === 'failed' || run.status === 'cancelled') && !(run.branches?.length)) return 'failed'
+  if (!(run.branches?.length) && run.status === 'cancelled') return 'aborted'
+  if (!(run.branches?.length) && run.status === 'failed') return 'failed'
   return 'succeeded'
-}
-
-type TimelineJobFailure = { id: string; error?: string; errorCode?: string }
-
-function resolveBranchJob(branch: Pick<BotanicAgentRunBranch, 'activeJobId' | 'jobIds'>, jobs?: readonly TimelineJobFailure[]) {
-  if (!jobs?.length) return undefined
-  if (branch.activeJobId) {
-    const active = jobs.find((job) => job.id === branch.activeJobId)
-    if (active) return active
-  }
-  for (let index = (branch.jobIds?.length ?? 0) - 1; index >= 0; index -= 1) {
-    const found = jobs.find((job) => job.id === branch.jobIds[index])
-    if (found) return found
-  }
 }
 
 export function timelineFailureFields(error?: string, errorCode?: string): Pick<TimelineStepBlock, 'error' | 'errorCode'> {
@@ -597,7 +580,7 @@ export function timelineFailureFields(error?: string, errorCode?: string): Pick<
  * 失败原因读 Job（经 `activeJobId`），没有 Job 再回退分支 / Run 上的文案；不编造。
  */
 export function projectBotanicAgentRunOntoTimeline(
-  run: Pick<BotanicAgentRun, 'id' | 'status' | 'branches' | 'error'>,
+  run: Pick<BotanicAgentRun, 'id' | 'status' | 'branches' | 'error'> & Partial<Pick<BotanicAgentRun, 'createdAt' | 'updatedAt'>>,
   previous: AgentTimelineState | undefined,
   _now: number,
   jobs?: readonly TimelineJobFailure[],
@@ -610,6 +593,7 @@ export function projectBotanicAgentRunOntoTimeline(
     return true
   })
   const submitStatus = runSubmitStatus(run)
+  const firstJobCreatedAt = firstTimelineJobCreatedAt(run.branches, jobs)
   const submit: TimelineStepBlock = {
     id: 'exec:submit',
     type: 'step',
@@ -617,11 +601,14 @@ export function projectBotanicAgentRunOntoTimeline(
     kind: 'write',
     title: '提交生成任务',
     sourceToolIds: [`run:${run.id}:submit`],
+    ...(validTimestamp(run.createdAt) !== undefined ? { startedAt: validTimestamp(run.createdAt) } : {}),
+    ...(firstJobCreatedAt !== undefined ? { endedAt: firstJobCreatedAt } : {}),
     ...(submitStatus === 'failed' ? timelineFailureFields(run.error) : {}),
   }
   const branchSteps: TimelineStepBlock[] = run.branches.map((branch) => {
     const status = branchStepStatus(branch.status)
-    const job = status === 'failed' ? resolveBranchJob(branch, jobs) : undefined
+    const job = resolveBranchJob(branch, jobs)
+    const timing = timelineJobTiming(job)
     return {
       id: `exec:branch:${branch.id}`,
       type: 'step',
@@ -629,10 +616,11 @@ export function projectBotanicAgentRunOntoTimeline(
       kind: 'write',
       title: branch.label.trim() && !isBotanicAgentProcessLabel(branch.label) ? `生成 · ${branch.label.trim()}` : '生成',
       sourceToolIds: [`run:${run.id}:branch:${branch.id}`],
+      ...(timing ? { startedAt: timing.startedAt, ...(timing.endedAt !== undefined ? { endedAt: timing.endedAt } : {}) } : {}),
       ...(status === 'failed' ? timelineFailureFields(job?.error ?? branch.error, job?.errorCode) : {}),
     }
   })
-  return { blocks: [...preserved, submit, ...branchSteps] }
+  return { ...previous, timing: joinTimelineTiming(previous?.timing, timelineOperationTiming(run)), blocks: [...preserved, submit, ...branchSteps] }
 }
 
 export function isSilentThinkingBlock(block: TimelineBlock) {

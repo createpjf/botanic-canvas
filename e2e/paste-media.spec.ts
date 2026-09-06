@@ -79,7 +79,8 @@ test('截图粘进画布，落在视口中心并成为素材节点', async ({ pa
   await expect(page.locator('.react-flow__node-asset')).toHaveCount(1)
 })
 
-test('截图粘进对话框，成为上下文 chip 且名称不是空的', async ({ page }) => {
+test('截图粘进对话框，窄屏附件不重叠且键盘移除保留焦点', async ({ page }, testInfo) => {
+  await page.emulateMedia({ reducedMotion: 'reduce' })
   await openBlankCanvas(page)
   await page.getByRole('button', { name: '描述目标', exact: true }).click()
   await expect(page.getByRole('complementary', { name: 'Botanic Agent' })).toBeVisible()
@@ -97,7 +98,44 @@ test('截图粘进对话框，成为上下文 chip 且名称不是空的', async
   // 回落语义 —— 截图的 name 是 image.png，直接用会得到一列无法区分的「image」。
   const chip = page.locator('.agent-composer__attach-chips .agent-attachment.is-image')
   await expect(chip).toHaveCount(1)
+  await page.locator('.agent-composer__attachments > summary').click()
   await expect(chip.getByRole('button')).toHaveAttribute('aria-label', /^移除 粘贴的图片 \d{2}:\d{2}$/)
+  await pasteInto(page, 'aside.agent-workspace textarea', { files: [{ name: 'reference.png', type: 'image/png', base64: PNG_40x30 }] })
+  await expect(chip).toHaveCount(2)
+  for (const viewport of [{ width: 1440, height: 900 }, { width: 768, height: 900 }, { width: 360, height: 800 }, { width: 360, height: 400 }]) {
+    await page.setViewportSize(viewport)
+    await expect(async () => {
+      const layout = await page.locator('.agent-workspace').evaluate((panel) => {
+        const box = panel.getBoundingClientRect()
+        const input = panel.querySelector<HTMLTextAreaElement>('textarea')!
+        const buttons = [...panel.querySelectorAll<HTMLElement>('.agent-composer__toolbar button, .agent-attachment__remove')]
+        return {
+          overflow: panel.scrollWidth > panel.clientWidth,
+          inputSize: parseFloat(getComputedStyle(input).fontSize),
+          buttonsFit: buttons.every((button) => {
+            const rect = button.getBoundingClientRect()
+            return rect.width >= 24 && rect.height >= 24 && rect.left >= box.left && rect.right <= box.right && rect.top >= box.top && rect.bottom <= box.bottom
+          }),
+          removesFit: [...panel.querySelectorAll<HTMLElement>('.agent-attachment__remove')].every((button) => {
+            const rect = button.getBoundingClientRect()
+            const parent = button.closest('.agent-attachment')!.getBoundingClientRect()
+            return rect.left >= parent.left && rect.right <= parent.right && rect.top >= parent.top && rect.bottom <= parent.bottom
+          }),
+        }
+      })
+      expect(layout.overflow).toBe(false)
+      expect(layout.buttonsFit).toBe(true)
+      expect(layout.removesFit).toBe(true)
+      expect(layout.inputSize).toBeGreaterThanOrEqual(viewport.width <= 768 ? 16 : 14)
+    }).toPass({ timeout: 3_000 })
+    await page.screenshot({ path: testInfo.outputPath(`attachments-${viewport.width}x${viewport.height}.png`) })
+  }
+  await chip.first().getByRole('button').press('Enter')
+  await expect(chip).toHaveCount(1)
+  await expect(chip.getByRole('button')).toBeFocused()
+  await chip.getByRole('button').press('Enter')
+  await expect(chip).toHaveCount(0)
+  await expect(page.getByRole('button', { name: '添加图像素材', exact: true })).toBeFocused()
 })
 
 test('在节点标题输入框里粘贴文字，文字照常粘贴且不产生素材', async ({ page }) => {

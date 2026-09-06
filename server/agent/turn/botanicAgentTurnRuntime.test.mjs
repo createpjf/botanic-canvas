@@ -120,6 +120,9 @@ test('Turn Runtime 为同一幂等键复用结果，并且不持久化 reasoning
     userId: 'user-1', projectId: 'project-1', id, idempotencyKey: 'key-1',
     resolve: async ({ onEvent }) => {
       await onEvent({ type: 'attempt', action: 'start', attemptId: 'text' })
+      await onEvent({ type: 'references', attemptId: 'text', privateUrl: 'private-image-url', items: [{
+        nodeId: 'ref-1', stage: 'submitted', mode: 'description', description: 'private-caption', image: 'private-image-url',
+      }] })
       attemptResetWasDurableBeforeAnswer = store.turns.get(id)?.outputPreview?.text === ''
       onEvent({ type: 'answer', attemptId: 'text', step: 0, delta: '运行中回答' })
       onEvent({ type: 'reasoning', attemptId: 'text', step: 0, delta: 'secret chain' })
@@ -144,6 +147,11 @@ test('Turn Runtime 为同一幂等键复用结果，并且不持久化 reasoning
   assert.deepEqual(store.turns.get(id).result.entityReferences, [{ type: 'agent_run', id: 'run-1' }])
   assert.deepEqual(first.turn.result.entityReferences, [{ type: 'agent_run', id: 'run-1' }])
   assert.equal(store.events.get(id).some((event) => event.type === 'turn.tool'), true)
+  assert.deepEqual(store.events.get(id).find((event) => event.type === 'turn.references')?.payload, {
+    attemptId: 'text', items: [{ nodeId: 'ref-1', stage: 'submitted', mode: 'description' }],
+  })
+  assert.doesNotMatch(JSON.stringify(store.events.get(id)), /private-caption|private-image-url/u)
+  assert.doesNotMatch(JSON.stringify(events.filter((event) => event.type === 'references')), /private-caption|private-image-url/u)
   const previewEvents = store.events.get(id).filter((event) => event.type === 'turn.output_preview.updated')
   assert.equal(previewEvents.length, 2)
   assert.equal(previewEvents.some((event) => JSON.stringify(event).includes('运行中回答')), false)

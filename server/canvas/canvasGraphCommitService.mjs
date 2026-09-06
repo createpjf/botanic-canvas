@@ -3,8 +3,25 @@
 import { createHash } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 import { createCanvasCollaborationRoom } from './canvasCollaborationRoom.mjs'
+import { generationJobsAfterNodeDeletion } from './canvasAgentEditRules.mjs'
 
 const clone = (value) => structuredClone(value)
+
+/** 浏览器图增量先保存删除意图，再删除节点；不能等待独立、延迟的元数据 PATCH。 */
+export async function persistCanvasGenerationDeletion({ productStore, userId, projectId, previousGraph, graph }) {
+  const nextIds = new Set(graph.nodes.map(node => node.id))
+  const removed = previousGraph.nodes.filter(node => !nextIds.has(node.id))
+  if (!removed.length) return
+  const project = await productStore.readProject(userId, projectId)
+  if (!project) throw new Error('项目不存在，无法保存删除意图。')
+  const now = Date.now()
+  if (isDeepStrictEqual(project.document.generationJobs ?? [], generationJobsAfterNodeDeletion(project.document, removed, now))) return
+  await productStore.updateProjectDocument(userId, projectId, document => ({
+    ...document,
+    generationJobs: generationJobsAfterNodeDeletion(document, removed, now),
+    updatedAt: now,
+  }))
+}
 
 function canonicalize(value) {
   if (Array.isArray(value)) return value.map(canonicalize)
@@ -34,8 +51,11 @@ export function supportsDurableCanvasGraphMutation(productStore) {
 
 function assertSupportedDocumentMutation(current, next) {
   const graphCommitFields = new Set(['nodes', 'edges', 'generationJobs', 'updatedAt'])
+  // 内存文档可能带显式 undefined 键(structuredClone 保留),而对账层的 JSON clone 会丢弃它;
+  // 这不是业务变化。先 JSON 规范化再比较,避免本地形态把合法投影误判为越权字段修改。
+  const canonicalValue = (value) => value === undefined ? undefined : JSON.parse(JSON.stringify(value))
   const unsupported = [...new Set([...Object.keys(current), ...Object.keys(next)])]
-    .find((key) => !graphCommitFields.has(key) && !isDeepStrictEqual(current[key], next[key]))
+    .find((key) => !graphCommitFields.has(key) && !isDeepStrictEqual(canonicalValue(current[key]), canonicalValue(next[key])))
   if (unsupported) throw new TypeError(`Canvas Graph commit 不支持同时修改项目字段：${unsupported}。`)
 }
 

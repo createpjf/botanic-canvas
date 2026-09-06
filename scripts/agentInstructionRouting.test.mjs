@@ -5,6 +5,7 @@ import test from 'node:test'
 // 路由与生成前置的行为断言在 src/domain/agentInstructionRouting.test.ts；
 // 这里只守编排层的不变量：忙碌态复位、决策权归属与追问结论的回传。
 const workspace = readFileSync(new URL('../src/features/agent/AgentWorkspace.tsx', import.meta.url), 'utf8')
+const clarification = readFileSync(new URL('../src/features/agent/agentClarificationSubmission.ts', import.meta.url), 'utf8')
 
 function between(source, from, to) {
   const start = source.indexOf(from)
@@ -51,7 +52,9 @@ test('服务端回合的降级判定与图片规划器同语义：离线、缺�
 })
 
 test('服务端判定的生成意图跟着追问卡回到下一轮', () => {
-  // 追问卡本体由领域草案产出（已含 resolvedGeneration）；编排层负责在作答时原样回传。
+  // 草案拥有生成意图，确认模块以实际保存的权威问题接续；行为由其对应测试锁定。
   assert.match(workspace, /question: draft\.clarification/)
-  assert.match(workspace, /resolvedGeneration: message\.question\.resolvedGeneration/)
+  assert.match(workspace, /await submitAgentClarification\(/)
+  assert.match(clarification, /const acceptedQuestion = accepted\.question/)
+  assert.match(clarification, /resolvedGeneration: acceptedQuestion\.resolvedGeneration/)
 })

@@ -276,7 +276,7 @@ function agentEntityHttpError(caught) {
   if (caught?.code === 'AGENT_SESSION_NOT_FOUND') return new HttpError(404, caught.code, caught.message)
   if (caught?.code === 'AGENT_MESSAGE_NOT_FOUND') return new HttpError(409, caught.code, caught.message)
   if (caught?.code === 'AGENT_MEMORY_DELETED') return new HttpError(409, caught.code, caught.message)
-  if (caught?.code === 'AGENT_MESSAGE_TURN_REQUEST_CONFLICT' || caught?.code === 'AGENT_MESSAGE_TURN_ID_CONFLICT' || caught?.code === 'AGENT_MESSAGE_ROLE_CONFLICT') {
+  if (caught?.code === 'AGENT_MESSAGE_ANSWER_CONFLICT' || caught?.code === 'AGENT_MESSAGE_TURN_REQUEST_CONFLICT' || caught?.code === 'AGENT_MESSAGE_TURN_ID_CONFLICT' || caught?.code === 'AGENT_MESSAGE_ROLE_CONFLICT') {
     return new HttpError(409, caught.code, caught.message)
   }
   if (typeof caught?.code === 'string' && /^AGENT_TARGET_/.test(caught.code)) {
@@ -626,6 +626,7 @@ const handleRequestCore = async (request, response, requestId) => {
         ...(traceId ? { traceId } : {}),
         statusCode: failure.statusCode,
       }))
+      if (process.env.BOTANIC_DEBUG_HTTP_ERRORS === 'true') console.error(caught?.stack ?? caught)
     }
     return error(response, failure.statusCode, failure.code, failure.message)
   }

@@ -10,7 +10,7 @@ import {
   primaryGenerationReference,
   settingsForRegionEdit,
 } from '../domain/generationRecipe'
-import { matchUnresolvedGenerationTaskJobs } from '../domain/generationRecovery'
+import { generationRetryState, matchUnresolvedGenerationTaskJobs } from '../domain/generationRecovery'
 import { assignVideoInputRoles } from '../domain/videoGeneration'
 import type { CanvasDocument, CanvasNode, GenerateNodeData, GenerationJob, GenerationRecipe, ResultNodeData } from '../domain/canvas'
 import {
@@ -666,18 +666,20 @@ export function createCanvasGenerationActions({
     retryMissingGeneration: async (jobId) => {
       const document = get().document
       const job = document.generationJobs.find((item) => item.id === jobId)
-      if (!job?.missingOutputCount) return setGenerationError('本任务没有待补生成的图。')
+      const retry = generationRetryState(job, document.generationJobs, document.agentRuns)
+      if (!job || !retry.canRetry) return setGenerationError('本任务没有可补生成的图，请核对当前任务状态。')
+      if (retry.runId && retry.branchId) return get().retryAgentBranch(retry.runId, retry.branchId)
       const request = requestFromPersistedGenerationJob(document, job)
       if (!request?.recipe) return setGenerationError('无法恢复本次生成参数，请基于任一结果继续生成。')
       if (request.kind === 'refinement' && request.targetNodeId) {
         return get().runRefinement({
-          targetNodeId: request.targetNodeId, prompt: request.prompt, batchCount: job.missingOutputCount,
+          targetNodeId: request.targetNodeId, prompt: request.prompt, batchCount: retry.missingCount,
           settings: request.settings, recipe: request.recipe, rootRecipe: request.rootRecipe,
           sourceGraphNodeId: request.sourceGraphNodeId, refinementMode: request.refinementMode,
         })
       }
       return get().runGeneration({
-        prompt: request.prompt, batchCount: job.missingOutputCount, settings: request.settings,
+        prompt: request.prompt, batchCount: retry.missingCount, settings: request.settings,
         recipe: request.recipe, rootRecipe: request.rootRecipe, sourceGraphNodeId: request.sourceGraphNodeId,
       })
     },

@@ -284,18 +284,19 @@ async function productRequestOnce<T>(path: string, init: ProductRequestInit = {}
   }
   const responseRequestId = response.headers.get('X-Request-ID') ?? requestId
   const contentType = response.headers.get('Content-Type') ?? ''
-  const invalidResponseMessage = readProductLocale() === 'en'
-    ? 'The workspace service returned an invalid response. Try again.'
-    : '工作区服务返回了无效响应，请稍后重试。'
+  const invalidResponseCode = response.status >= 500 ? 'WORKSPACE_UNAVAILABLE' : 'INVALID_API_RESPONSE'
+  const invalidResponseMessage = invalidResponseCode === 'WORKSPACE_UNAVAILABLE'
+    ? readProductLocale() === 'en' ? 'The workspace service is unavailable. Try again shortly.' : '工作区服务暂时无法连接，请稍后重试。'
+    : readProductLocale() === 'en' ? 'Unable to read the workspace response. Try again.' : '工作区响应读取失败，请重试。'
   let payload: T | ApiErrorPayload | null | undefined
   if (response.status === 204) payload = undefined
   else if (!contentType.toLowerCase().includes('json')) {
-    throw new ProductApiError(invalidResponseMessage, 502, 'INVALID_API_RESPONSE', responseRequestId)
+    throw new ProductApiError(invalidResponseMessage, 502, invalidResponseCode, responseRequestId)
   } else {
     try {
       payload = await response.json() as T | ApiErrorPayload | null
     } catch {
-      throw new ProductApiError(invalidResponseMessage, 502, 'INVALID_API_RESPONSE', responseRequestId)
+      throw new ProductApiError(invalidResponseMessage, 502, invalidResponseCode, responseRequestId)
     }
   }
   if (!response.ok) {

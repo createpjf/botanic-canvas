@@ -124,7 +124,7 @@ test('当前 Generation Job 对每个输出返回 Artifact 或明确 rejected，
     id: 'job-current', status: 'succeeded', updatedAt: 300,
     outputs: [
       { id: 'valid', image: '/api/media/valid' },
-      { id: 'invalid', image: 'data:image/png;base64,AAAA' },
+      { id: 'invalid', image: 'http://insecure.example/image.png' },
     ],
   }, { document: { nodes: [], assets: [] }, now: 300 })
 
@@ -144,6 +144,17 @@ test('当前 Generation Job 对每个输出返回 Artifact 或明确 rejected，
   assert.equal(report.status, 'passed')
   assert.equal(report.expectedOutputCount, 2)
   assert.equal(report.indexedCount, 2)
+})
+
+test('本地 inline 媒体输出入索引保留血缘但不携带 url,字节不进 Artifact Index', () => {
+  const conversion = generationArtifactsFromJobReport({
+    id: 'job-inline', status: 'succeeded', updatedAt: 300,
+    outputs: [{ id: 'out-1', image: 'data:image/png;base64,AAAA' }],
+  }, { document: { nodes: [], assets: [] }, now: 300 })
+  assert.deepEqual(conversion.rejected, [])
+  assert.equal(conversion.artifacts.length, 1)
+  assert.equal(conversion.artifacts[0].url, undefined)
+  assert.equal(generationArtifactRefreshReport(conversion, conversion.artifacts).status, 'passed')
 })
 
 test('Artifact 校验拒绝图片字节地址和超大元数据', () => {

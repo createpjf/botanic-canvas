@@ -361,7 +361,7 @@ test('plan clarification 以 waiting_user 终态持久化并恢复旧响应形�
   const harness = createRouteHarness(planBody)
   await withFakeFetch(async (_url, init) => {
     fetchCalls.push(init)
-    return clarificationProviderResponse()
+    return fetchCalls.length === 1 ? clarificationProviderResponse() : planProviderResponse()
   }, async () => {
     const result = await harness.post('/api/agent-plans', {
       headers: { 'idempotency-key': 'compat-plan-clarify-0001' },
@@ -375,7 +375,19 @@ test('plan clarification 以 waiting_user 终态持久化并恢复旧响应形�
     assert.equal(stored.status, 'waiting_user')
     assert.equal(stored.result.kind, 'clarification')
     assert.equal(stored.result.runtimeOperation, 'plan')
+    assert.equal(stored.result.clarification.id, `plan-clarification:${stored.id}`)
     assert.equal(fetchCalls.length, 1)
+    harness.setBody({ ...planBody, settings: { ...planBody.settings, aspectRatio: '16:9' }, clarificationAnswers: { aspect_ratio: '16:9' } })
+    await assert.rejects(() => harness.post('/api/agent-plans', {
+      headers: { 'idempotency-key': 'compat-plan-clarify-0001' },
+    }), (caught) => caught?.code === 'AGENT_TURN_INTENT_CONFLICT')
+    const answerHeaders = { 'idempotency-key': 'agent-plan-agent-answer-confirmed-1' }
+    const continued = await harness.post('/api/agent-plans', { headers: answerHeaders })
+    assert.ok(continued.json.body.plan)
+    assert.notEqual(continued.json.body.runtimeTurn.id, stored.id)
+    const replay = await harness.post('/api/agent-plans', { headers: answerHeaders })
+    assert.equal(replay.json.body.runtimeTurn.id, continued.json.body.runtimeTurn.id)
+    assert.equal(fetchCalls.length, 2, '确认前后是两个稳定规划操作，同一答案重试不再采样')
   })
 })
 

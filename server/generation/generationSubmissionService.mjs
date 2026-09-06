@@ -185,7 +185,8 @@ export function createGenerationSubmissionService({ config, productStore, securi
     try {
       queued = await productStore.putGenerationJob(user.id, persistedGenerationJob(job)) ?? persistedGenerationJob(job)
     } catch (caught) {
-      const recovered = await productStore.readGenerationJob(user.id, id).catch(() => undefined)
+      // Local Adapter 的 readGenerationJob 是同步方法;Promise.resolve 同时兼容三个 Adapter。
+      const recovered = await Promise.resolve(productStore.readGenerationJob(user.id, id)).catch(() => undefined)
       if (!recovered || !matchingIdempotencyRequestBinding(recovered.idempotencyBinding, binding)) {
         await releaseReservations(reservations)
         throw caught

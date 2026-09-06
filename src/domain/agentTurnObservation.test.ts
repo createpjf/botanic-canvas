@@ -11,6 +11,7 @@ import {
   continueBotanicAgentTurnSubmission,
   botanicAgentTurnGenerationContinuation,
   hasBotanicAgentTurnCancellationIntent,
+  markBotanicAgentCancellationPending,
   isRetryableBotanicAgentTurnRecoveryError,
   monotonicAgentTurnEventDecision,
   pendingBotanicAgentTurnProjection,
@@ -22,6 +23,7 @@ import {
   settleBotanicAgentCancellationSession,
   settleAgentTurnObservation,
   stopBotanicAgentPlanning,
+  takeBotanicAgentCancellationPending,
   type BotanicAgentTurnObservationPage,
 } from './agentTurnObservation.ts'
 
@@ -112,6 +114,7 @@ test('Turn 续读只把安全的工具投影恢复成时间线事件', () => {
     type: 'tool',
     step: 1,
     sequence: 2,
+    occurredAt: 2,
     toolCall: {
       id: 'call-1',
       name: 'web_search',
@@ -239,6 +242,9 @@ test('刷新恢复只挑出尚无同 Turn 助手投影的用户消息，并使�
   ]
 
   assert.deepEqual(pendingBotanicAgentTurnProjection(messages), messages[2])
+  assert.deepEqual(pendingBotanicAgentTurnProjection([
+    { id: 'agent-answer-previous', role: 'user', turnId: 'turn-previous', createdAt: 0 }, ...messages,
+  ]), messages[2], '答案不能成为刷新后的原请求，即使原回合消息不在当前页')
   assert.equal(botanicAgentTurnProjectionMessageId('turn-b'), 'agent-turn-result-turn-b')
   assert.equal(pendingBotanicAgentTurnProjection([
     ...messages,
@@ -365,7 +371,7 @@ test('刷新恢复 generation 时合并 settingsHint，和首轮执行使用同�
   })
 })
 
-test('无 settingsHint 的 generation continuation 仍保留 immutable target 供失败重试', () => {
+test('无 settingsHint 的 generation continuation 仍保留 immutable target 供失败重试', async () => {
   const continuation = botanicAgentTurnGenerationContinuation({
     kind: 'generation', mediaKind: 'image', prompt: '换背景', count: 1,
     selectedResultNodeId: 'result-original',
@@ -373,28 +379,32 @@ test('无 settingsHint 的 generation continuation 仍保留 immutable target �
   assert.equal(continuation.targetNodeId, 'result-original')
   assert.equal(continuation.generationOverrides, undefined)
   assert.equal(
-    resolveBotanicAgentContinuationTarget(continuation.targetNodeId, (nodeId) => ({ id: nodeId })).id,
+    (await resolveBotanicAgentContinuationTarget(continuation.targetNodeId, (nodeId) => ({ id: nodeId })))?.id,
     'result-original',
   )
 })
 
-test('恢复 generation 只解析 Turn 固定的目标，已删除时 fail closed 而不猜当前选中', () => {
+test('恢复 generation 只解析 Turn 固定的目标，已删除时 fail closed 而不猜当前选中', async () => {
   const targets = new Map([
     ['result-original', { id: 'result-original', label: '原结果' }],
     ['result-current', { id: 'result-current', label: '刷新后当前结果' }],
   ])
   assert.deepEqual(
-    resolveBotanicAgentContinuationTarget('result-original', (nodeId) => targets.get(nodeId)),
+    await resolveBotanicAgentContinuationTarget('result-original', async (nodeId) => targets.get(nodeId)),
     { id: 'result-original', label: '原结果' },
   )
-  assert.equal(resolveBotanicAgentContinuationTarget(null, () => targets.get('result-current')), undefined)
-  assert.throws(
-    () => resolveBotanicAgentContinuationTarget('result-deleted', (nodeId) => targets.get(nodeId)),
+  assert.equal(await resolveBotanicAgentContinuationTarget(null, () => targets.get('result-current')), undefined)
+  await assert.rejects(
+    () => resolveBotanicAgentContinuationTarget('result-deleted', async (nodeId) => targets.get(nodeId)),
     (error: unknown) => (error as { code?: string }).code === 'AGENT_TURN_TARGET_NOT_FOUND',
   )
-  assert.throws(
+  await assert.rejects(
     () => resolveBotanicAgentContinuationTarget(undefined, (nodeId) => targets.get(nodeId)),
     (error: unknown) => (error as { code?: string }).code === 'AGENT_TURN_TARGET_IDENTITY_MISSING',
+  )
+  await assert.rejects(
+    () => resolveBotanicAgentContinuationTarget('result-original', async () => targets.get('result-current')),
+    (error: unknown) => (error as { code?: string }).code === 'AGENT_TURN_TARGET_NOT_FOUND',
   )
 })
 
@@ -506,6 +516,17 @@ test('Stop 对 durable Turn 只请求深取消并继续观察；非 Turn 工作�
   })
   assert.deepEqual(local, { kind: 'aborted_local' })
   assert.deepEqual(calls, ['cancel:turn-active', 'cancel-when-accepted', 'abort'])
+})
+
+test('身份到达前的取消意图按异步操作隔离', () => {
+  const pending = new Set<string>()
+  markBotanicAgentCancellationPending(pending, 'operation-old')
+  markBotanicAgentCancellationPending(pending, 'operation-new')
+
+  assert.equal(takeBotanicAgentCancellationPending(pending, 'operation-old'), true)
+  assert.equal(pending.has('operation-new'), true)
+  assert.equal(takeBotanicAgentCancellationPending(pending, 'operation-old'), false)
+  assert.equal(takeBotanicAgentCancellationPending(pending, 'operation-new'), true)
 })
 
 test('Stop 在身份到达前被明确拒绝后，不禁用同 Session 下一轮 Stop', () => {

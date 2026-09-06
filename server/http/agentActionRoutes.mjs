@@ -35,6 +35,16 @@ const safelyReplayableAgentActions = new Set([
 // 其他 HTTP Action 即使省略 context，也必须反查到唯一权威 Proposal。
 const standaloneAgentActions = new Set(['workflow_create', 'generation_submit', 'skill_create', 'skill_publish', 'skill_deprecate', 'skill_restore'])
 
+function isAuthorizedAgentMediaUrl(value) {
+  if (typeof value !== 'string' || !value.startsWith('/api/media/') || value.length > 2048) return false
+  try {
+    const parsed = new URL(value, 'http://botanic.internal')
+    return parsed.origin === 'http://botanic.internal' && parsed.pathname.startsWith('/api/media/')
+  } catch {
+    return false
+  }
+}
+
 /**
  * Agent 行动资源(/api/agent-actions*、审批)的唯一 HTTP handler。
  * 从 agentRoutes 组合根拆出:回执 claim/重试/审批语义不变,闭包服务经依赖注入。
@@ -54,7 +64,6 @@ export function createAgentActionRouteHandler({
   agentRunGeneration,
   publishProjectUpdated,
   observeAgentRun,
-  isAuthorizedAgentMediaUrl,
   actionHasContext,
   requireActionProposal,
   authoritativeActionAttempt,

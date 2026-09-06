@@ -8,13 +8,29 @@ function recipeSources(recipe: GenerationRecipe | undefined) {
   return recipe?.references.map((reference) => reference.image).filter(Boolean) ?? []
 }
 
+/** 只读恢复确切 Job 输出，不回填节点；媒体访问权限仍由服务端校验。 */
+export function resolveAgentResultImage(document: CanvasDocument, nodeId: string) {
+  const node = document.nodes.find((candidate) => candidate.id === nodeId && candidate.type === 'result')
+  const data = node?.data as ResultNodeData | undefined
+  if (!data) return undefined
+  if (data.image) return data.image
+  if ((data.mediaKind ?? 'image') !== 'image') return undefined
+  const jobs = document.generationJobs.filter((job) => data.jobId ? job.id === data.jobId : job.resultNodeId === nodeId)
+  const job = jobs.length === 1 ? jobs[0] : undefined
+  if (!job || job.status !== 'succeeded' || job.projectionDismissedAt != null) return undefined
+  const outputs = job.outputs ?? []
+  const output = data.candidateId ? outputs.find((item) => item.id === data.candidateId) : outputs.length === 1 ? outputs[0] : undefined
+  if (!output || job.dismissedOutputIds?.includes(output.id) || (output.mediaKind ?? 'image') !== 'image') return undefined
+  return output.image || undefined
+}
+
 export function collectAgentMediaSources(document: CanvasDocument, resultNodeId: string, assetGroupId?: string) {
   const resultNode = document.nodes.find((node) => node.id === resultNodeId && node.type === 'result')
   const result = resultNode?.type === 'result' ? resultNode.data as ResultNodeData : undefined
   const group = assetGroupId ? document.assetGroups.find((item) => item.id === assetGroupId) : undefined
   const groupAssetIds = new Set(group?.assetIds ?? [])
   return [...new Set([
-    result?.image,
+    resolveAgentResultImage(document, resultNodeId),
     ...recipeSources(result?.generationRecipe),
     ...recipeSources(result?.rootRecipe),
     ...document.assets.filter((asset) => groupAssetIds.has(asset.id)).map((asset) => asset.image),
@@ -27,8 +43,9 @@ export function collectAgentVisionMediaSources(document: CanvasDocument, context
   return [...new Set(document.nodes.flatMap((node) => {
     if (!wanted.has(node.id) || (node.type !== 'asset' && node.type !== 'result')) return []
     const data = node.data as AssetNodeData | ResultNodeData
-    if ((data.mediaKind ?? 'image') !== 'image' || !data.image) return []
-    return [data.image]
+    const image = node.type === 'result' ? resolveAgentResultImage(document, node.id) : data.image
+    if ((data.mediaKind ?? 'image') !== 'image' || !image) return []
+    return [image]
   }))]
 }
 

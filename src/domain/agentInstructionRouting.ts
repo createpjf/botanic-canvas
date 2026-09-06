@@ -18,6 +18,7 @@ import type { BotanicAgentComposition } from './agentCreativeComposition.ts'
 import type { GenerationModelOption, GenerationSettings } from './canvas.ts'
 import type { GenerationSizeOverride } from './generationOutputSize.ts'
 import { settingsForGenerationModel } from './generationRecipe.ts'
+import { botanicAgentClarificationProgress } from './agentMessageUtilities.ts'
 
 /**
  * 一次 Agent 指令的路由与生成前置决策。此前这套状态机隐式散落在 AgentWorkspace 的
@@ -86,6 +87,7 @@ export function resolveBotanicAgentInstructionEntry(input: {
   /** 当前有可框选的图片目标（选中的结果图）；局部重绘语据此进入框选流程。 */
   canSelectRegion?: boolean
   messages: BotanicAgentMessage[]
+  runs?: Parameters<typeof botanicAgentClarificationProgress>[1]
 }): BotanicAgentInstructionEntry {
   const { instruction, options, hasVisualContext, messages } = input
   const restored = options.resolvedGeneration
@@ -101,8 +103,9 @@ export function resolveBotanicAgentInstructionEntry(input: {
       .find((item) => item.kind === 'plan' && item.plan && item.status === 'pending')
     if (pendingPlanMessage) return { kind: 'confirm_plan', message: pendingPlanMessage }
     const pendingQuestion = [...messages].reverse()
-      .find((item) => item.kind === 'question' && item.question && item.status === 'pending')
-    if (pendingQuestion) return { kind: 'notice', notice: 'answer_pending_question' }
+      .find((item) => item.kind === 'question' && item.question && item.status === 'pending'
+        && botanicAgentClarificationProgress(item, input.runs ?? []).state !== 'continued')
+    if (pendingQuestion) return { kind: 'notice', notice: botanicAgentClarificationProgress(pendingQuestion, input.runs ?? []).state === 'pending' ? 'answer_pending_question' : 'nothing_to_confirm' }
     // 「直接生成」这类执行语没有画面信息：沿用最近定稿 Prompt，绝不能写进简报当画面描述。
     const promptMessage = [...messages].reverse()
       .find((item) => item.role === 'assistant' && item.prompt?.trim())

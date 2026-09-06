@@ -1,4 +1,27 @@
 import type { CanvasNode, GenerateNodeData, GenerationJob, ResultNodeData } from './canvas.ts'
+import type { BotanicAgentRun } from './agent.ts'
+import { generationCancellationPending } from './generationCancelCopy.ts'
+
+export function agentBranchCanRetry(run: BotanicAgentRun, branchId: string, jobs: readonly GenerationJob[]) {
+  const branch = run.branches.find(branch => branch.id === branchId)
+  return Boolean(branch && ['failed', 'cancelled'].includes(branch.status)
+    && !run.branches.some(item => generationCancellationPending(jobs.find(job => job.id === item.activeJobId)?.cancel)))
+}
+
+/** 重试资格来自当前执行身份；旧 Job 的历史缺图数不能代表分支现在仍缺图。 */
+export function generationRetryState(job: GenerationJob | undefined, jobs: readonly GenerationJob[], runs: readonly BotanicAgentRun[]) {
+  const run = job?.agentRun ? runs.find(run => run.id === job.agentRun!.runId) : undefined
+  const branch = run?.branches.find(branch => branch.id === job?.agentRun?.branchId)
+  const activeJob = branch ? jobs.find(job => job.id === branch.activeJobId) : job
+  const firstJob = branch ? jobs.find(job => job.id === branch.jobIds[0]) : job
+  const requestedCount = firstJob?.batchCount ?? job?.batchCount ?? 0
+  const missingCount = activeJob?.missingOutputCount ?? 0
+  const pending = Boolean(branch && branch.jobIds.length > 1 && ['queued', 'running'].includes(branch.status))
+  const canRetry = Boolean(activeJob && missingCount > 0 && !generationCancellationPending(activeJob.cancel)
+    && ['succeeded', 'failed'].includes(activeJob.status)
+    && (!job?.agentRun || (run && branch && agentBranchCanRetry(run, branch.id, jobs) && !['completed', 'cancelled'].includes(run.status))))
+  return { requestedCount, missingCount: canRetry ? missingCount : 0, canRetry, pending, runId: run?.id, branchId: branch?.id }
+}
 
 export type UnknownSubmissionAnchor = {
   generateNode: CanvasNode

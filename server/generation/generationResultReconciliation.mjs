@@ -433,6 +433,7 @@ export function retargetGenerationJobForRetry(document, previousJobId, nextJobId
   const next = clone(document)
   next.nodes = (next.nodes ?? []).map((node) => {
     if (node.data?.jobId !== previousJobId) return node
+    if (node.type === 'result' && node.data?.image) return node
     changed = true
     if (node.type === 'result') return {
       ...node,
@@ -444,7 +445,7 @@ export function retargetGenerationJobForRetry(document, previousJobId, nextJobId
     }
     return node
   })
-  next.generationJobs = (next.generationJobs ?? []).map((job) => job.id !== previousJobId ? job : {
+  next.generationJobs = (next.generationJobs ?? []).map((job) => job.id !== previousJobId || job.outputs?.length ? job : {
     ...job,
     id: nextJobId,
     status: 'queued',

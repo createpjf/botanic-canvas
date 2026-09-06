@@ -28,6 +28,16 @@ function stableTurnProjection(current, incoming, turnId) {
     && incomingRole === 'assistant'
 }
 
+function clarificationAnswer(question) {
+  return {
+    answers: Object.fromEntries((question.fields ?? []).map((field) => [field.id, field.defaultValue ?? ''])),
+    brief: question.brief,
+    originalInstruction: question.originalInstruction,
+    sourcePromptMessageId: question.sourcePromptMessageId,
+    resolvedGeneration: question.resolvedGeneration,
+  }
+}
+
 /**
  * Message 的跨 Adapter 单一合并规则。
  *
@@ -87,7 +97,34 @@ export function mergeAgentMessageForWrite(current, incoming, input = {}) {
 
   let applyIncomingBody = !current || incomingUpdatedAt > currentUpdatedAt
   const turnId = currentTurnId ?? incomingTurnId
+  if (current?.kind === 'question' && incoming.kind === 'question'
+    && current.question?.id && current.question.id !== incoming.question?.id
+    && (incoming.status === 'answered' || incoming.status === 'submitted')) {
+    throw messageMergeError('确认内容已变化，请重新加载对话。', 'AGENT_MESSAGE_ANSWER_CONFLICT')
+  }
+  // 同一确认只能回答一次；旧设备的 pending 即使时钟更快，也不能覆盖已采用的答案。
+  // 仅约束同一个 question.id，不影响新问题、普通正文 LWW 或 Run/Turn 的终态规则。
+  if (current?.kind === 'question' && incoming.kind === 'question'
+    && current.question?.id && current.question.id === incoming.question?.id) {
+    const currentAnswered = current.status === 'answered' || current.status === 'submitted'
+    const incomingAnswered = incoming.status === 'answered' || incoming.status === 'submitted'
+    if (currentAnswered && incomingAnswered) {
+      if (!isDeepStrictEqual(clarificationAnswer(current.question), clarificationAnswer(incoming.question))) {
+        throw messageMergeError('此确认已采用其他答案，请重新加载对话。', 'AGENT_MESSAGE_ANSWER_CONFLICT')
+      }
+      applyIncomingBody = false
+    } else if (currentAnswered && incoming.status === 'pending') applyIncomingBody = false
+    else if (current.status === 'pending' && incomingAnswered) applyIncomingBody = true
+  }
+  // Prompt 优化也会结束确认；旧设备迟到的问题不能重开同一消息。
+  if (current?.kind === 'question' && incoming.kind === 'text'
+    && typeof incoming.prompt === 'string' && incoming.prompt.trim()) applyIncomingBody = true
+  else if (incoming.kind === 'question' && current?.kind === 'text'
+    && typeof current.prompt === 'string' && current.prompt.trim()) applyIncomingBody = false
   if (current && stableTurnProjection(current, incoming, turnId)) {
+    // 仅保护同一稳定 Turn 的后续计划/Run；不把任意 notice 或下一问题当成已接续。
+    if (current.kind === 'question' && (incoming.plan || incoming.runId)) applyIncomingBody = true
+    else if (incoming.kind === 'question' && (current.plan || current.runId)) applyIncomingBody = false
     const currentFailed = current.status === 'failed'
     const incomingFailed = incoming.status === 'failed'
     if (incomingFailed && !currentFailed) applyIncomingBody = true

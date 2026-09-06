@@ -60,12 +60,25 @@ function renderMentionChildren(children: ReactNode, catalogs?: BotanicAgentMenti
     : child)
 }
 
-export function AgentMarkdownSources({ sources }: { sources: string[] }) {
+/** 正文包含代码和引用，不能通过字段名猜测并删除内容。 */
+export function agentDisplayMarkdownContent(source: string) {
+  return source
+}
+
+export function AgentMarkdownSources({ sources, catalogs, onLocate }: { sources: string[]; catalogs?: BotanicAgentMentionCatalog; onLocate?: (id: string) => void }) {
   const { locale } = useProductI18n()
-  if (!sources.length) return null
+  const uniqueSources = [...new Set(sources.map((source) => {
+    const value = source.trim()
+    return catalogs?.references?.find((item) => item.id === value || `@${item.id}` === value)?.id ?? value
+  }).filter(Boolean))]
+  if (!uniqueSources.length) return null
   return <div className="agent-markdown__sources" aria-label={locale === 'en' ? 'Sources' : '来源'}>
-    <span>{locale === 'en' ? 'Sources' : '来源'}</span>
-    {sources.map((source) => <small key={source}>{localizeAgentSourceLabel(source, locale)}</small>)}
+    {uniqueSources.map((source) => {
+      const reference = catalogs?.references?.find((item) => item.id === source || `@${item.id}` === source)
+      return reference && onLocate
+        ? <button type="button" key={source} title={locale === 'en' ? 'Locate on canvas' : '定位画布'} onClick={() => onLocate(reference.id)}>{reference.label}</button>
+        : <small key={source}>{localizeAgentSourceLabel(source, locale)}</small>
+    })}
   </div>
 }
 
@@ -79,7 +92,7 @@ export function AgentMarkdown({
   showSources?: boolean
 }) {
   const { locale } = useProductI18n()
-  const { body, sources } = splitAgentMessageSources(content)
+  const { body, sources } = splitAgentMessageSources(agentDisplayMarkdownContent(content))
   const components = useMemo<NonNullable<MessageResponseProps['components']>>(() => ({
     p: ({ children }) => <p>{renderMentionChildren(children, catalogs)}</p>,
     li: ({ children }) => <li>{renderMentionChildren(children, catalogs)}</li>,

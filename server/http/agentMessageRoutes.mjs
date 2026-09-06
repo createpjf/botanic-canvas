@@ -25,6 +25,17 @@ export function createAgentMessageRouteHandler(input) {
       : undefined
     const existingMessage = (messagePage?.messages ?? (Array.isArray(messagePage) ? messagePage : []))
       .find((candidate) => candidate.id === messageId)
+    if (body.kind === 'question' && !body.runId && typeof body.question?.id === 'string'
+      && body.question.id.startsWith('plan-clarification:') && !existingMessage?.plan && !existingMessage?.runId) {
+      const planTurnId = body.question.id.slice('plan-clarification:'.length)
+      const planTurn = await productStore.readAgentTurn(user.id, planTurnId)
+      if (!planTurn || planTurn.projectId !== projectId || planTurn.status !== 'waiting_user'
+        || planTurn.result?.runtimeOperation !== 'plan' || planTurn.result.kind !== 'clarification'
+        || planTurn.result.clarification?.id !== body.question.id
+        || planTurn.result.clarification.originalInstruction !== body.question.originalInstruction) {
+        return error(response, 409, 'AGENT_MESSAGE_ANSWER_CONFLICT', '原规划已变化，请重新加载对话。')
+      }
+    }
     if (existingMessage?.turnId && body.turnId && existingMessage.turnId !== body.turnId) {
       return error(response, 409, 'AGENT_MESSAGE_TURN_CONFLICT', '当前消息已绑定另一 Agent Turn。')
     }
@@ -39,11 +50,25 @@ export function createAgentMessageRouteHandler(input) {
     const stableTurnProjection = Boolean(
       linkedTurnId && body.role === 'assistant' && messageId === `agent-turn-result-${linkedTurnId}`
     )
-    if (stableTurnProjection && !linkedTurn) {
+    if ((stableTurnProjection || body.kind === 'question') && linkedTurnId && !linkedTurn) {
       linkedTurn = await productStore.readAgentTurn(user.id, linkedTurnId)
       if (!linkedTurn || linkedTurn.projectId !== projectId || linkedTurn.sessionId !== sessionId) {
         return error(response, 409, 'AGENT_MESSAGE_TURN_INVALID', '消息关联的 Agent Turn 不属于当前会话。')
       }
+    }
+    if (body.kind === 'question' && linkedTurn && !body.runId && !existingMessage?.plan && !existingMessage?.runId) {
+      const question = body.question
+      const result = linkedTurn.result
+      const samePlan = linkedTurn.status === 'waiting_user' && result?.runtimeOperation === 'plan'
+        && result.kind === 'clarification' && result.clarification?.id === question?.id
+        && result.clarification.originalInstruction === question?.originalInstruction
+      const generation = question?.resolvedGeneration
+      const sameGeneration = linkedTurn.status === 'completed' && result?.kind === 'generation'
+        && generation?.turnId === linkedTurn.id && generation.prompt === result.prompt && generation.mediaKind === result.mediaKind
+      const plannerQuestion = typeof question?.id === 'string' && question.id.startsWith('plan-clarification:')
+      const valid = plannerQuestion && question.id !== `plan-clarification:${linkedTurn.id}`
+        ? linkedTurn.status === 'completed' : samePlan || (!plannerQuestion && sameGeneration)
+      if (!valid) return error(response, 409, 'AGENT_MESSAGE_ANSWER_CONFLICT', '原确认已失效，请重新填写。')
     }
     const entityReferences = stableTurnProjection && linkedTurn?.result?.entityReferences !== undefined
       ? validateAgentEntityReferences(linkedTurn.result.entityReferences)

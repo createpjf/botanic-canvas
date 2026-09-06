@@ -10,7 +10,7 @@ export default defineConfig({
   retries: process.env.CI ? 1 : 0,
   reporter: process.env.CI ? [['github'], ['html', { open: 'never' }]] : 'line',
   use: {
-    baseURL: 'http://127.0.0.1:4173',
+    baseURL: process.env.PLAYWRIGHT_BASE_URL || 'http://127.0.0.1:4173',
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
     video: 'retain-on-failure',
@@ -26,7 +26,7 @@ export default defineConfig({
       use: { ...devices['iPhone 13'] },
     },
   ],
-  webServer: {
+  webServer: process.env.PLAYWRIGHT_BASE_URL ? undefined : {
     command: 'VITE_PERSISTENCE_MODE=local npm run dev -- --host 127.0.0.1',
     url: 'http://127.0.0.1:4173/#/projects',
     reuseExistingServer: !process.env.CI,

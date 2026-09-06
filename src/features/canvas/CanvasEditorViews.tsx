@@ -20,6 +20,7 @@ import { BotanicSelect } from '../../components/BotanicSelect'
 import { modelDisplayLabel, modelProviderLogo } from '../../components/generationModelPresentation'
 import type { AssetNodeData, AssetRole, AssetSource, CanvasNode, GenerateNodeData, GenerationMediaKind, GenerationModelOption, GenerationSettings, PromptNodeData, ReferenceGroupNodeData, RefinementMode, ResultNodeData, TextNodeData, VideoInputMode } from '../../domain/canvas'
 import { CanvasFrameNode } from './CanvasFrameNode'
+import { CanvasGenerationRetry } from './CanvasGenerationRetry'
 import { downloadMedia } from '../../lib/mediaDownload'
 import { refinePrompt } from '../../lib/promptRefinementApi'
 import { refreshProductMediaSession } from '../../lib/productSession'
@@ -47,7 +48,7 @@ const editorMessages = {
     promptInput: '描述输入端', promptOutput: '从描述连线', refinementBrief: '定向精修指令', creativeDirection: '描述', taskAttention: '任务需要处理', referenceInput: '参考组输入端', referenceOutput: '从参考组连线', primaryProduct: (name: string) => `主商品 · ${name}`, noPrimary: '未锁定主商品',
     refinedVersion: '精修版本', generatedVersion: '生成版本', automaticOutput: '自动输出端', writtenAutomatically: '由生成节点在任务完成后自动写入', connectResult: '从结果连线', connectVideoResult: '连接到 H3 节点作为参考视频', connectImageResult: '将这张生成结果连到下一生成节点', connectPendingResult: '任务完成后可将生成结果连到下一节点',
     deleteResult: (name: string) => `删除 ${name}`, deleteResultTitle: '删除这个结果节点', download: (name: string) => `下载 ${name}`, downloadOriginal: '下载原图', savedLabel: (name: string) => `${name} 已入库`, saveLabel: (name: string) => `将 ${name} 入库`, saved: '已入库', save: '入库', saveTitle: '存入素材库',
-    mediaUnavailable: '媒体无法显示', taskIncomplete: '任务未完成', taskCancelled: '任务已取消', waitingResult: '等待生成结果', mediaError: '媒体读取失败，可能是登录状态或网络中断。', waitingService: '等待生成服务返回结果。', realStatus: '生成服务的真实状态会在此同步。', reload: '重新加载', confirmNow: '立即确认', cancel: '取消', retryRecipe: '用原参数重试', deleteTask: '删除任务', fillMissing: (count: number) => `补 ${count} 张`, collapseCandidates: '收起结果', viewCandidates: (count: number) => `查看 ${count} 张`, candidateCount: (count: number) => `${count} 张`, candidatesThisRun: '本次结果', chooseCandidateHint: '点一张在当前节点查看', waiting: '等待结果', branched: '已形成分支', current: '当前', view: '查看', agentEdit: 'Agent 修改', addNode: '继续生成', continueFromAsset: '引用该节点生成', addContext: '添加上下文',
+    mediaUnavailable: '媒体无法显示', taskIncomplete: '任务未完成', taskCancelled: '任务已取消', orphanedResult: '没有对应的生成任务', orphanedResultDetail: '请重新发起生成。', waitingResult: '等待生成结果', mediaError: '媒体读取失败，可能是登录状态或网络中断。', waitingService: '等待生成服务返回结果。', realStatus: '生成服务的真实状态会在此同步。', reload: '重新加载', confirmNow: '立即确认', cancel: '取消', retryRecipe: '用原参数重试', deleteTask: '删除任务', fillMissing: (count: number) => `补 ${count} 张`, collapseCandidates: '收起结果', viewCandidates: (count: number) => `查看 ${count} 张`, candidateCount: (count: number) => `${count} 张`, candidatesThisRun: '本次结果', chooseCandidateHint: '点一张在当前节点查看', waiting: '等待结果', branched: '已形成分支', current: '当前', view: '查看', agentEdit: 'Agent 修改', addNode: '继续生成', continueFromAsset: '引用该节点生成', addContext: '添加上下文',
     restoringTask: '正在恢复任务', noResubmit: '请勿重复提交，联网后自动确认', preparing: '准备生成', lockingReferences: '正在锁定参考', generatingTask: '正在生成', enteredQueue: '已进入队列', keepEditing: '可继续编辑画布', generationConnectionError: '生成服务连接中断，请重试。',
   },
   en: {
@@ -68,7 +69,7 @@ const editorMessages = {
     promptInput: 'Prompt input', promptOutput: 'Connect from prompt', refinementBrief: 'Directed refinement brief', creativeDirection: 'Prompt', taskAttention: 'Task needs attention', referenceInput: 'Reference group input', referenceOutput: 'Connect from reference group', primaryProduct: (name: string) => `Primary product · ${name}`, noPrimary: 'No primary product',
     refinedVersion: 'Refined version', generatedVersion: 'Generated version', automaticOutput: 'Automatic output', writtenAutomatically: 'Written automatically when the generation task finishes', connectResult: 'Connect from result', connectVideoResult: 'Connect to an H3 node as a video reference', connectImageResult: 'Connect this result to the next generation node', connectPendingResult: 'Connect this result to the next node when the task finishes',
     deleteResult: (name: string) => `Delete ${name}`, deleteResultTitle: 'Delete this result node', download: (name: string) => `Download ${name}`, downloadOriginal: 'Download original', savedLabel: (name: string) => `${name} saved`, saveLabel: (name: string) => `Save ${name} to library`, saved: 'Saved', save: 'Save', saveTitle: 'Save to asset library',
-    mediaUnavailable: 'Media unavailable', taskIncomplete: 'Task incomplete', taskCancelled: 'Task cancelled', waitingResult: 'Waiting for result', mediaError: 'The media could not be loaded. Your session or network may have been interrupted.', waitingService: 'Waiting for the generation service to return a result.', realStatus: 'The confirmed generation status will appear here.', reload: 'Reload', confirmNow: 'Confirm now', cancel: 'Cancel', retryRecipe: 'Retry with original settings', deleteTask: 'Delete task', fillMissing: (count: number) => `Generate ${count} missing`, collapseCandidates: 'Collapse results', viewCandidates: (count: number) => `View ${count} ${count === 1 ? 'image' : 'images'}`, candidateCount: (count: number) => `${count} ${count === 1 ? 'image' : 'images'}`, candidatesThisRun: 'This run', chooseCandidateHint: 'Select one to view it on this node', waiting: 'Waiting', branched: 'Branched', current: 'Current', view: 'View', agentEdit: 'Edit with Agent', addNode: 'Continue', continueFromAsset: 'Generate from this node', addContext: 'Add context',
+    mediaUnavailable: 'Media unavailable', taskIncomplete: 'Task incomplete', taskCancelled: 'Task cancelled', orphanedResult: 'No generation task is linked', orphanedResultDetail: 'Start the generation again.', waitingResult: 'Waiting for result', mediaError: 'The media could not be loaded. Your session or network may have been interrupted.', waitingService: 'Waiting for the generation service to return a result.', realStatus: 'The confirmed generation status will appear here.', reload: 'Reload', confirmNow: 'Confirm now', cancel: 'Cancel', retryRecipe: 'Retry with original settings', deleteTask: 'Delete task', fillMissing: (count: number) => `Generate ${count} missing`, collapseCandidates: 'Collapse results', viewCandidates: (count: number) => `View ${count} ${count === 1 ? 'image' : 'images'}`, candidateCount: (count: number) => `${count} ${count === 1 ? 'image' : 'images'}`, candidatesThisRun: 'This run', chooseCandidateHint: 'Select one to view it on this node', waiting: 'Waiting', branched: 'Branched', current: 'Current', view: 'View', agentEdit: 'Edit with Agent', addNode: 'Continue', continueFromAsset: 'Generate from this node', addContext: 'Add context',
     restoringTask: 'Restoring task', noResubmit: 'Do not submit again. It will be confirmed when you reconnect.', preparing: 'Preparing generation', lockingReferences: 'Locking references', generatingTask: 'Generating', enteredQueue: 'Entered queue', keepEditing: 'You can keep editing the canvas', generationConnectionError: 'The generation service connection was interrupted. Try again.',
   },
 } as const
@@ -1481,18 +1482,12 @@ function ResultNode({ data, id, selected }: NodeProps) {
   const cancelGeneration = useCanvasStore((state) => state.cancelGeneration)
   const recoverUnknownGenerationSubmission = useCanvasStore((state) => state.recoverUnknownGenerationSubmission)
   const retryGeneration = useCanvasStore((state) => state.retryGeneration)
-  const retryMissingGeneration = useCanvasStore((state) => state.retryMissingGeneration)
   const removeNodeFromCanvas = useCanvasStore((state) => state.removeNodeFromCanvas)
   const saveGeneratedImageToLibrary = useCanvasStore((state) => state.saveGeneratedImageToLibrary)
   const isSavedToLibrary = useCanvasStore((state) => result.image
     ? state.document.assets.some((asset) => asset.source === 'generated' && asset.image === result.image)
     : false)
-  const missingOutputCount = useCanvasStore((state) => result.jobId
-    ? state.document.generationJobs.find((job) => job.id === result.jobId)?.missingOutputCount ?? 0
-    : 0)
-  const requestedOutputCount = useCanvasStore((state) => result.jobId
-    ? state.document.generationJobs.find((job) => job.id === result.jobId)?.batchCount ?? 0
-    : 0)
+  const generationJob = useCanvasStore((state) => result.jobId ? state.document.generationJobs.find((job) => job.id === result.jobId) : undefined)
   const settings = result.generationSettings
   const mediaKind = result.mediaKind ?? 'image'
   const displayedAspectRatio = mediaKind === 'video' && videoDimensions
@@ -1501,6 +1496,7 @@ function ResultNode({ data, id, selected }: NodeProps) {
   const ratioClass = settings ? `result-node--ratio-${settings.aspectRatio.replace(':', '-')}` : ''
   const resultName = result.label ? canvasSystemLabel(result.label, locale) : result.generationKind === 'refinement' ? t.refinedVersion : t.generatedVersion
   const hasDisplayableImage = Boolean(result.image) && !imageFailed
+  const isOrphanedResult = result.status === 'ready' && !result.image && !generationJob
   const isGenerating = result.status === 'generating'
   const isSubmissionUnknown = result.taskStatus === 'submission_unknown'
   const defaultTaskFeedback = generationTaskFeedback(result.taskStatus)
@@ -1650,12 +1646,12 @@ function ResultNode({ data, id, selected }: NodeProps) {
                 : <button className="result-node__task-action nodrag nowheel" type="button" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); cancelGeneration() }}>{t.cancel}</button>
             ) : (
             <div className="result-node__task-copy">
-            <strong aria-live="polite">{imageFailed ? t.mediaUnavailable : result.status === 'failed' ? t.taskIncomplete : result.status === 'cancelled' ? t.taskCancelled : t.waitingResult}</strong>
+            <strong aria-live="polite">{imageFailed ? t.mediaUnavailable : isOrphanedResult ? t.orphanedResult : result.status === 'failed' ? t.taskIncomplete : result.status === 'cancelled' ? t.taskCancelled : t.waitingResult}</strong>
             {/* 已登记错误码（如 IMAGE_TOO_LARGE_PIXELS）已经是按 locale 解析好的双语文案，
                 直接用；不走 localizeProductError——那条路径把 Error 对象当容器传 code，
                 这里没有 code 可传，走了也只会落回英文兜底文案，白白丢掉刚解析出的正确译文。
                 未登记错误码维持原有行为不变。 */}
-            <small>{imageFailed ? t.mediaError : (result.error ? (generationJobErrorCopy(result.errorCode, locale) ?? localizeProductError(new Error(generationTaskErrorMessage(result.error) ?? result.error), locale, { 'zh-CN': generationTaskErrorMessage(result.error) ?? result.error, en: t.generationConnectionError })) : undefined) ?? (result.status === 'ready' ? t.waitingService : t.realStatus)}</small>
+            <small>{imageFailed ? t.mediaError : isOrphanedResult ? t.orphanedResultDetail : (result.error ? (generationJobErrorCopy(result.errorCode, locale) ?? localizeProductError(new Error(generationTaskErrorMessage(result.error) ?? result.error), locale, { 'zh-CN': generationTaskErrorMessage(result.error) ?? result.error, en: t.generationConnectionError })) : undefined) ?? (result.status === 'ready' ? t.waitingService : t.realStatus)}</small>
             {imageFailed ? <button className="result-node__task-action nodrag nowheel" type="button" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); void recoverMedia() }}>{t.reload}</button> : null}
             {result.status === 'failed' ? <div className="result-node__task-actions nodrag nowheel" onPointerDown={(event) => event.stopPropagation()}>
               <button className="result-node__task-action" type="button" onClick={(event) => { event.stopPropagation(); void retryGeneration() }}>{t.retryRecipe}</button>
@@ -1666,10 +1662,7 @@ function ResultNode({ data, id, selected }: NodeProps) {
             )}
           </div>
         )}
-        {missingOutputCount ? <div className="result-node__partial nodrag nowheel" onPointerDown={(event) => event.stopPropagation()}>
-          <span>{requestedOutputCount - missingOutputCount}/{requestedOutputCount}</span>
-          <button type="button" onClick={(event) => { event.stopPropagation(); if (result.jobId) void retryMissingGeneration(result.jobId) }}>{t.fillMissing(missingOutputCount)}</button>
-        </div> : null}
+        <CanvasGenerationRetry jobId={result.jobId} />
         {resultGroup?.representative ? <button
           className="result-node__candidate-toggle nodrag nowheel"
           type="button"

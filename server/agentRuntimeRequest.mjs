@@ -89,7 +89,11 @@ export async function resolveBotanicAgentRuntimeRequest(request, runtimeConfig, 
       ? {
           kind: 'clarification',
           runtimeOperation: 'plan',
-          clarification: result.clarification,
+          clarification: {
+            ...result.clarification,
+            // 一个持久规划 Turn 只产生一个待答问题；沿现有 question.id 保存来源，不增加状态字段。
+            ...(options.runtimeIdentity?.turnId ? { id: `plan-clarification:${options.runtimeIdentity.turnId}` } : {}),
+          },
           ...(reasoning?.length ? { reasoning } : {}),
         }
       : {

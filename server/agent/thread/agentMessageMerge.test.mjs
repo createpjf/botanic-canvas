@@ -4,6 +4,25 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { mergeAgentMessageForWrite } from './agentMessageMerge.mjs'
 
+test('同一确认已回答后晚到 pending 不重开，时钟领先的 pending 也不能拒收答案', () => {
+  const pending = { id: 'question-message', role: 'assistant', kind: 'question', status: 'pending', createdAt: 1, updatedAt: 100,
+    question: { id: 'question-1', fields: [{ id: 'resolution', defaultValue: '2K' }] } }
+  const answered = { ...pending, status: 'answered', updatedAt: 20,
+    question: { id: 'question-1', fields: [{ id: 'resolution', defaultValue: '1K' }] } }
+  const accepted = mergeAgentMessageForWrite(pending, answered).message
+  assert.equal(accepted.status, 'answered')
+  assert.equal(accepted.question.fields[0].defaultValue, '1K')
+  const replayed = mergeAgentMessageForWrite(accepted, { ...pending, updatedAt: 200 }).message
+  assert.equal(replayed.status, 'answered')
+  assert.equal(replayed.question.fields[0].defaultValue, '1K')
+  assert.equal(replayed.updatedAt, 200)
+  const nextQuestion = mergeAgentMessageForWrite(accepted, { ...pending, updatedAt: 300, question: { id: 'another-question' } }).message
+  assert.equal(nextQuestion.status, 'pending')
+  assert.throws(() => mergeAgentMessageForWrite(nextQuestion, { ...answered, updatedAt: 9000 }), {
+    code: 'AGENT_MESSAGE_ANSWER_CONFLICT', statusCode: 409,
+  }, '旧题答案不能覆盖当前问题，即使旧设备时钟领先')
+})
+
 const projection = (status, updatedAt, content = status) => ({
   id: 'agent-turn-result-turn-terminal-lww',
   role: 'assistant',
@@ -25,6 +44,31 @@ const requestSnapshot = {
 }
 
 const requestMentions = [{ kind: 'skill', id: 'skill-a', name: 'Skill A' }]
+
+test('同一确认不同答案冲突，相同答案重放保留首次采用的正文', () => {
+  const current = { ...projection('answered', 100), kind: 'question', question: {
+    id: 'q', originalInstruction: '生成海边图片', fields: [{ id: 'resolution', defaultValue: '2K', label: '清晰度' }],
+  } }
+  const replay = { ...current, content: '旧设备正文', updatedAt: 200,
+    question: { ...current.question, fields: [{ id: 'resolution', defaultValue: '2K', label: 'Resolution' }] } }
+  assert.equal(mergeAgentMessageForWrite(current, replay).message.content, current.content)
+  assert.throws(() => mergeAgentMessageForWrite(current, { ...replay,
+    question: { ...replay.question, fields: [{ id: 'resolution', defaultValue: '1K' }] },
+  }), { code: 'AGENT_MESSAGE_ANSWER_CONFLICT', statusCode: 409 })
+})
+
+test('同一 Turn 的后续计划不被旧问题回退，failed 终态保护仍优先', () => {
+  const question = { ...projection('answered', 9000), kind: 'question', question: { id: 'q', fields: [] } }
+  const plan = { ...projection('pending', 100), kind: 'plan', plan: { turnId: question.turnId } }
+  const advanced = mergeAgentMessageForWrite(question, plan).message
+  assert.equal(advanced.kind, 'plan')
+  assert.equal(mergeAgentMessageForWrite(advanced, { ...question, updatedAt: 10000 }).message.kind, 'plan')
+  assert.equal(mergeAgentMessageForWrite({ ...question, status: 'failed' }, plan).message.status, 'failed')
+  const localQuestion = { ...question, id: 'prompt-question', turnId: undefined }
+  const prompt = { ...localQuestion, kind: 'text', question: undefined, prompt: '香水广告', updatedAt: 100 }
+  assert.equal(mergeAgentMessageForWrite(localQuestion, prompt).message.prompt, prompt.prompt)
+  assert.equal(mergeAgentMessageForWrite(prompt, localQuestion).message.kind, 'text')
+})
 
 test('稳定 Turn 投影 failed 跨设备单调覆盖 answered，客户端时钟不能反转终态', () => {
   const failed = mergeAgentMessageForWrite(

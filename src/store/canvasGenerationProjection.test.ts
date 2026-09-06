@@ -42,6 +42,13 @@ test('生成投影先创建独立占位节点，再用稳定输出身份原位�
   assert.equal(results.length, 2)
   assert.deepEqual(results.map((node) => (node.data as { candidateId?: string }).candidateId).sort(), ['output-a', 'output-b'])
   assert.equal(materialized.generationJobs[0].id, 'job-a')
+
+  // 远端旧投影已有图片但未携带 candidateId，刷新仍复用原节点。
+  const legacy = { ...materialized, nodes: materialized.nodes.map((node) => node.type === 'result'
+    ? { ...node, data: { ...node.data, candidateId: undefined } } : node) } as CanvasDocument
+  const restored = materializeGenerationOutputs(legacy, job, generationRequest)
+  assert.deepEqual(restored.nodes.map((node) => node.id), legacy.nodes.map((node) => node.id))
+  assert.equal(restored.nodes.filter((node) => node.type === 'result').length, 2)
 })
 
 test('删除进行中的生成节点会留下 projection tombstone，迟到结果不能复活节点', () => {

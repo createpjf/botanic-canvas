@@ -11,6 +11,7 @@ import { AGENT_SEMANTIC_EVENT_NAMES, writeAgentSemanticEvent } from '../../obser
 import { registerAgentDiagnosticGauge } from '../../observability/agentRuntimeDiagnostics.mjs'
 import { createAgentTurnOutputPreview, agentTurnOutputPreviewEventPayload, normalizeAgentTurnOutputPreview } from './agentTurnOutputPreview.mjs'
 import { agentTurnToolEventPayload } from './agentTurnToolEvent.mjs'
+import { agentReferenceEventPayload } from '../semantic/botanicAgentReferenceUsage.mjs'
 
 // completed Turn 仍可能拥有后续创建的 linked Run / Job；显式深取消必须能从
 // completed 进入 cancelling，才能撤销这些已授权但尚未完成的下游任务。
@@ -209,12 +210,12 @@ export function createBotanicAgentTurnRuntime({
       nonEmptyCount: typeof summary.text === 'string' && summary.text.trim() ? 1 : 0,
     }) } catch { /* metrics旁路fail-open */ }
   }
-  const event = (turnId, projectId, type, payload) => ({
+  const event = (turnId, projectId, type, payload, createdAt = now()) => ({
     id: `turn_event_${randomUUID()}`,
     turnId,
     projectId,
     type,
-    createdAt: now(),
+    createdAt,
     ...(payload ? { payload: clone(payload) } : {}),
   })
 
@@ -299,7 +300,8 @@ export function createBotanicAgentTurnRuntime({
         if (cancelObservedEmitted) return
         cancelObservedEmitted = true
         const observedAt = now()
-        void productStore.readAgentTurn(userId, id).then((authoritative) => {
+        // Local Adapter 的 readAgentTurn 是同步方法;Promise.resolve 同时兼容三个 Adapter。
+        void Promise.resolve(productStore.readAgentTurn(userId, id)).then((authoritative) => {
           const requestedAt = Number(authoritative?.cancellation?.requestedAt)
           if (!['cancelling', 'cancelled'].includes(authoritative?.status)) return
           if (!Number.isSafeInteger(requestedAt) || requestedAt <= 0) return
@@ -380,7 +382,7 @@ export function createBotanicAgentTurnRuntime({
         return committed
       }
       const acknowledgeCancellationExit = async () => {
-        const authoritative = await productStore.readAgentTurn(userId, id).catch(() => undefined)
+        const authoritative = await Promise.resolve(productStore.readAgentTurn(userId, id)).catch(() => undefined)
         if (authoritative?.status !== 'cancelling'
           || authoritative.cancellation?.signalRequired !== true
           || authoritative.cancellation?.workerReleased === true
@@ -534,8 +536,10 @@ export function createBotanicAgentTurnRuntime({
 
       const emit = (rawEvent) => {
         const persistLiveEvent = () => {
-          const envelope = { ...clone(rawEvent), turnId: id, eventId: `turn_live_${randomUUID()}` }
-          const payload = agentTurnToolEventPayload(rawEvent)
+          const occurredAt = now()
+          const payload = agentTurnToolEventPayload(rawEvent) ?? agentReferenceEventPayload(rawEvent)
+          if (rawEvent?.type === 'references' && !payload) return Promise.resolve()
+          const envelope = { ...clone(rawEvent.type === 'references' ? { type: 'references', ...payload } : rawEvent), turnId: id, eventId: `turn_live_${randomUUID()}`, occurredAt }
           const repeatedRunning = payload?.status === 'running'
             && payload.toolCallId
             && persistedRunningToolCallIds.has(payload.toolCallId)
@@ -547,7 +551,7 @@ export function createBotanicAgentTurnRuntime({
             if (payload) {
               const committed = await commit({
                 status: 'running',
-                turnEvent: event(id, projectId, 'turn.tool', payload),
+                turnEvent: event(id, projectId, rawEvent.type === 'references' ? 'turn.references' : 'turn.tool', payload, occurredAt),
               })
               if (committed.kind === 'cancelling') {
                 throw executionError('AGENT_TURN_CANCELLED', '用户取消了 Agent 回合。', 499)
@@ -654,7 +658,7 @@ export function createBotanicAgentTurnRuntime({
         // 续租提交。以 heartbeatFailure 为准，避免把存储/失租故障误记为用户取消。
         const failureSource = heartbeatFailure ?? drainFailure ?? caught
         const error = safeError(failureSource)
-        const authoritative = await productStore.readAgentTurn(userId, id).catch(() => undefined)
+        const authoritative = await Promise.resolve(productStore.readAgentTurn(userId, id)).catch(() => undefined)
         if (error.code === 'AGENT_TURN_LEASE_STALE') {
           throw Object.assign(failureSource instanceof Error ? failureSource : new Error(error.message), {
             code: error.code,
@@ -689,7 +693,7 @@ export function createBotanicAgentTurnRuntime({
           })
         } catch (settleError) {
           if (settleError?.code !== 'AGENT_TURN_LEASE_STALE') throw settleError
-          turn = (await productStore.readAgentTurn(userId, id).catch(() => undefined)) ?? turn
+          turn = (await Promise.resolve(productStore.readAgentTurn(userId, id)).catch(() => undefined)) ?? turn
         }
         const saved = settled?.turn ?? turn
         const cancellationWon = settled?.kind === 'cancelling'
@@ -843,7 +847,7 @@ export function createBotanicAgentTurnRuntime({
         updatedAt: now(),
         error: clone(error),
       })
-      const verified = await productStore.readAgentTurn(sourceTurn.ownerId, sourceTurn.id).catch(() => saved)
+      const verified = await Promise.resolve(productStore.readAgentTurn(sourceTurn.ownerId, sourceTurn.id)).catch(() => saved)
       return publicTurn(verified ?? saved)
     }
 

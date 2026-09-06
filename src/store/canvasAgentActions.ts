@@ -12,13 +12,16 @@ import {
   updateBotanicAgentMessage,
   upsertBotanicAgentMessage,
   updateBotanicAgentRun,
-  upsertBotanicAgentRunSnapshot,
   mergeBotanicAgentCanvasPatch,
 } from '../domain/agent.ts'
 import type { BotanicAgentRunSnapshot, BotanicAgentSession } from '../domain/agent.ts'
-import type { CanvasDocument, ResultNodeData } from '../domain/canvas.ts'
+import { upsertBotanicAgentRunSnapshot } from '../domain/agentRunSnapshot.ts'
+import { agentBranchCanRetry } from '../domain/generationRecovery.ts'
+import { agentPlanCancellationPending, agentRunStopConfirmed, isAgentRunStopMessage } from '../domain/agentPlanCancellation.ts'
+import type { CanvasDocument, GenerationJob, ResultNodeData } from '../domain/canvas.ts'
 import { recordSentryBreadcrumb } from '../lib/sentry.ts'
 import type { CanvasStore } from './canvasStore.types.ts'
+import { mergeGenerationJob } from './canvasGenerationRecovery.ts'
 
 type AgentStoreActions = Pick<CanvasStore,
   | 'saveAgentPlan'
@@ -26,6 +29,7 @@ type AgentStoreActions = Pick<CanvasStore,
   | 'applyAgentWorkflowPatch'
   | 'retryAgentBranch'
   | 'cancelAgentRun'
+  | 'checkAgentRunStop'
   | 'updateAgentRunStatus'
   | 'ensureAgentSession'
   | 'startNewAgentSession'
@@ -53,7 +57,8 @@ type CommitDocument = (
 
 type PersistentAgentRunApi = {
   retryBranch: (runId: string, branchId: string, idempotencyKey: string) => Promise<BotanicAgentRunSnapshot>
-  cancelRun: (runId: string) => Promise<BotanicAgentRunSnapshot>
+  cancelRun: (runId: string) => Promise<{ run: BotanicAgentRunSnapshot; cancellation?: { failures?: { code: string }[] } }>
+  readCancellation?: (projectId: string, runId: string) => Promise<{ run: BotanicAgentRunSnapshot; jobs: GenerationJob[] }>
 }
 
 type PersistAgentSession = (projectId: string, session: BotanicAgentSession) => Promise<BotanicAgentSession | undefined>
@@ -87,6 +92,26 @@ export function createCanvasAgentActions({
   persistAgentSession?: PersistAgentSession
   persistLocalDocumentMirror?: PersistLocalDocumentMirror
 }): AgentStoreActions {
+  const retryingBranches = new Set<string>()
+  const cancellingRuns = new Map<string, Promise<boolean>>()
+  const checkAgentRunStop = async (runId: string) => {
+    const projectId = get().document.id
+    if (!persistentAgentRunApi.readCancellation) return false
+    try {
+      const snapshot = await persistentAgentRunApi.readCancellation(projectId, runId)
+      if (get().document.id !== projectId || snapshot.run.id !== runId) return false
+      get().applyAgentRunSnapshot(snapshot.run)
+      const document = get().document
+      const jobs = new Map(document.generationJobs.map(job => [job.id, job]))
+      for (const job of snapshot.jobs) jobs.set(job.id, mergeGenerationJob(jobs.get(job.id), job))
+      const nextDocument = { ...document, generationJobs: [...jobs.values()] }
+      set({ document: nextDocument })
+      void persistLocalDocumentMirror(nextDocument).catch(() => {
+        recordSentryBreadcrumb('agent-run', '停止状态本机缓存失败，刷新后从服务端恢复。')
+      })
+      return agentRunStopConfirmed(nextDocument.agentRuns.find(run => run.id === runId), nextDocument.generationJobs)
+    } catch { return false }
+  }
   const commitAgentSessionDocument = (document: CanvasDocument, options: { persistSession?: boolean; mirrorOnly?: boolean } = {}) => {
     // Session 创建后的首条消息/上下文可能与持久化同一帧发生；
     // 先更新本地权威快照，后续命令才能稳定命中同一 Session。
@@ -164,9 +189,16 @@ export function createCanvasAgentActions({
     },
 
     retryAgentBranch: async (runId, branchId) => {
-      const projectId = get().document.id
+      const document = get().document
+      const projectId = document.id
+      const run = document.agentRuns.find(candidate => candidate.id === runId)
+      const messages = document.agentSessions.flatMap(session => session.messages)
+      const key = `${projectId}:${runId}:${branchId}`
+      if (!run || retryingBranches.has(key) || !agentBranchCanRetry(run, branchId, document.generationJobs)
+        || messages.some(message => isAgentRunStopMessage(message) && message.runId === runId
+          && agentPlanCancellationPending(message, run, document.generationJobs, messages))) return false
+      retryingBranches.add(key)
       try {
-        const run = get().document.agentRuns.find((candidate) => candidate.id === runId)
         const branch = run?.branches.find((candidate) => candidate.id === branchId)
         const retryKey = `agent-retry-${runId}-${branchId}-attempt-${(branch?.attempt ?? 0) + 1}`
         const snapshot = await persistentAgentRunApi.retryBranch(runId, branchId, retryKey)
@@ -177,21 +209,43 @@ export function createCanvasAgentActions({
       } catch (caught) {
         if (get().document.id === projectId) set({ assistantMessage: caught instanceof Error ? caught.message : '分支重试失败，请稍后重试。' })
         return false
-      }
+      } finally { retryingBranches.delete(key) }
     },
 
+    checkAgentRunStop,
     cancelAgentRun: async (runId) => {
-      const projectId = get().document.id
-      try {
-        const snapshot = await persistentAgentRunApi.cancelRun(runId)
+      const document = get().document
+      const projectId = document.id
+      if (agentRunStopConfirmed(document.agentRuns.find(run => run.id === runId), document.generationJobs)) return true
+      const key = `${projectId}:${runId}`
+      if (cancellingRuns.has(key)) return cancellingRuns.get(key)!
+      const operation = (async () => { try {
+        if (document.agentRuns.find(run => run.id === runId)?.status === 'cancelled') {
+          if (await checkAgentRunStop(runId)) return true
+          const current = get().document
+          const run = current.agentRuns.find(run => run.id === runId)
+          if (run?.branches.every(branch => !branch.activeJobId || current.generationJobs.some(job => job.id === branch.activeJobId
+            && (job.cancel?.requestedAt || job.status === 'succeeded' || job.status === 'failed')))) return false
+        }
+        const response = await persistentAgentRunApi.cancelRun(runId)
         if (get().document.id !== projectId) return true
-        get().applyAgentRunSnapshot(snapshot)
+        get().applyAgentRunSnapshot(response.run)
         await get().refreshDocumentFromRemote().catch(() => false)
-        return true
-      } catch (caught) {
-        if (get().document.id === projectId) set({ assistantMessage: caught instanceof Error ? caught.message : '任务取消失败，请稍后重试。' })
+        if (get().document.id !== projectId) return true
+        // 深取消服务已核对各 Job 的 durable ACK；同版本画布未应用新快照不代表取消失败。
+        const acknowledged = Array.isArray(response.cancellation?.failures) && response.cancellation.failures.length === 0
+          && ['completed', 'partial', 'failed', 'cancelled'].includes(response.run.status)
+        const confirmed = await checkAgentRunStop(runId) || acknowledged
+        if (!confirmed) set({ assistantMessage: '停止状态待确认，请核对原任务。' })
+        return confirmed
+      } catch {
+        if (get().document.id !== projectId) return false
+        if (await checkAgentRunStop(runId)) return true
+        if (get().document.id === projectId) set({ assistantMessage: '停止状态待确认，请核对原任务。' })
         return false
-      }
+      } })()
+      cancellingRuns.set(key, operation)
+      try { return await operation } finally { cancellingRuns.delete(key) }
     },
 
     updateAgentRunStatus: (runId, status, error) => {
@@ -266,7 +320,6 @@ export function createCanvasAgentActions({
             agentSessions: document.agentSessions.map((candidate) => candidate.id === sessionId
               ? updateBotanicAgentMessage(candidate, messageId, patch)
               : candidate),
-            activeAgentSessionId: sessionId,
           },
         })
         return

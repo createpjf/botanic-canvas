@@ -32,8 +32,6 @@ const dataUrlToMediaId = new Map<string, string>()
 /** 打开项目时只水合画布可见媒体。Agent / 任务集合走独立实体，整树递归会堵死 IndexedDB 队列。 */
 export const canvasDocumentMediaRoots = ['nodes', 'assets', 'history', 'templates', 'deliveries'] as const
 const remoteDocumentReadTimeoutMs = 45_000
-
-
 const remoteRevisions = new Map<string, number>()
 const remoteGraphRevisions = new Map<string, number>()
 const remoteSyncProtocolEpochs = new Map<string, number>()
@@ -229,15 +227,17 @@ function queueRemoteDocumentWrite(document: CanvasDocument, immediate = false) {
   return completion
 }
 
-/** 在切换项目或关闭页面前主动发送已合并的最终快照，缩短 debounce 带来的丢失窗口。 */
-export async function flushPendingCanvasDocumentWrites() {
-  await Promise.all([...pendingRemoteWrites.keys()].map((id) => flushRemoteDocumentWrite(id)))
+/** 冲刷写队列；指定项目时，先完成本地入队，并确认项目已存在再放行实体写入。 */
+export async function flushPendingCanvasDocumentWrites(projectId?: string) {
+  if (projectId && !serverPersistenceEnabled) return
+  if (projectId) await enqueuePersistence(() => Promise.resolve()) // 首次本地写完才会进入远端队列。
+  const draft = projectId && !remoteRevisions.has(projectId) && !pendingRemoteWrites.has(projectId) ? await readPendingSyncDocument(projectId) : undefined
+  if (draft && !pendingRemoteWrites.has(draft.id)) await queueRemoteDocumentWrite(draft.document, true).catch(() => undefined)
+  await Promise.all([...pendingRemoteWrites.keys()].filter((id) => !projectId || id === projectId).map((id) => flushRemoteDocumentWrite(id)))
+  if (serverPersistenceEnabled && projectId && !remoteRevisions.has(projectId) && !await readRemoteCanvasDocument(projectId)) throw new ProductApiError('项目尚未保存，请重试。', 409, 'PROJECT_NOT_DURABLE')
 }
 
-/**
- * 将 IndexedDB 中尚未确认的草稿重新提交到服务端。此函数只在联网时运行，
- * 失败的草稿会原样保留，下一次 online 事件或打开画布时继续尝试。
- */
+/** 联网时补送 IndexedDB 草稿；失败保留，等待下一次同步。 */
 export async function syncPendingCanvasDrafts() {
   if (!serverPersistenceEnabled) return { synced: 0, pending: 0, conflicts: 0, conflictIds: [] as string[] }
   if (!browserIsOnline()) {

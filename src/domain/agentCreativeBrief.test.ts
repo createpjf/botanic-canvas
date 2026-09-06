@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { resolveBotanicAgentExecutionDecision } from './agent.ts'
 import {
   advanceBotanicCreativeBrief,
   applyBotanicCreativeBriefAnswers,
@@ -31,7 +32,7 @@ test('未点名图片模型时，Agent Brief 与画布统一默认 Nano Banana',
   assert.equal(turn.brief.provenance.model, 'default')
 })
 
-test('手动生成缺少关键信息时只追问用途、清晰度和 Prompt 方向', () => {
+test('手动生成直接采用目录默认值形成计划，但不自动授权执行', () => {
   const turn = advanceBotanicCreativeBrief({
     mode: 'generation',
     executionMode: 'manual',
@@ -40,14 +41,27 @@ test('手动生成缺少关键信息时只追问用途、清晰度和 Prompt 方
     clarificationId: 'clarification-1',
   })
 
-  assert.equal(turn.kind, 'ask')
-  assert.deepEqual(turn.clarification.fields.map((field) => field.id), [
-    'delivery_preset',
-    'resolution',
-    'prompt_direction',
-  ])
+  assert.equal(turn.kind, 'ready')
+  assert.deepEqual(turn.brief.output, { model: 'gpt-image-2', aspectRatio: '3:4', resolution: '2K' })
+  assert.equal(turn.brief.creative.promptDirection, 'faithful')
   assert.equal(turn.brief.output.model, 'gpt-image-2')
   assert.equal(turn.brief.provenance.model, 'default')
+  assert.deepEqual(resolveBotanicAgentExecutionDecision({ mode: 'manual', settingsComplete: true, pendingActionCount: 0, outputCount: 1 }), { action: 'confirm', reason: 'manual' })
+})
+
+test('明确输出设置不被用途默认覆盖，不支持的已确认参数不会偷偷降档', () => {
+  const selected = advanceBotanicCreativeBrief({
+    mode: 'generation', executionMode: 'manual', instruction: '小红书海边照片', generationModels: imageModels,
+    requestedSettings: { model: 'gpt-image-2', aspectRatio: '1:1', resolution: '2K' },
+  })
+  assert.equal(selected.kind, 'ready')
+  assert.equal(selected.brief.output.aspectRatio, '1:1')
+  const unavailable = advanceBotanicCreativeBrief({
+    mode: 'generation', executionMode: 'manual', instruction: selected.brief.originalInstruction,
+    previousBrief: selected.brief, answers: {}, generationModels: [{ ...imageModels[0], resolutions: ['1K'] }],
+  })
+  assert.equal(unavailable.kind, 'failed')
+  if (unavailable.kind === 'failed') assert.equal(unavailable.code, 'RESOLUTION_UNSUPPORTED')
 })
 
 test('追问答案会合并到 Brief 并编译进生成设置与 Prompt', () => {
@@ -58,7 +72,7 @@ test('追问答案会合并到 Brief 并编译进生成设置与 Prompt', () => 
     generationModels: imageModels,
     clarificationId: 'clarification-1',
   })
-  assert.equal(first.kind, 'ask')
+  assert.equal(first.kind, 'ready')
 
   const turn = advanceBotanicCreativeBrief({
     mode: 'generation',
@@ -191,7 +205,7 @@ test('自定义交付用途会进入比例选择，不会重复追问用途', ()
     instruction: '生成一张海边人像',
     generationModels: imageModels,
   })
-  assert.equal(first.kind, 'ask')
+  assert.equal(first.kind, 'ready')
 
   const second = advanceBotanicCreativeBrief({
     mode: 'generation',
@@ -263,7 +277,7 @@ test('自动模式只从可信模型目录补齐默认值且不发起追问', ()
   assert.equal(turn.brief.provenance.resolution, 'default')
 })
 
-test('切换模型时清除不兼容的继承设置并重新确认', () => {
+test('切换模型时不适用的继承设置改用新模型默认值，仍由计划确认', () => {
   const turn = advanceBotanicCreativeBrief({
     mode: 'generation',
     executionMode: 'manual',
@@ -282,18 +296,11 @@ test('切换模型时清除不兼容的继承设置并重新确认', () => {
     requestedSettings: { model: 'square-only' },
   })
 
-  assert.equal(turn.kind, 'ask')
+  assert.equal(turn.kind, 'ready')
   assert.equal(turn.brief.output.model, 'square-only')
-  assert.equal(turn.brief.output.aspectRatio, undefined)
-  assert.equal(turn.brief.output.resolution, undefined)
-  assert.deepEqual(turn.clarification.fields.map((field) => field.id), [
-    'delivery_preset',
-    'resolution',
-    'prompt_direction',
-  ])
-  assert.deepEqual(turn.clarification.fields[0].options.map((option) => option.value), ['taobao', 'custom'])
-  assert.equal(turn.clarification.fields[0].defaultValue, 'taobao')
-  assert.deepEqual(turn.clarification.fields[1].options.map((option) => option.value), ['1K'])
+  assert.equal(turn.brief.output.aspectRatio, '1:1')
+  assert.equal(turn.brief.output.resolution, '1K')
+  assert.equal(turn.brief.provenance.resolution, 'default')
 })
 
 test('生成模式没有可用图片模型时明确失败', () => {
@@ -344,7 +351,7 @@ test('请求的自定义像素会进入 ready 生成设置', () => {
 
 test('英文模式本地追问与选项使用英文，用户指令保持原文', () => {
   const turn = advanceBotanicCreativeBrief({
-    mode: 'generation',
+    mode: 'prompt',
     locale: 'en',
     executionMode: 'manual',
     instruction: 'Create a seaside portrait',
@@ -356,12 +363,9 @@ test('英文模式本地追问与选项使用英文，用户指令保持原文',
   if (turn.kind !== 'ask') return
   assert.equal(turn.clarification.question, 'Confirm these settings to continue refining the prompt. No image will be generated yet.')
   assert.deepEqual(turn.clarification.fields.map((field) => field.label), [
-    'Use and aspect ratio',
-    'Resolution',
     'Prompt direction',
   ])
-  assert.equal(turn.clarification.fields[0].options[0].label, 'Taobao / Tmall')
-  assert.equal(turn.clarification.fields[2].options[0].label, 'Natural and faithful')
+  assert.equal(turn.clarification.fields[0].options[0].label, 'Natural and faithful')
   assert.equal(turn.clarification.originalInstruction, 'Create a seaside portrait')
 })
 
@@ -373,8 +377,7 @@ test('英文模式将本地创作简报编译为英文', () => {
     instruction: 'Create a seaside portrait',
     generationModels: imageModels,
   })
-  assert.equal(first.kind, 'ask')
-  if (first.kind !== 'ask') return
+  assert.equal(first.kind, 'ready')
 
   const turn = advanceBotanicCreativeBrief({
     mode: 'generation',

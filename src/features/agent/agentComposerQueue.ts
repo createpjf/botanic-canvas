@@ -76,26 +76,29 @@ export function resolveAgentInstructionAssetGroup(
   return groups.find((group) => group.id === snapshot.groupId && group.role === role && group.assetIds.length)
 }
 
-export function resolveAgentInstructionExecutionContext(input: {
+export async function resolveAgentInstructionExecutionContext(input: {
   snapshot?: AgentInstructionExecutionSnapshot
   current: AgentInstructionExecutionSnapshot
   currentTarget?: AgentDockTarget
   explicitTargetProvided: boolean
   explicitTargetNodeId?: string | null
   generationOverrides?: GenerationSizeOverride
-  resolveTarget: (nodeId?: string | null) => AgentDockTarget | undefined
-}): AgentResolvedInstructionExecutionContext {
+  resolveTarget: (nodeId?: string | null) => AgentDockTarget | undefined | Promise<AgentDockTarget | undefined>
+}): Promise<AgentResolvedInstructionExecutionContext> {
   const source = input.snapshot ?? input.current
   const targetBound = input.explicitTargetProvided || input.snapshot !== undefined
   const targetNodeId = input.explicitTargetProvided ? input.explicitTargetNodeId : input.snapshot?.targetNodeId
-  const target = targetBound ? input.resolveTarget(targetNodeId) : input.currentTarget
-  return {
+  const snapshot = {
     ...source,
     mountedSkillIds: [...source.mountedSkillIds],
     sessionContextNodeIds: [...source.sessionContextNodeIds],
     contextItems: source.contextItems.map((item) => ({ ...item })),
-    targetNodeId: target?.id ?? null,
     generationOverrides: { ...(input.generationOverrides ?? source.generationOverrides) },
+  }
+  const target = targetBound ? await input.resolveTarget(targetNodeId) : input.currentTarget
+  return {
+    ...snapshot,
+    targetNodeId: target?.id ?? null,
     ...(target ? { target } : {}),
   }
 }

@@ -120,8 +120,10 @@ test('HTTP 权威图谱替换会同步 Yjs 快照，旧增量不会在重连后�
   assert.ok(persisted.snapshot)
   assert.deepEqual(persisted.updates, [])
   assert.equal(persisted.graph.nodes[0].position.x, 400)
+  assert.equal(persisted.graph.nodes[1].data.image, 'data:image/png;base64,secret')
 
   const recovered = createCanvasCollaborationRoom({ state: persisted, append, compact })
+  assert.equal(recovered.graph().nodes[1].data.image, 'data:image/png;base64,secret')
   const recoveredDocument = new Y.Doc()
   Y.applyUpdate(recoveredDocument, Buffer.from(recovered.stateUpdate(), 'base64'))
   const nodeA = recoveredDocument.getMap('nodes').get('node-a')
@@ -173,6 +175,35 @@ test('房间重建时以 Yjs 日志修复过期物化图谱并保留稳定媒体
   assert.equal(recovered.getMap('nodes').get('result-a').value.position.x, 120)
   assert.equal(recovered.getMap('nodes').get('result-a').value.data.image, undefined)
   room.destroy()
+})
+
+test('inline 媒体经服务端回写、epoch 2 重建和协作移动仍可读，字节不进入 Yjs', async () => {
+  const image = 'data:image/png;base64,aGVsbG8='
+  const state = { graph: { nodes: [], edges: [] }, graphRevision: 1, syncProtocolEpoch: 2, updates: [] }
+  const append = async ({ update, graph }) => {
+    state.graph = graph
+    state.updates.push(update)
+    return { graphRevision: ++state.graphRevision, updateCount: state.updates.length }
+  }
+  const compact = async ({ snapshot, graph }) => Object.assign(state, { snapshot, graph, updates: [] })
+  const room = createCanvasCollaborationRoom({ state, append, compact, compactEvery: 1 })
+  await room.commitGraphMutation(() => ({ nodes: [{
+    id: 'inline-result', type: 'result', position: { x: 20, y: 30 },
+    data: { kind: 'result', image, status: 'ready' },
+  }], edges: [] }))
+  assert.equal(room.graph().nodes[0].data.image, image)
+  await room.destroy()
+  const recovered = createCanvasCollaborationRoom({ state, append, compact })
+  assert.equal(recovered.graph().nodes[0].data.image, image)
+  const client = new Y.Doc()
+  Y.applyUpdate(client, Buffer.from(recovered.stateUpdate(), 'base64'))
+  assert.equal(JSON.stringify(client.toJSON()).includes('data:image'), false)
+  client.getMap('node-geometries').set('inline-result', { order: 0, value: { position: { x: 80, y: 90 } } })
+  await recovered.applyUpdate(Buffer.from(Y.encodeStateAsUpdate(client)).toString('base64'))
+  assert.equal(state.graph.nodes[0].data.image, image)
+  assert.deepEqual(state.graph.nodes[0].position, { x: 80, y: 90 })
+  await recovered.destroy()
+  client.destroy()
 })
 
 test('epoch 1 房间重建仍以物化图谱覆盖过期 Yjs 日志', () => {
@@ -259,6 +290,28 @@ test('跨实例已持久化增量只更新内存房间，不会重复追加或�
   assert.equal(appendCount, 0)
   assert.equal(compactCount, 0)
   await room.destroy()
+})
+
+test('几何段清空不能抹掉完整节点的必需位置，重建仍保留原坐标', async () => {
+  const original = { id: 'node-position', type: 'text', position: { x: 1380, y: -172 }, data: { kind: 'text', content: 'A' } }
+  const state = { graph: { nodes: [original], edges: [] }, graphRevision: 1, updates: [] }
+  const room = createCanvasCollaborationRoom({ state,
+    append: async ({ update, graph }) => {
+      state.updates.push(update)
+      state.graph = graph
+      return { graphRevision: ++state.graphRevision, updateCount: state.updates.length }
+    }, compact: async () => {},
+  })
+  const remote = new Y.Doc()
+  Y.applyUpdate(remote, Buffer.from(room.stateUpdate(), 'base64'))
+  remote.getMap('node-geometries').set(original.id, { order: 0, value: {} })
+  await room.applyUpdate(Buffer.from(Y.encodeStateAsUpdate(remote)).toString('base64'))
+  assert.deepEqual(room.graph().nodes[0].position, original.position)
+  const recovered = createCanvasCollaborationRoom({ state, append: async () => {}, compact: async () => {} })
+  assert.deepEqual(recovered.graph().nodes[0].position, original.position)
+  recovered.destroy()
+  room.destroy()
+  remote.destroy()
 })
 
 test('新媒体节点保留稳定引用，CRDT 与物化图谱都不保存媒体负载', async () => {

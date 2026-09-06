@@ -23,6 +23,8 @@ import {
   PromptInputTextarea,
   PromptInputTools,
 } from '../../components/ai-elements/prompt-input'
+import { Queue, QueueItem, QueueItemAction, QueueItemActions, QueueList, QueueSection, QueueSectionContent, QueueSectionLabel, QueueSectionTrigger } from '../../components/ai-elements/queue'
+import { ModelSelector } from '../../components/ai-elements/model-selector'
 import { agentPlannerModelLabel, agentPlannerModelShortLabel } from '../../components/generationModelPresentation'
 import type { AgentContextItem, AgentSkillOption } from './agentWorkspace.types'
 import { AGENT_COMPOSER_QUEUE_LIMIT, agentQueuedInstructionPreview, type AgentQueuedInstruction } from './agentComposerQueue'
@@ -345,39 +347,48 @@ export function AgentComposer({
   }, { scope: composerRef, dependencies: [mentionMenuKey] })
 
   return <PromptInput ref={composerRef} className="agent-composer" aria-label={copy.input} aria-busy={planning} onSubmit={handleSubmit}>
-    {queuedInstructions.length ? <div className="agent-composer__queue" aria-label={`${copy.queued} ${queuedInstructions.length}/${AGENT_COMPOSER_QUEUE_LIMIT}`}>
-      <span className="agent-composer__attach-label">{`${copy.queued} ${queuedInstructions.length}/${AGENT_COMPOSER_QUEUE_LIMIT}`}</span>
-      <div className="agent-composer__queue-list">{queuedInstructions.map((item) => <div key={item.id} data-flip-id={item.id} className="agent-composer__queue-chip">
-        <button type="button" className="agent-composer__queue-edit" aria-label={`${copy.editQueued}: ${agentQueuedInstructionPreview(item)}`} title={copy.editQueued} onClick={() => onRestoreQueuedInstruction(item)}><ListTodoIcon /><span>{agentQueuedInstructionPreview(item)}</span></button>
-        <button type="button" className="agent-composer__queue-remove" aria-label={`${copy.removeQueued}: ${agentQueuedInstructionPreview(item)}`} title={copy.removeQueued} onClick={() => onRemoveQueuedInstruction(item.id)}><CloseIcon /></button>
-      </div>)}</div>
-    </div> : null}
-    {contextItems.length || mountedSkills.length ? <div className="agent-composer__attachments">
-      {contextItems.length ? <div className="agent-composer__attach-row" aria-label={`${copy.referenced} ${contextItems.length}`}>
-        <span className="agent-composer__attach-label">{copy.referenced}</span>
-        <AgentAttachments variant="inline" className="agent-composer__attach-chips">
-          {contextItems.map((item) => {
-            const data = attachmentFromContextItem(item)
-            return <AgentAttachment key={item.id} data={data} flipId={item.id} onRemove={() => onRemoveContext(item.id)}>
-              <AgentAttachmentPreview />
-              <AgentAttachmentInfo />
-              <AgentAttachmentHoverPreview />
-              <AgentAttachmentRemove />
-            </AgentAttachment>
-          })}
-        </AgentAttachments>
-      </div> : null}
-      {mountedSkills.length ? <div className="agent-composer__attach-row" aria-label={`${copy.mounted} ${mountedSkills.length} Skill`}>
-        <span className="agent-composer__attach-label">{`${copy.mounted} ${mountedSkills.length}/${BOTANIC_AGENT_MOUNTED_SKILL_LIMIT}`}</span>
-        <AgentAttachments variant="inline" className="agent-composer__attach-chips">
-          {mountedSkills.map((skill) => <AgentAttachment key={skill.id} data={attachmentFromSkill(skill)} flipId={skill.id} onRemove={() => onRemoveMountedSkill(skill.id)}>
-            <AgentAttachmentPreview />
-            <AgentAttachmentInfo />
-            <AgentAttachmentRemove />
-          </AgentAttachment>)}
-        </AgentAttachments>
-      </div> : null}
-    </div> : null}
+    {queuedInstructions.length ? <Queue className="agent-composer__queue" aria-label={`${copy.queued} ${queuedInstructions.length}/${AGENT_COMPOSER_QUEUE_LIMIT}`}>
+      <QueueSection defaultOpen>
+        <QueueSectionTrigger className="agent-composer__queue-header">
+          <QueueSectionLabel count={queuedInstructions.length} label={`${copy.queued}/${AGENT_COMPOSER_QUEUE_LIMIT}`} icon={<ListTodoIcon aria-hidden="true" />} />
+        </QueueSectionTrigger>
+        <QueueSectionContent>
+          <QueueList className="agent-composer__queue-list"><ul>{queuedInstructions.map((item) => <QueueItem key={item.id} data-flip-id={item.id} className="agent-composer__queue-chip">
+            <button type="button" className="agent-composer__queue-edit" aria-label={`${copy.editQueued}: ${agentQueuedInstructionPreview(item)}`} title={copy.editQueued} onClick={() => onRestoreQueuedInstruction(item)}><ListTodoIcon /><span>{agentQueuedInstructionPreview(item)}</span></button>
+            <QueueItemActions><QueueItemAction className="agent-composer__queue-remove" aria-label={`${copy.removeQueued}: ${agentQueuedInstructionPreview(item)}`} title={copy.removeQueued} onClick={() => onRemoveQueuedInstruction(item.id)}><CloseIcon /></QueueItemAction></QueueItemActions>
+          </QueueItem>)}</ul></QueueList>
+        </QueueSectionContent>
+      </QueueSection>
+    </Queue> : null}
+    {contextItems.length || mountedSkills.length ? <details className="agent-composer__attachments">
+      <summary className="agent-composer__context-toggle">
+        <span>{copy.referenced}</span><b>{contextItems.length + mountedSkills.length}</b><ChevronDownIcon aria-hidden="true" />
+      </summary>
+      <div className="agent-composer__references-body">
+          {contextItems.length ? <div className="agent-composer__attach-row" aria-label={`${copy.referenced} ${contextItems.length}`}>
+            <AgentAttachments variant="inline" className="agent-composer__attach-chips">
+              {contextItems.map((item) => {
+                const data = attachmentFromContextItem(item)
+                return <AgentAttachment key={item.id} data={data} flipId={item.id} onRemove={() => onRemoveContext(item.id)}>
+                  <AgentAttachmentPreview />
+                  <AgentAttachmentInfo />
+                  <AgentAttachmentHoverPreview />
+                  <AgentAttachmentRemove />
+                </AgentAttachment>
+              })}
+            </AgentAttachments>
+          </div> : null}
+          {mountedSkills.length ? <div className="agent-composer__attach-row" aria-label={`${copy.mounted} ${mountedSkills.length} Skill`}>
+            <AgentAttachments variant="inline" className="agent-composer__attach-chips">
+              {mountedSkills.map((skill) => <AgentAttachment key={skill.id} data={attachmentFromSkill(skill)} flipId={skill.id} onRemove={() => onRemoveMountedSkill(skill.id)}>
+                <AgentAttachmentPreview />
+                <AgentAttachmentInfo />
+                <AgentAttachmentRemove />
+              </AgentAttachment>)}
+            </AgentAttachments>
+          </div> : null}
+      </div>
+    </details> : null}
     {skillMenuOpen ? <div id={suggestionListId} className="agent-composer__mention-menu" role="listbox" aria-multiselectable="true" aria-label={copy.callSkill} onPointerDown={(event) => event.stopPropagation()}>
       {commandOptions.length ? <div className="agent-composer__mention-section" role="group" aria-label={copy.commands}><strong>{copy.commands}</strong>{commandOptions.map((command, index) => <button id={`${suggestionListId}-option-${index}`} key={`command-${command.id}`} type="button" role="option" tabIndex={-1} aria-selected={false} className={selectedSuggestionIndex === index ? 'is-active' : undefined} aria-label={command.label} onMouseEnter={() => setActiveSuggestionIndex(index)} onMouseDown={(event) => event.preventDefault()} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onSelectCommand(command.id) }}>{localCommandIcon(command)}<b>{command.label}</b><small>{command.detail}</small></button>)}</div> : null}
       {skillOptions.length ? <div className="agent-composer__mention-section" role="group" aria-label={copy.callSkill}><strong>{copy.callSkill}<span className="agent-composer__mention-count">{mountedSkills.length}/{BOTANIC_AGENT_MOUNTED_SKILL_LIMIT}</span></strong>{skillOptions.map((skill, index) => {
@@ -395,6 +406,7 @@ export function AgentComposer({
     <PromptInputBody>
       <PromptInputTextarea
         ref={textareaRef}
+        rows={1}
         value={instruction}
         onChange={(event) => {
           historyStateRef.current = initialAgentComposerHistoryState
@@ -415,7 +427,7 @@ export function AgentComposer({
         aria-describedby={error ? composerErrorId : undefined}
       />
     </PromptInputBody>
-    {error ? <div id={composerErrorId} className="agent-composer__error" role="alert"><span>{error}</span>{canRetry ? <button type="button" onClick={onRetry} disabled={retrying}>{copy.retry}</button> : null}</div> : intentHint ? <p className="agent-composer__intent" role="status">{intentHint}</p> : null}
+    {error ? <div id={composerErrorId} className="agent-composer__error" role="alert"><span>{error}</span>{canRetry ? <button type="button" onClick={onRetry} disabled={retrying}>{copy.retry}</button> : null}</div> : intentHint ? <p className="visually-hidden" role="status">{intentHint}</p> : null}
     <input ref={fileInputRef} className="asset-file-input" type="file" accept={imageUploadAccept()} multiple aria-label={copy.addImages} onChange={handleFiles} />
     <PromptInputFooter className="agent-composer__toolbar">
       <PromptInputTools>
@@ -423,7 +435,7 @@ export function AgentComposer({
         <button ref={modeMenuButtonRef} type="button" className="agent-composer__mode" onClick={onToggleModeMenu} aria-controls={modeMenuId} aria-expanded={modeMenuOpen} aria-label={executionModeAriaLabel} title={session?.executionMode === 'auto' ? copy.autoTitle : copy.manualTitle}>
           {session?.executionMode === 'auto' ? <AutoRunIcon /> : <ChecklistIcon />}<span className="agent-composer__mode-label" aria-hidden="true">{executionModeLabel}</span><ChevronDownIcon className="agent-composer__mode-chevron" />
         </button>
-        <BotanicSelect
+        <ModelSelector
           className="agent-composer__model-select"
           value={plannerModel}
           ariaLabel={`${copy.model}: ${agentPlannerModelLabel(plannerModel)}`}

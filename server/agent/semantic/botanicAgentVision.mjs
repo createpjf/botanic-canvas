@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
 import { createBotanicAgentModelProvider } from '../model/botanicAgentModelProvider.mjs'
+import { agentVisionImageDataUrl } from '../../media/agentVisionImage.mjs'
 
 /**
  * 受控看图：用网关上的视觉模型（默认 Gemini Flash）识别用户引用的画布图片，
@@ -42,10 +43,22 @@ function rememberDescription(cache, key, description) {
 
 const MEDIA_PATH_PATTERN = /^\/api\/media\/([^/?#]+)$/
 
+function generationJobImageForResult(document, node) {
+  const data = node?.data ?? {}
+  const jobs = (document?.generationJobs ?? []).filter((item) => item && (data.jobId ? item.id === data.jobId : item.resultNodeId === node.id))
+  const job = jobs.length === 1 ? jobs[0] : undefined
+  if (!job || job.status !== 'succeeded' || job.projectionDismissedAt != null || !Array.isArray(job.outputs)) return undefined
+  const output = data.candidateId
+    ? job.outputs.find((item) => item?.id === data.candidateId)
+    : job.outputs.length === 1 ? job.outputs[0] : undefined
+  if (!output || job.dismissedOutputIds?.includes(output.id) || (output.mediaKind && output.mediaKind !== 'image')) return undefined
+  return typeof output.image === 'string' && output.image ? output.image : undefined
+}
+
 /**
  * 从引用节点解析出可看的图片。只认当前画布上 mediaKind 为 image 且有图的素材/结果节点。
  */
-export function botanicAgentVisionCandidates(document, contextNodeIds = []) {
+export function botanicAgentVisionCandidates(document, contextNodeIds = [], onFailure) {
   const nodesById = new Map((document?.nodes ?? []).map((node) => [node.id, node]))
   const seen = new Set()
   const candidates = []
@@ -54,18 +67,19 @@ export function botanicAgentVisionCandidates(document, contextNodeIds = []) {
     if (!nodeId || seen.has(nodeId)) continue
     seen.add(nodeId)
     const node = nodesById.get(nodeId)
-    if (node?.type !== 'asset' && node?.type !== 'result') continue
+    if (node?.type !== 'asset' && node?.type !== 'result') { if (!node) onFailure?.(nodeId, 'unavailable'); continue }
     const mediaKind = node.data?.mediaKind ?? 'image'
-    const image = node.data?.image
-    if (mediaKind !== 'image' || typeof image !== 'string' || !image) continue
-    if (!image.startsWith('data:image/') && !MEDIA_PATH_PATTERN.test(image)) continue
+    const image = node.data?.image || (node.type === 'result' ? generationJobImageForResult(document, node) : undefined)
+    if (mediaKind !== 'image') { onFailure?.(nodeId, 'unsupported'); continue }
+    if (typeof image !== 'string' || !image) { onFailure?.(nodeId, 'unavailable'); continue }
+    if (!image.startsWith('data:image/') && !MEDIA_PATH_PATTERN.test(image)) { onFailure?.(nodeId, 'unsupported'); continue }
+    if (candidates.length >= VISION_IMAGE_LIMIT) { onFailure?.(nodeId, 'limit'); continue }
     candidates.push({
       nodeId,
       label: node.data?.name ?? node.data?.label ?? '引用图片',
       ...(node.data?.role ? { role: node.data.role } : {}),
       image,
     })
-    if (candidates.length >= VISION_IMAGE_LIMIT) break
   }
   return candidates
 }
@@ -96,7 +110,7 @@ function visionImageBytes(dataUrl) {
     : Buffer.byteLength(decodeURIComponent(payload), 'utf8')
 }
 
-async function resolveVisionCandidateDataUrls(candidates, resolveMedia, signal) {
+async function resolveVisionCandidateDataUrls(candidates, resolveMedia, signal, onFailure) {
   const resolved = new Array(candidates.length)
   let totalBytes = 0
   let nextIndex = 1
@@ -106,6 +120,7 @@ async function resolveVisionCandidateDataUrls(candidates, resolveMedia, signal) 
     const dataUrl = await resolveBotanicAgentImageDataUrl(candidate.image, resolveMedia, signal)
       .catch((caught) => {
         if (signal?.aborted) throw caught
+        onFailure?.(candidate.nodeId, caught)
         return undefined
       })
     if (!dataUrl) return
@@ -115,6 +130,7 @@ async function resolveVisionCandidateDataUrls(candidates, resolveMedia, signal) 
         code: 'AGENT_VISION_BYTES_EXCEEDED',
         statusCode: 413,
       })
+      onFailure?.(candidate.nodeId, 'too_large')
       return
     }
     resolved[index] = { candidate, dataUrl }
@@ -134,7 +150,7 @@ async function resolveVisionCandidateDataUrls(candidates, resolveMedia, signal) 
     if (!entry) return []
     const { candidate, dataUrl } = entry
     if (!dataUrl) return []
-    return [{ candidate, dataUrl }]
+    return [{ candidate, dataUrl: agentVisionImageDataUrl(dataUrl) }]
   })
 }
 
@@ -151,7 +167,8 @@ function providerText(payload) {
  * 识别引用图片并返回 [{ nodeId, label, role?, description }]。
  * 任何一张失败都只影响它自己；模型未配置或没有候选时返回空数组。
  */
-export async function describeBotanicAgentContextImages({
+export async function describeBotanicAgentContextImages(input) {
+  const {
   document,
   contextNodeIds,
   runtimeConfig,
@@ -159,15 +176,19 @@ export async function describeBotanicAgentContextImages({
   fetchImpl = fetch,
   signal,
   cache = descriptionCache,
-} = {}) {
+  onFailure,
+  } = input ?? {}
   const model = typeof runtimeConfig?.agentVisionModel === 'string' ? runtimeConfig.agentVisionModel.trim() : ''
   const apiKey = typeof runtimeConfig?.flockApiKey === 'string' ? runtimeConfig.flockApiKey.trim() : ''
-  if (!model || !apiKey) return []
+  if (!model || !apiKey) {
+    for (const candidate of botanicAgentVisionCandidates(document, contextNodeIds, onFailure)) onFailure?.(candidate.nodeId, 'not_configured')
+    return []
+  }
   // 传输差异由 Model Provider 拥有;单图失败继续 fail-open,只影响它自己。
   const provider = createBotanicAgentModelProvider(runtimeConfig, { fetchImpl })
-  const candidates = botanicAgentVisionCandidates(document, contextNodeIds)
+  const candidates = botanicAgentVisionCandidates(document, contextNodeIds, onFailure)
   if (!candidates.length) return []
-  const resolvedCandidates = await resolveVisionCandidateDataUrls(candidates, resolveMedia, signal)
+  const resolvedCandidates = await resolveVisionCandidateDataUrls(candidates, resolveMedia, signal, onFailure)
 
   const describeOne = async ({ candidate, dataUrl }) => {
     const key = cacheKey(model, candidate.image)
@@ -192,11 +213,12 @@ export async function describeBotanicAgentContextImages({
         timeoutMs: VISION_TIMEOUT_MS,
         signal,
       })
-    } catch {
+    } catch (caught) {
+      onFailure?.(candidate.nodeId, caught)
       return undefined
     }
     const description = providerText(payload).slice(0, VISION_DESCRIPTION_LIMIT)
-    if (!description) return undefined
+    if (!description) { onFailure?.(candidate.nodeId, 'description_failed'); return undefined }
     rememberDescription(cache, key, description)
     return { ...candidate, description }
   }
@@ -217,9 +239,9 @@ export async function describeBotanicAgentContextImages({
  * 原生多模态：把引用图片解析成可直接放进消息的 image_url parts。
  * 与 caption 通道二选一——parts 可用时模型直接看图推理，caption 只作降级。
  */
-export async function resolveBotanicAgentVisionParts({ document, contextNodeIds, resolveMedia, signal } = {}) {
-  const candidates = botanicAgentVisionCandidates(document, contextNodeIds)
-  return (await resolveVisionCandidateDataUrls(candidates, resolveMedia, signal)).map(({ candidate, dataUrl }) => ({
+export async function resolveBotanicAgentVisionParts({ document, contextNodeIds, resolveMedia, signal, onFailure } = {}) {
+  const candidates = botanicAgentVisionCandidates(document, contextNodeIds, onFailure)
+  return (await resolveVisionCandidateDataUrls(candidates, resolveMedia, signal, onFailure)).map(({ candidate, dataUrl }) => ({
       nodeId: candidate.nodeId,
       label: candidate.label,
       ...(candidate.role ? { role: candidate.role } : {}),

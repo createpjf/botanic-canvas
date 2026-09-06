@@ -54,7 +54,7 @@ export function connectCanvasCollaboration({
   onCollaborationActivity?: (event: CollaborationActivityRealtimeEvent) => void
   onReconnected?: () => void
   onConnectionStateChanged?: (state: ProjectRealtimeConnectionState) => void
-  onSyncStatusChanged?: (state: CanvasSyncStatus) => void
+  onSyncStatusChanged?: (state: CanvasSyncStatus, failure?: CanvasSyncFailure) => void
   onSyncProtocolEpochChanged?: (epoch: number) => void
 }): CanvasCollaboration {
   let channel: ReturnType<typeof openProjectRealtimeChannel> | undefined
@@ -66,20 +66,23 @@ export function connectCanvasCollaboration({
   let replaying = false
   let pendingCount = 0
   let lastSyncStatus: CanvasSyncStatus | undefined
+  let lastSyncFailureCode: string | undefined
   let nackRetryCount = 0
   let nackRetryTimer: number | undefined
   let handshakeFailureReported = false
   let handshakeAttempts = 0
   let handshakeBlocked = false
-  let outboxBlocked = false
+  let outboxFailure: CanvasSyncFailure | undefined
   const maxHandshakeAttempts = 3
   const clientInstanceId = globalThis.crypto.randomUUID()
   const notifySyncStatus = () => {
     if (closed) return
-    const status = deriveCanvasSyncStatus({ connectionState, handshakeReady, pendingCount, replaying, blocked: handshakeBlocked || outboxBlocked })
-    if (!status || status === lastSyncStatus) return
+    const failure = handshakeBlocked ? { code: 'CANVAS_HANDSHAKE_TIMEOUT' } : outboxFailure
+    const status = deriveCanvasSyncStatus({ connectionState, handshakeReady, pendingCount, replaying, blocked: Boolean(failure) })
+    if (!status || (status === lastSyncStatus && failure?.code === lastSyncFailureCode)) return
     lastSyncStatus = status
-    onSyncStatusChanged?.(status)
+    lastSyncFailureCode = failure?.code
+    onSyncStatusChanged?.(status, failure)
   }
   const recoverHandshake = () => {
     if (closed || handshakeReady) return
@@ -123,7 +126,7 @@ export function connectCanvasCollaboration({
     classifyPermanentFailure: permanentHttpFailure,
     onPendingChanged: (count, blockedFailure) => {
       pendingCount = count
-      outboxBlocked = Boolean(blockedFailure)
+      outboxFailure = blockedFailure
       if (count === 0) {
         if (nackRetryTimer !== undefined) window.clearTimeout(nackRetryTimer)
         nackRetryTimer = undefined
@@ -278,6 +281,7 @@ export function connectCanvasCollaboration({
         syncProtocolEpoch = undefined
         replaying = false
       }
+      lastSyncStatus = undefined // 原始连接回调之后仍须投影握手/Outbox 状态，不能被去重吞掉。
       onConnectionStateChanged?.(state)
       notifySyncStatus()
     })
@@ -294,6 +298,7 @@ export function connectCanvasCollaboration({
   return {
     replaceLocalGraph: graph.replaceLocalGraph,
     retryBlocked: async () => {
+      if (closed) throw new ProductApiError('Canvas collaboration is closed.', 409, 'CANVAS_COLLABORATION_UNAVAILABLE')
       const shouldResumeHandshake = handshakeBlocked
       if (shouldResumeHandshake) {
         handshakeBlocked = false
