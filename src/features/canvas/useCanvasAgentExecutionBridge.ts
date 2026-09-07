@@ -799,6 +799,7 @@ export function useCanvasAgentExecutionBridge({
     loadingOlderAgentMessages: sessionMessages.loadingOlder,
     refreshAgentSessionMessages: sessionMessages.refresh,
     agentMessagesLoading: sessionMessages.loading,
+    agentMessagesError: sessionMessages.error,
     focusRequest,
     open,
     openForResult,

@@ -22,6 +22,7 @@ function base64ToUpdate(encoded: string) {
 
 export type CanvasCollaboration = {
   replaceLocalGraph: (graph: { nodes: CanvasNode[]; edges: Edge[] }) => void
+  refresh: () => void
   retryBlocked: () => Promise<void>
   close: () => void
 }
@@ -297,6 +298,8 @@ export function connectCanvasCollaboration({
 
   return {
     replaceLocalGraph: graph.replaceLocalGraph,
+    // HTTP 文档刷新保留 CRDT 图谱；回到页面时用 state vector 补齐漏收增量。
+    refresh: () => { if (!closed && connectionState === 'connected' && handshakeReady) beginHandshake() },
     retryBlocked: async () => {
       if (closed) throw new ProductApiError('Canvas collaboration is closed.', 409, 'CANVAS_COLLABORATION_UNAVAILABLE')
       const shouldResumeHandshake = handshakeBlocked

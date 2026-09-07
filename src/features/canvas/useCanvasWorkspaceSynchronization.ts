@@ -480,6 +480,7 @@ export function useCanvasWorkspaceSynchronization({
   useEffect(() => {
     if (!hydrated || !workspaceActive || !serverPersistenceEnabled) return
     const refresh = () => {
+      collaborationRef.current?.refresh()
       void refreshDocumentFromRemoteOnce()
         .then(() => recoverUnknownGenerationSubmission())
         .then(() => recoverPersistentAgentRuns())

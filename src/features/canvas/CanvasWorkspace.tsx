@@ -2461,6 +2461,7 @@ export default function CanvasWorkspace({
           onBindBrand={bindProjectBrand}
           onLoadOlderMessages={agentBridge.loadOlderAgentMessages}
           hasOlderMessages={agentBridge.hasOlderAgentMessages}
+          messageHistory={{ loading: agentBridge.agentMessagesLoading, error: agentBridge.agentMessagesError, retry: agentBridge.refreshAgentSessionMessages }}
           loadingOlderMessages={agentBridge.loadingOlderAgentMessages}
           onDismissRemoteChange={dismissRemoteChange}
           onClearCollaborationActivities={clearCollaborationActivities}

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { BotanicAgentMessage, BotanicAgentRun } from '../../domain/agent'
 import { mergeAgentMessages } from '../../domain/agentMessageReadModel'
+import { createLatestOperation } from '../../domain/latestOperation'
 import { listPersistentBotanicAgentSessionMessages } from '../../lib/agentApi'
 import { serverPersistenceEnabled } from '../../lib/productSession'
 
@@ -17,38 +18,53 @@ export function useAgentSessionMessages(
   const [loadingOlder, setLoadingOlder] = useState(false)
   const [nextBefore, setNextBefore] = useState<string | undefined>()
   const [error, setError] = useState<string | undefined>()
+  const reads = useRef(createLatestOperation())
   const sessionIdRef = useRef(sessionId)
   useEffect(() => {
     sessionIdRef.current = sessionId
   }, [sessionId])
 
   const refresh = useCallback(async (signal?: AbortSignal) => {
+    const token = reads.current.begin()
     if (!enabled || !sessionId || !serverPersistenceEnabled) {
       setApiMessages([])
       setLoadedSessionId(undefined)
       setNextBefore(undefined)
+      setLoading(false)
+      setError(undefined)
       return
     }
     setLoading(true)
     setError(undefined)
     try {
       const page = await listPersistentBotanicAgentSessionMessages(projectId, sessionId, { limit: 50, signal })
-      if (signal?.aborted || sessionIdRef.current !== sessionId) return
+      if (signal?.aborted || !reads.current.isCurrent(token)) return
       setApiMessages(page.messages)
       setLoadedSessionId(sessionId)
       setNextBefore(page.nextBefore)
     } catch (caught) {
-      if (signal?.aborted || (caught instanceof Error && caught.name === 'AbortError')) return
+      if (signal?.aborted || !reads.current.isCurrent(token) || (caught instanceof Error && caught.name === 'AbortError')) return
       setError(caught instanceof Error ? caught.message : String(caught))
+      throw caught
     } finally {
-      if (!signal?.aborted) setLoading(false)
+      if (reads.current.isCurrent(token)) setLoading(false)
     }
   }, [enabled, projectId, sessionId])
 
   useEffect(() => {
     const controller = new AbortController()
-    void refresh(controller.signal)
-    return () => controller.abort()
+    void refresh(controller.signal).catch(() => undefined)
+    const retry = () => { if (document.visibilityState === 'visible') void refresh(controller.signal).catch(() => undefined) }
+    window.addEventListener('online', retry)
+    window.addEventListener('focus', retry)
+    document.addEventListener('visibilitychange', retry)
+    return () => {
+      controller.abort()
+      reads.current.invalidate()
+      window.removeEventListener('online', retry)
+      window.removeEventListener('focus', retry)
+      document.removeEventListener('visibilitychange', retry)
+    }
   }, [refresh])
 
   const loadOlderMessages = useCallback(async () => {

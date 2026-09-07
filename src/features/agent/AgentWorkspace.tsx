@@ -325,6 +325,7 @@ export default function AgentWorkspace({
   onLoadOlderMessages,
   hasOlderMessages = false,
   loadingOlderMessages = false,
+  messageHistory,
   persistenceStatus,
   fromEmptyGuide = false,
   onClose,
@@ -414,6 +415,7 @@ export default function AgentWorkspace({
   onLoadOlderMessages?: () => void
   hasOlderMessages?: boolean
   loadingOlderMessages?: boolean
+  messageHistory?: { loading: boolean; error?: string; retry: () => Promise<void> }
   /** 从空画布引导 Flip 打开时关掉 CSS 侧滑，并挂上 data-flip-id。 */
   fromEmptyGuide?: boolean
   onClose: () => void
@@ -3690,7 +3692,9 @@ export default function AgentWorkspace({
         /></div> : null}
         {!utilityPanelOpen ? <Conversation data-agent-flip className="agent-workspace__conversation">
         <ConversationContent>
-        {!hasMessages ? <section className="agent-workspace__welcome">
+        {messageHistory?.error ? <div className="agent-reading-restore" role="alert"><span>{locale === 'en' ? 'Messages could not be loaded.' : '消息读取失败'}</span><button type="button" disabled={messageHistory.loading} onClick={() => void messageHistory.retry().catch(() => undefined)}>{locale === 'en' ? 'Retry' : '重试'}</button></div> : null}
+        {messageHistory?.loading ? <div role="status">{locale === 'en' ? 'Loading messages…' : '正在读取消息…'}</div> : null}
+        {!hasMessages && !messageHistory?.loading && !messageHistory?.error ? <section className="agent-workspace__welcome">
           <span className="agent-workspace__mark" data-bob-mood={welcomeBob.mood} data-bob-says={welcomeBob.says}><BobCharacter mood={welcomeBob.mood} says={welcomeBob.says} saysCycles={welcomeBob.cycles} onSaysComplete={() => welcomeSays.markPlayed(welcomeBob.says)} /></span>
           <small>{copy.welcomeMark}</small>
           <h2>{target ? copy.welcomeTarget(agentTargetDisplayLabel(target)) : copy.welcome}</h2>
