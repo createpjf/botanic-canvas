@@ -40,7 +40,7 @@ export async function fetchProjectBrandKit(projectId: string): Promise<{
   } catch (error) {
     if (!(serverPersistenceEnabled && error instanceof ProductApiError && error.status === 404)) throw error
     // 新项目首个内容与面板打开可发生在同一帧；先让本地草稿完成建项，再只重读一次。
-    await syncPendingCanvasDrafts()
+    await syncPendingCanvasDrafts(projectId)
     response = await request()
   }
   return { brandKit: response?.brandKit ?? null, capabilities: response?.capabilities }

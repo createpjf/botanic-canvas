@@ -15,6 +15,18 @@ function node(id: string, x: number, selected = false): CanvasNode {
   }
 }
 
+test('云端 JSON 对象键序变化后投影回协作图不产生本地写入', () => {
+  const original = node('node-a', 10)
+  const updates: Uint8Array[] = []
+  const graph = createCollaborativeGraph({ initialGraph: { nodes: [original], edges: [] }, onUpdate: update => updates.push(update), onRemoteGraph: () => undefined })
+  updates.length = 0
+  graph.replaceLocalGraph({ nodes: [{ ...original, data: { content: 'node-a', label: 'node-a' } }], edges: [] })
+  assert.equal(updates.length, 0)
+  graph.replaceLocalGraph({ nodes: [{ ...original, data: { content: '实际编辑', label: 'node-a' } }], edges: [] })
+  assert.equal(updates.length, 1, '真实内容变化仍然发布')
+  graph.destroy()
+})
+
 test('协作图谱把节点与连线增量同步给另一位编辑者', () => {
   const initial = { nodes: [node('node-a', 10)], edges: [] as Edge[] }
   let remoteGraph = initial

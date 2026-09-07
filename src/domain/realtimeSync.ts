@@ -3,6 +3,16 @@ import type { CollaborationActivity } from './collaborationActivity'
 
 export type ProjectRealtimeConnectionState = 'connecting' | 'connected' | 'reconnecting' | 'closed'
 export type CanvasSyncStatus = 'synced' | 'saving' | 'offline_pending' | 'syncing' | 'blocked'
+
+/** 仅统一展示；文档与图谱 Outbox 的真实状态、恢复入口仍各自保留。 */
+export function deriveCanvasSaveStatus(
+  realtime: CanvasSyncStatus | ProjectRealtimeConnectionState | 'disabled',
+  persistence: 'saved' | 'saving' | 'offline' | 'conflict' | 'error',
+) {
+  if (persistence === 'conflict' || persistence === 'error' || persistence === 'offline') return persistence
+  if (realtime === 'synced' && persistence === 'saving') return 'saving'
+  return realtime
+}
 export type CanvasGraphNackCode = 'PERMISSION_REVOKED' | 'PROJECT_DELETED' | 'SCHEMA_UNSUPPORTED' | 'INVALID_UPDATE' | 'TEMPORARY_UNAVAILABLE' | 'EPOCH_STALE'
 
 /** 只把已知失败代码投影成可操作说明，不把传输层异常或负载显示给用户。 */

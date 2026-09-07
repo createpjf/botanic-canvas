@@ -9,9 +9,11 @@ import {
 import { normalizeAssetRecord } from '../domain/assets'
 import { reconcileAgentSessionsAfterDocumentSync, stripAgentSessionMessages } from '../domain/agentCollaboration'
 import { isRemoteDocumentConflict } from '../domain/remoteDocumentSync'
+import { canvasJsonEqual, createCanvasDocumentPatch, type CanvasDocumentPatch } from '../domain/canvasDocumentPatch'
 import { ProductApiError, productRequest, serverPersistenceEnabled } from './productSession'
 import { discardLocalDraftAndRefreshRemote, persistAcceptedRemoteRefresh } from './remoteDocumentRefresh'
 import { canvasDb, enqueuePersistence, type CanvasMediaRecord } from './canvasDb'
+import { prepareCanvasRemoteReplacement } from './canvasRemoteReplacement'
 
 export { canvasDb, canvasSyncOutboxStorage } from './canvasDb'
 
@@ -126,17 +128,6 @@ export function lastKnownCanvasSyncProtocolEpoch(id: string) {
   return remoteSyncProtocolEpochs.get(id) ?? readPersistedSyncProtocolEpoch(id)
 }
 
-type CollectionPatch<T extends { id: string }> = {
-  upsert?: T[]
-  remove?: string[]
-}
-
-type CanvasDocumentPatch = {
-  fields?: Record<string, unknown>
-  nodes?: CollectionPatch<CanvasDocument['nodes'][number]>
-  edges?: CollectionPatch<CanvasDocument['edges'][number]>
-}
-
 export type RemoteCanvasDocumentRefresh = {
   cachedDocument: CanvasDocument
   remoteDocument: CanvasDocument
@@ -182,7 +173,7 @@ async function flushRemoteDocumentWrite(id: string) {
     const waiters = pending.waiters.splice(0)
     try {
       const normalized = await writeRemoteCanvasDocument(document)
-      await clearPendingSyncDocument(document.id, document.updatedAt)
+      await clearPendingSyncDocument(document)
       waiters.forEach(({ resolve }) => resolve(normalized))
     } catch (error) {
       waiters.forEach(({ reject }) => reject(error))
@@ -238,23 +229,33 @@ export async function flushPendingCanvasDocumentWrites(projectId?: string) {
 }
 
 /** 联网时补送 IndexedDB 草稿；失败保留，等待下一次同步。 */
-export async function syncPendingCanvasDrafts() {
+const draftSyncs = new Map<string | undefined, Promise<Awaited<ReturnType<typeof syncCanvasDrafts>>>>()
+export function syncPendingCanvasDrafts(projectId?: string) {
+  const existing = draftSyncs.get(projectId)
+  if (existing) return existing
+  const task = syncCanvasDrafts(projectId).finally(() => draftSyncs.delete(projectId))
+  draftSyncs.set(projectId, task)
+  return task
+}
+
+async function syncCanvasDrafts(projectId?: string) {
   if (!serverPersistenceEnabled) return { synced: 0, pending: 0, conflicts: 0, conflictIds: [] as string[] }
   if (!browserIsOnline()) {
-    const drafts = await readPendingSyncDocuments()
+    const drafts = await readPendingSyncDocuments(projectId)
     return { synced: 0, pending: drafts.length, conflicts: 0, conflictIds: [] as string[] }
   }
 
   try {
-    await flushPendingCanvasDocumentWrites()
+    await enqueuePersistence(() => Promise.resolve())
+    await Promise.all([...pendingRemoteWrites.keys()].filter(id => !projectId || id === projectId).map(flushRemoteDocumentWrite))
   } catch (error) {
     if (error instanceof ProductApiError && error.status === 0) {
-      const drafts = await readPendingSyncDocuments()
+      const drafts = await readPendingSyncDocuments(projectId)
       return { synced: 0, pending: drafts.length, conflicts: 0, conflictIds: [] as string[] }
     }
   }
 
-  const drafts = await readPendingSyncDocuments()
+  const drafts = await readPendingSyncDocuments(projectId)
   let synced = 0
   let conflicts = 0
   const conflictIds: string[] = []
@@ -266,7 +267,6 @@ export async function syncPendingCanvasDrafts() {
       // 所有远端写入都必须走同一队列。旧实现直接 PATCH，会与正在进行的
       // 即时保存争抢同一个 revision，形成 409 闪烁并覆盖刚生成的结果节点。
       await queueRemoteDocumentWrite(current.document, true)
-      await clearPendingSyncDocument(draft.id, draft.updatedAt)
       synced += 1
     } catch (error) {
       const current = await readPendingSyncDocument(draft.id)
@@ -278,7 +278,7 @@ export async function syncPendingCanvasDrafts() {
       }
     }
   }
-  const remaining = await readPendingSyncDocuments()
+  const remaining = await readPendingSyncDocuments(projectId)
   return { synced, pending: remaining.length, conflicts, conflictIds }
 }
 
@@ -395,11 +395,11 @@ async function readPendingSyncDocument(id: string) {
   })
 }
 
-async function clearPendingSyncDocument(id: string, savedUpdatedAt: number) {
+async function clearPendingSyncDocument(document: CanvasDocument) {
   await enqueuePersistence(async () => {
-    const pending = await canvasDb.pendingSync.get(id)
-    // 发送期间用户若又有新编辑，保留更新后的草稿，等待下一次同步。
-    if (pending && pending.updatedAt <= savedUpdatedAt) await canvasDb.pendingSync.delete(id)
+    const pending = await canvasDb.pendingSync.get(document.id)
+    // 挂钟可能重复或倒退；只能清理本次 ACK 对应的内容，不能吞掉在途新编辑。
+    if (pending && canvasJsonEqual(pending.document, (await serializeDocumentMedia(document)).document)) await canvasDb.pendingSync.delete(document.id)
   })
 }
 
@@ -418,11 +418,14 @@ export async function discardPendingCanvasDraft(id: string) {
  * 冲突处理不能走普通 readCanvasDocument：它会优先返回本地缓存，以保证弱网打开
  * 流畅，因而会让“刷新远端”看起来没有任何变化。此处明确以远端为准并覆盖缓存。
  */
-export async function refreshCanvasDocumentFromRemote(id: string) {
+export async function refreshCanvasDocumentFromRemote(id: string, canReplace: () => boolean = () => true) {
+  const ready = () => canReplace() && !pendingRemoteWrites.has(id)
+  if (!ready()) throw new Error('画布仍有保存操作，请等待完成后再试。')
+  const accept = await prepareCanvasRemoteReplacement(id, ready)
   const remote = await discardLocalDraftAndRefreshRemote(
-    () => discardPendingCanvasDraft(id),
+    async () => { discardedDraftEpochs.set(id, (discardedDraftEpochs.get(id) ?? 0) + 1) },
     () => readRemoteCanvasDocument(id),
-    persistLocalDocument,
+    async document => { await accept(await serializeDocumentMedia(document)) },
   )
   if (remote) {
     remoteConflictRevisions.delete(id)
@@ -431,10 +434,11 @@ export async function refreshCanvasDocumentFromRemote(id: string) {
   return remote
 }
 
-async function readPendingSyncDocuments() {
+async function readPendingSyncDocuments(projectId?: string) {
   return enqueuePersistence(async () => {
-    const records = await canvasDb.pendingSync.orderBy('updatedAt').toArray()
-    return Promise.all(records.map(async (record) => ({ ...record, document: await hydrateDocumentMedia(record.document) })))
+    const record = projectId ? await canvasDb.pendingSync.get(projectId) : undefined
+    const records = projectId ? (record ? [record] : []) : await canvasDb.pendingSync.orderBy('updatedAt').toArray()
+    return Promise.all(records.filter(record => record.id !== 'workspace-placeholder').map(async (record) => ({ ...record, document: await hydrateDocumentMedia(record.document) })))
   })
 }
 
@@ -540,40 +544,6 @@ function refreshRemoteCanvasDocumentInBackground(
     .catch(() => undefined)
 }
 
-function unchanged(left: unknown, right: unknown) {
-  return JSON.stringify(left) === JSON.stringify(right)
-}
-
-function collectionPatch<T extends { id: string }>(previous: T[], next: T[]): CollectionPatch<T> | undefined {
-  const previousById = new Map(previous.map((item) => [item.id, item]))
-  const nextIds = new Set(next.map((item) => item.id))
-  const upsert = next.filter((item) => !unchanged(previousById.get(item.id), item))
-  const remove = previous.filter((item) => !nextIds.has(item.id)).map((item) => item.id)
-  return upsert.length || remove.length ? {
-    ...(upsert.length ? { upsert } : {}),
-    ...(remove.length ? { remove } : {}),
-  } : undefined
-}
-
-function createCanvasDocumentPatch(previous: CanvasDocument, next: CanvasDocument, includeGraph = true): CanvasDocumentPatch {
-  const fields: Record<string, unknown> = {}
-  // 这两个集合只允许专用工作流 API 修改；旧本地快照不能在画布冲突重试时把它们删掉。
-  const ignored = new Set(['id', 'nodes', 'edges', 'productionWorkflows', 'productionWorkflowRuns'])
-  for (const key of new Set([...Object.keys(previous), ...Object.keys(next)])) {
-    if (ignored.has(key)) continue
-    const previousValue = previous[key as keyof CanvasDocument]
-    const nextValue = next[key as keyof CanvasDocument]
-    if (!unchanged(previousValue, nextValue)) fields[key] = nextValue
-  }
-  const nodes = includeGraph ? collectionPatch(previous.nodes, next.nodes) : undefined
-  const edges = includeGraph ? collectionPatch(previous.edges, next.edges) : undefined
-  return {
-    ...(Object.keys(fields).length ? { fields } : {}),
-    ...(nodes ? { nodes } : {}),
-    ...(edges ? { edges } : {}),
-  }
-}
-
 function withoutCanvasGraph(document: CanvasDocument) {
   const { nodes: _nodes, edges: _edges, ...metadata } = document
   return metadata as CanvasDocument
@@ -605,9 +575,11 @@ async function writeRemoteCanvasDocument(document: CanvasDocument) {
     })
   }
 
-  let response
+  let response: Awaited<ReturnType<typeof send>> | undefined = patch && !Object.keys(patch).length && previous && revision !== undefined
+    ? { document: previous, revision, graphRevision: graphRevision ?? 1, syncProtocolEpoch: lastKnownCanvasSyncProtocolEpoch(document.id) }
+    : undefined
   let conflictAttempts = 0
-  while (true) {
+  while (!response) {
     try {
       response = await send(patch ?? payload, patch ? 'PATCH' : 'PUT', conflictAttempts ? remoteRevisions.get(document.id) : revision)
       break
@@ -808,6 +780,7 @@ export async function persistAcknowledgedRemoteCanvasPatch(
 }
 
 export async function writeCanvasDocument(document: CanvasDocument, options: { immediate?: boolean } = {}) {
+  if (document.id === 'workspace-placeholder') return // 路由加载占位不是项目，不写入或重放到云端。
   if (serverPersistenceEnabled) {
     // 先写入 IndexedDB 草稿，再把同一变更排入云端队列；断网也不会丢失编辑。
     await persistLocalDocument(document, true)

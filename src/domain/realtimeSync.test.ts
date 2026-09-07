@@ -1,6 +1,17 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { canvasSyncFailureMessage, deriveCanvasSyncStatus, parseProjectRealtimeEvent, projectRealtimeConnectionOpened, shouldRefreshFromRealtimeEvent } from './realtimeSync.ts'
+import { canvasSyncFailureMessage, deriveCanvasSaveStatus, deriveCanvasSyncStatus, parseProjectRealtimeEvent, projectRealtimeConnectionOpened, shouldRefreshFromRealtimeEvent } from './realtimeSync.ts'
+
+test('已保存必须同时满足文档保存和图谱同步，失败不能被连接状态掩盖', () => {
+  assert.equal(deriveCanvasSaveStatus('synced', 'conflict'), 'conflict')
+  assert.equal(deriveCanvasSaveStatus('synced', 'error'), 'error')
+  assert.equal(deriveCanvasSaveStatus('synced', 'offline'), 'offline')
+  assert.equal(deriveCanvasSaveStatus('synced', 'saving'), 'saving')
+  assert.equal(deriveCanvasSaveStatus('blocked', 'saved'), 'blocked')
+  assert.equal(deriveCanvasSaveStatus('saving', 'saved'), 'saving')
+  assert.equal(deriveCanvasSaveStatus('disabled', 'saved'), 'disabled')
+  assert.equal(deriveCanvasSaveStatus('synced', 'saved'), 'synced')
+})
 
 test('首次连接不触发恢复，断线重连后触发恢复', () => {
   assert.deepEqual(parseProjectRealtimeEvent({ type: 'realtime.ready', projectId: 'project-1', protocol: 2 }, 'project-1'), {

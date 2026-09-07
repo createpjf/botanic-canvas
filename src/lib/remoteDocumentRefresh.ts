@@ -3,10 +3,10 @@ export async function discardLocalDraftAndRefreshRemote<T>(
   readRemote: () => Promise<T | undefined>,
   persistRemote: (document: T) => Promise<unknown>,
 ) {
-  await discardDraft()
   const remote = await readRemote()
   if (!remote) return undefined
   await persistRemote(remote)
+  await discardDraft()
   return remote
 }
 

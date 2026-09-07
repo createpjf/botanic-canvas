@@ -27,7 +27,7 @@ test('Agent 原图读期间出现待同步删除或取消时，不交出旧快�
   ), { name: 'AbortError' })
 })
 
-test('选择云端版本时先丢弃本地草稿，再读取并缓存云端文档', async () => {
+test('选择云端版本时先读取和缓存云端，成功后才清理草稿', async () => {
   const steps: string[] = []
   const document = await discardLocalDraftAndRefreshRemote(
     async () => { steps.push('discard') },
@@ -36,7 +36,16 @@ test('选择云端版本时先丢弃本地草稿，再读取并缓存云端文�
   )
 
   assert.equal(document, 'cloud-version')
-  assert.deepEqual(steps, ['discard', 'read', 'persist:cloud-version'])
+  assert.deepEqual(steps, ['read', 'persist:cloud-version', 'discard'])
+})
+
+test('远端读取、缓存失败或没有文档时，保留待同步草稿', async () => {
+  let discarded = false
+  const discard = async () => { discarded = true }
+  await assert.rejects(discardLocalDraftAndRefreshRemote(discard, async () => { throw Error('offline') }, async () => {}), /offline/)
+  assert.equal(await discardLocalDraftAndRefreshRemote(discard, async () => undefined, async () => {}), undefined)
+  await assert.rejects(discardLocalDraftAndRefreshRemote(discard, async () => 'remote', async () => { throw Error('disk') }), /disk/)
+  assert.equal(discarded, false)
 })
 
 test('后台接受服务器新版后刷新本地缓存，拒绝的版本不落盘', async () => {

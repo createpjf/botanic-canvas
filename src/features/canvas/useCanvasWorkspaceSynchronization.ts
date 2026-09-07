@@ -370,8 +370,11 @@ export function useCanvasWorkspaceSynchronization({
   }, [hydrate])
 
   const synchronizeLocalDrafts = useCallback(async () => {
-    const result = await syncPendingCanvasDrafts()
+    const projectId = useCanvasStore.getState().document.id
+    if (projectId === 'workspace-placeholder') return
+    const result = await syncPendingCanvasDrafts(projectId)
     const current = useCanvasStore.getState()
+    if (current.document.id !== projectId) return result
     const outcome = pendingCanvasSyncOutcome(result, current.document.id)
     if (outcome === 'conflict') {
       useCanvasStore.setState({ persistenceStatus: 'conflict', assistantMessage: copy.canvasConflict })
@@ -380,40 +383,49 @@ export function useCanvasWorkspaceSynchronization({
     if (outcome === 'synced' && ['offline', 'error', 'conflict'].includes(current.persistenceStatus)) {
       useCanvasStore.setState({ persistenceStatus: 'saved', assistantMessage: copy.localDraftSynced })
     }
+    if (outcome === 'pending' && current.persistenceStatus === 'saved') useCanvasStore.setState({ persistenceStatus: 'error' })
     return result
   }, [copy.canvasConflict, copy.localDraftSynced])
 
   const retryAgentCanvasPersistence = useCallback(async () => {
     const projectId = useCanvasStore.getState().document.id
-    try {
-      const result = await syncPendingCanvasDrafts()
-      const current = useCanvasStore.getState()
-      if (current.document.id !== projectId) return false
-      const outcome = pendingCanvasSyncOutcome(result, projectId)
-      if (outcome === 'conflict') {
-        useCanvasStore.setState({ persistenceStatus: 'conflict', assistantMessage: copy.canvasConflict })
-        return false
-      }
-      if (outcome === 'synced' && ['offline', 'error', 'conflict'].includes(current.persistenceStatus)) {
-        useCanvasStore.setState({ persistenceStatus: 'saved', assistantMessage: copy.localDraftSynced })
-      }
-      return outcome === 'synced'
-    } catch {
+    if (projectId === 'workspace-placeholder') return false
+    const result = await syncPendingCanvasDrafts(projectId)
+    const current = useCanvasStore.getState()
+    if (current.document.id !== projectId) return false
+    const outcome = pendingCanvasSyncOutcome(result, projectId)
+    if (outcome === 'conflict') {
+      useCanvasStore.setState({ persistenceStatus: 'conflict', assistantMessage: copy.canvasConflict })
+      const preview = await previewRemoteCanvasDocument(projectId)
+      if (preview && useCanvasStore.getState().document.id === projectId) setCollaborationAwareness(state => ({
+        ...state, conflictRevision: preview.conflictRevision,
+        conflictChanges: collaborationDocumentChanges(useCanvasStore.getState().document, preview.document).map(change => localizeCollaborationChange(change, locale)),
+      }))
       return false
     }
-  }, [copy.canvasConflict, copy.localDraftSynced])
+    if (outcome === 'synced' && ['offline', 'error', 'conflict'].includes(current.persistenceStatus)) {
+      useCanvasStore.setState({ persistenceStatus: 'saved', assistantMessage: copy.localDraftSynced })
+    }
+    return outcome === 'synced'
+  }, [copy.canvasConflict, copy.localDraftSynced, locale])
 
   const refreshAgentCanvasFromRemote = useCallback(async () => {
-    const projectId = useCanvasStore.getState().document.id
+    const baseline = useCanvasStore.getState().document
+    const projectId = baseline.id
     if (projectId === 'workspace-placeholder') return false
     try {
-      const remote = await refreshCanvasDocumentFromRemote(projectId)
-      if (!remote || useCanvasStore.getState().document.id !== projectId) return false
-      const opened = await openDocument(projectId)
+      const remote = await refreshCanvasDocumentFromRemote(projectId, () => useCanvasStore.getState().document === baseline)
+      if (!remote || useCanvasStore.getState().document !== baseline) return false
+      const controller = new AbortController()
+      const unsubscribe = useCanvasStore.subscribe(state => {
+        if (state.document.id !== projectId || (state.document !== baseline && state.persistenceStatus === 'saving')) controller.abort()
+      })
+      const opened = await openDocument(projectId, controller.signal).finally(unsubscribe)
       if (opened && useCanvasStore.getState().document.id === projectId) {
         void refreshIndependentReads(true)
         if (useCanvasStore.getState().document.id !== projectId) return false
-        useCanvasStore.setState({ persistenceStatus: 'saved', assistantMessage: copy.cloudVersionSelected })
+        if (useCanvasStore.getState().persistenceStatus !== 'saved') return false
+        useCanvasStore.setState({ assistantMessage: copy.cloudVersionSelected })
       }
       return opened
     } catch (caught) {
@@ -506,7 +518,7 @@ export function useCanvasWorkspaceSynchronization({
     syncDrafts()
     window.addEventListener('online', syncDrafts)
     return () => window.removeEventListener('online', syncDrafts)
-  }, [hydrated, recoverPersistentAgentRuns, recoverUnknownGenerationSubmission, refreshDocumentFromRemoteOnce, refreshIndependentReads, synchronizeLocalDrafts])
+  }, [documentId, hydrated, recoverPersistentAgentRuns, recoverUnknownGenerationSubmission, refreshDocumentFromRemoteOnce, refreshIndependentReads, synchronizeLocalDrafts])
 
   useEffect(() => {
     if (!hydrated || !workspaceActive || !serverPersistenceEnabled) return

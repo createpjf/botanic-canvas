@@ -1,5 +1,6 @@
 import type { Edge } from '@xyflow/react'
 import * as Y from 'yjs'
+import { canvasJsonEqual as equal } from './canvasDocumentPatch.ts'
 import type { AssetNodeData, CanvasNode, ResultNodeData } from './canvas.ts'
 
 export type CollaborativeGraph = {
@@ -130,10 +131,6 @@ export function mergeCollaborativeCanvasGraph(
       ...(currentEdgeById.get(edge.id)?.selected ? { selected: true } : {}),
     })),
   }
-}
-
-function equal(left: unknown, right: unknown) {
-  return JSON.stringify(left) === JSON.stringify(right)
 }
 
 function splitNode(node: CanvasNode) {

@@ -6,7 +6,7 @@ import * as Y from 'yjs'
 // 执行真实模块，仅替换 I/O 与 Hook 宿主；不访问账号、数据库或 Provider。
 async function load(entry, mocks) {
   const result = await build({
-    entryPoints: [entry], bundle: true, write: false, format: 'esm', platform: 'node',
+    entryPoints: [entry], bundle: true, write: false, format: 'esm', platform: 'node', jsx: 'automatic',
     plugins: [{ name: 'test-boundaries', setup(builder) {
       builder.onResolve({ filter: /^yjs$/ }, () => ({ path: import.meta.resolve('yjs'), external: true }))
       builder.onResolve({ filter: /.*/ }, args => args.path in mocks ? { path: args.path, namespace: 'mock' } : undefined)
@@ -15,6 +15,204 @@ async function load(entry, mocks) {
   })
   return import(`data:text/javascript;base64,${Buffer.from(result.outputFiles[0].text).toString('base64')}`)
 }
+
+test('使用云端必须保留读取期间的新草稿；失败不清理，成功原子备份并替换', async () => {
+  const rows = Object.fromEntries(['documents', 'documentBackups', 'media', 'pendingSync', 'canvasGraphOutbox'].map(name => [name, new Map()]))
+  const tables = Object.fromEntries(Object.entries(rows).map(([name, data]) => [name, {
+    get: async id => structuredClone(data.get(id)),
+    put: async row => data.set(row.id, structuredClone(row)),
+    delete: async id => data.delete(id),
+    where: () => ({ equals: id => ({
+      sortBy: async () => structuredClone([...data.values()].filter(row => row.projectId === id)),
+      delete: async () => { for (const [key, row] of data) if (row.projectId === id) data.delete(key) },
+    }) }),
+  }]))
+  const local = { id: 'project', name: 'local', updatedAt: 1, nodes: [], edges: [], agentSessions: [] }
+  const remote = { ...local, name: 'cloud' }
+  let read = async () => ({ document: remote, revision: 2, graphRevision: 1 })
+  globalThis.__replacement = { tables: { ...tables, transaction: async (...args) => {
+    const snapshot = structuredClone(rows)
+    try { return await args.at(-1)() } catch (error) {
+      for (const [name, data] of Object.entries(rows)) { data.clear(); for (const [key, value] of snapshot[name]) data.set(key, value) }
+      throw error
+    }
+  } }, request: (...args) => read(...args) }
+  try {
+    const db = await load('src/lib/db.ts', {
+      './canvasDb': 'export const canvasDb=globalThis.__replacement.tables; export const enqueuePersistence=f=>f(); export const canvasSyncOutboxStorage={};',
+      './productSession': 'export const serverPersistenceEnabled=true, productRequest=(...args)=>globalThis.__replacement.request(...args); export class ProductApiError extends Error {}',
+    })
+    await tables.documents.put(local)
+    await tables.pendingSync.put({ id: local.id, document: local, updatedAt: 1 })
+    await tables.canvasGraphOutbox.put({ id: 'mutation', projectId: local.id })
+    read = async () => { throw Error('offline') }
+    await assert.rejects(db.refreshCanvasDocumentFromRemote(local.id), /offline/)
+    assert.equal((await tables.pendingSync.get(local.id)).document.name, 'local')
+    assert.ok(await tables.canvasGraphOutbox.get('mutation'))
+    read = async () => {
+      const edited = { ...local, name: 'new edit' }
+      await tables.pendingSync.put({ id: local.id, document: edited, updatedAt: 1 })
+      return { document: remote, revision: 2, graphRevision: 1 }
+    }
+    await assert.rejects(db.refreshCanvasDocumentFromRemote(local.id), { code: 'CANVAS_DRAFT_CHANGED' })
+    assert.equal((await tables.pendingSync.get(local.id)).document.name, 'new edit')
+    assert.ok(await tables.canvasGraphOutbox.get('mutation'))
+    read = async () => ({ document: remote, revision: 2, graphRevision: 1 })
+    const remove = tables.pendingSync.delete
+    tables.pendingSync.delete = async () => { throw Error('disk full') }
+    await assert.rejects(db.refreshCanvasDocumentFromRemote(local.id), /disk full/)
+    assert.equal((await tables.documents.get(local.id)).name, 'local', '清理失败必须回滚文档替换')
+    assert.equal((await tables.pendingSync.get(local.id)).document.name, 'new edit')
+    assert.ok(await tables.canvasGraphOutbox.get('mutation'))
+    tables.pendingSync.delete = remove
+    assert.equal((await db.refreshCanvasDocumentFromRemote(local.id)).name, 'cloud')
+    assert.equal((await tables.documents.get(local.id)).name, 'cloud')
+    assert.equal((await tables.documentBackups.get(local.id)).document.name, 'new edit')
+    assert.equal(await tables.pendingSync.get(local.id), undefined)
+    assert.equal(await tables.canvasGraphOutbox.get('mutation'), undefined)
+  } finally { delete globalThis.__replacement }
+})
+
+test('冲突按钮等待时禁止重复请求；失败可见，重试成功清理错误', async () => {
+  const slots = []
+  let cursor = 0, resolve, count = 0
+  globalThis.__conflictActions = {
+    state(initial) { const i = cursor++; if (!(i in slots)) slots[i] = initial; return [slots[i], value => { slots[i] = value }] },
+    ref(initial) { const i = cursor++; return slots[i] ??= { current: initial } },
+  }
+  try {
+    const { useCanvasPersistenceActions } = await load('src/features/agent/useCanvasPersistenceActions.ts', {
+      react: 'const h=globalThis.__conflictActions; export const useState=h.state, useRef=h.ref, useEffect=()=>{};',
+    })
+    const retry = () => { count++; return new Promise(done => { resolve = done }) }
+    const render = () => { cursor = 0; return useCanvasPersistenceActions('project', 'zh-CN', retry, async () => { throw Error('private detail') }) }
+    const first = render().run('retry')
+    assert.equal(render().action, 'retry')
+    await render().run('retry')
+    assert.equal(count, 1)
+    resolve(false); await first
+    assert.equal(render().action, '')
+    assert.match(render().error, /尚未同步/)
+    const second = render().run('retry')
+    assert.equal(render().error, '')
+    resolve(true); await second
+    assert.equal(render().error, '')
+    await render().run('refresh')
+    assert.match(render().error, /恢复失败/)
+    assert.doesNotMatch(render().error, /private detail/)
+  } finally { delete globalThis.__conflictActions }
+})
+
+test('使用云端需要面板内二次确认，取消不调用替换，执行中两按钮禁用', async () => {
+  let confirming = false, accepted = 0
+  globalThis.__conflictConfirmation = { state: () => [confirming, value => { confirming = value }] }
+  try {
+    const { AgentConflictActions } = await load('src/features/agent/AgentConflictActions.tsx', {
+      react: 'export const useState=globalThis.__conflictConfirmation.state;',
+      'react/jsx-runtime': 'export const jsx=(type,props)=>({type,props}), jsxs=jsx;',
+      './AgentConflictActions.css': '',
+    })
+    const render = (action = '') => AgentConflictActions({ locale: 'zh-CN', action, error: '', onKeepLocal: () => {}, onUseRemote: () => { accepted++ } })
+    const buttons = view => view.props.children.at(-1).props.children
+    buttons(render())[1].props.onClick()
+    assert.equal(accepted, 0)
+    assert.equal(buttons(render())[1].props.children, '确认使用云端')
+    buttons(render())[0].props.onClick()
+    assert.equal(confirming, false)
+    assert.equal(accepted, 0)
+    buttons(render())[1].props.onClick()
+    buttons(render())[1].props.onClick()
+    assert.equal(accepted, 1)
+    assert.ok(buttons(render('refresh')).every(button => button.props.disabled))
+  } finally { delete globalThis.__conflictConfirmation }
+})
+
+test('项目草稿重试隔离其他项目；无变化和 JSON 键序变化不产生远端写入', async () => {
+  const tables = Object.fromEntries(['documents', 'documentBackups', 'media', 'pendingSync'].map(name => {
+    const rows = new Map()
+    return [name, {
+      get: async id => structuredClone(rows.get(id)),
+      put: async row => rows.set(row.id, structuredClone(row)),
+      delete: async id => rows.delete(id),
+      orderBy: () => ({ toArray: async () => structuredClone([...rows.values()]) }),
+    }]
+  }))
+  const doc = id => ({ id, name: id, updatedAt: 1, nodes: [{ id: 'node', type: 'text', position: { x: 1, y: 2 }, data: { label: '原图', text: '保留' } }], edges: [], agentSessions: [] })
+  const requests = []
+  let writeGate, failWrite = false, onWrite = () => {}
+  const remote = new Map(['current', 'other'].map(id => [id, doc(id)]))
+  const previousWindow = globalThis.window
+  const previousNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator')
+  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { onLine: true } })
+  globalThis.window = globalThis
+  globalThis.__draftRecovery = {
+    db: { ...tables, transaction: async (...args) => args.at(-1)() },
+    request: async (url, options = {}) => {
+      const id = url.split('/')[3]
+      requests.push({ id, method: options.method ?? 'GET', body: options.body && JSON.parse(options.body) })
+      if (id === 'other') throw Object.assign(new Error('其他项目冲突'), { status: 409 })
+      if (options.method) {
+        const gate = writeGate
+        writeGate = undefined
+        onWrite()
+        if (gate) await gate
+        else if (failWrite) throw Object.assign(new Error('暂时不可用'), { status: 503 })
+        const patch = JSON.parse(options.body)
+        remote.set(id, { ...remote.get(id), ...patch.fields, ...(patch.nodes?.upsert ? { nodes: patch.nodes.upsert } : {}) })
+      }
+      return { document: structuredClone(remote.get(id)), revision: requests.length, graphRevision: 1, syncProtocolEpoch: 1 }
+    },
+  }
+  try {
+    const db = await load('src/lib/db.ts', {
+      './canvasDb': 'export const canvasDb=globalThis.__draftRecovery.db; export const enqueuePersistence=f=>f(); export const canvasSyncOutboxStorage={};',
+      './productSession': 'export const serverPersistenceEnabled=true, productRequest=(...args)=>globalThis.__draftRecovery.request(...args); export class ProductApiError extends Error {}',
+    })
+    await tables.pendingSync.put({ id: 'other', document: doc('other'), updatedAt: 1 })
+    const local = { ...doc('current'), name: '我的编辑', updatedAt: 2 }
+    await tables.pendingSync.put({ id: 'current', document: local, updatedAt: 2 })
+    const syncing = db.syncPendingCanvasDrafts('current')
+    assert.equal(db.syncPendingCanvasDrafts('current'), syncing, '重复重试共享同一次同步')
+    const result = await syncing
+    assert.equal(result.pending, 0, '当前项目同步不能受其他草稿的 pending 影响')
+    assert.equal(requests.some(request => request.id === 'other'), false, '不读取、不写入其他项目')
+    assert.ok(await tables.pendingSync.get('other'), '不能删除其他项目草稿')
+    assert.equal(remote.get('current').name, '我的编辑')
+    requests.length = 0
+    await db.writeCanvasDocument(structuredClone(local), { immediate: true })
+    assert.deepEqual(requests, [], '相同文档不发送空 PATCH')
+    const reordered = { ...local, updatedAt: 3, nodes: [{ data: { text: '保留', label: '原图' }, position: { y: 2, x: 1 }, type: 'text', id: 'node' }] }
+    await db.writeCanvasDocument(reordered, { immediate: true })
+    assert.deepEqual(requests, [], '只有 JSON 对象键序和保存时间变化不应重写所有节点')
+    await db.writeCanvasDocument(doc('workspace-placeholder'), { immediate: true })
+    assert.deepEqual(requests, [], '路由占位不能自动创建云端项目')
+
+    // 同一毫秒的两次编辑：旧 ACK 不能清掉新草稿；第二次失败也必须可恢复。
+    let release
+    writeGate = new Promise(resolve => { release = resolve })
+    const sent = new Promise(resolve => { onWrite = resolve })
+    const first = db.writeCanvasDocument({ ...local, name: '旧编辑', updatedAt: 4 }, { immediate: true })
+    await sent
+    const latest = { ...local, name: '最新编辑', updatedAt: 4 }
+    const second = db.writeCanvasDocument(latest, { immediate: true })
+    const failed = assert.rejects(second, /暂时不可用/)
+    await new Promise(resolve => setImmediate(resolve))
+    failWrite = true
+    release()
+    await first
+    await failed
+    assert.equal((await tables.pendingSync.get('current'))?.document.name, '最新编辑', '旧 ACK 不能删除未被确认的新版本')
+    failWrite = false
+    await db.syncPendingCanvasDrafts('current')
+    assert.equal(remote.get('current').name, '最新编辑')
+    assert.equal(await tables.pendingSync.get('current'), undefined)
+  } finally {
+    globalThis.window = previousWindow
+    if (previousNavigator) Object.defineProperty(globalThis, 'navigator', previousNavigator)
+    else delete globalThis.navigator
+    delete globalThis.__draftRecovery
+  }
+})
 
 test('消息失败可恢复；重复刷新合并，真实失效补读，旧会话不能覆盖新会话', async () => {
   const slots = []

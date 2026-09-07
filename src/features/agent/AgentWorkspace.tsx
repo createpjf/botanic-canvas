@@ -1,5 +1,7 @@
 import { type ClipboardEvent, type DragEvent, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { agentConversationMessages } from '../../domain/agentMessageReadModel'
+import { deriveCanvasSaveStatus } from '../../domain/realtimeSync'
+import { useCanvasPersistenceActions } from './useCanvasPersistenceActions'
 import {
   botanicAgentComposerGroupRole,
   botanicAgentCanResumeManualRetry,
@@ -552,7 +554,8 @@ export default function AgentWorkspace({
   const [reviewDecisionPendingId, setReviewDecisionPendingId] = useState('')
   const [renamingSession, setRenamingSession] = useState(false)
   const [sessionTitleDraft, setSessionTitleDraft] = useState(displaySessionTitle(session?.title))
-  const [persistenceAction, setPersistenceAction] = useState<'retry' | 'refresh' | ''>(''); const realtimeRetrying = collaborationAwareness.realtimeRetrying ?? false
+  const { action: persistenceAction, error: persistenceError, run: runPersistenceAction } = useCanvasPersistenceActions(projectId, locale, onRetryPersistence, onRefreshRemote)
+  const realtimeRetrying = collaborationAwareness.realtimeRetrying ?? false
   const [promptDrafts, setPromptDrafts] = useState<Record<string, string>>({})
   const [recoveryModelMenuKey, setRecoveryModelMenuKey] = useState('')
   const plannerControllerRef = useRef<AbortController | null>(null)
@@ -3428,41 +3431,28 @@ export default function AgentWorkspace({
 
   const persistenceIssue = persistenceStatus === 'offline' || persistenceStatus === 'conflict' || persistenceStatus === 'error'
   const showLegacyCanvasConflict = (collaborationAwareness.syncProtocolEpoch ?? 1) < 2
-  const realtimeStatus = collaborationAwareness.realtimeStatus
-  const realtimeStatusPresentation = realtimeStatus === 'reconnecting'
-    ? { label: flowCopy.realtimeReconnecting, detail: flowCopy.realtimeReconnectDetail }
-    : realtimeStatus === 'connecting'
-      ? { label: flowCopy.realtimeConnecting, detail: flowCopy.realtimeConnecting }
-      : realtimeStatus === 'synced'
-        ? { label: flowCopy.realtimeSynced, detail: flowCopy.realtimeSyncedDetail }
-        : realtimeStatus === 'saving'
-          ? { label: flowCopy.realtimeSaving, detail: flowCopy.realtimeSavingDetail }
-          : realtimeStatus === 'offline_pending'
-            ? { label: flowCopy.realtimeOfflinePending, detail: flowCopy.realtimeOfflinePendingDetail }
-            : realtimeStatus === 'syncing'
-              ? { label: flowCopy.realtimeSyncing, detail: flowCopy.realtimeSyncingDetail }
-              : realtimeStatus === 'blocked'
-                ? { label: flowCopy.realtimeBlocked, detail: flowCopy.realtimeBlockedDetail }
-                : undefined
+  const realtimeStatus = deriveCanvasSaveStatus(collaborationAwareness.realtimeStatus, persistenceStatus)
+  const realtimeStatusPresentation = realtimeStatus === 'connected' || realtimeStatus === 'closed' || realtimeStatus === 'disabled' ? undefined : {
+    reconnecting: { label: flowCopy.realtimeReconnecting, detail: flowCopy.realtimeReconnectDetail },
+    connecting: { label: flowCopy.realtimeConnecting, detail: flowCopy.realtimeConnecting },
+    synced: { label: flowCopy.realtimeSynced, detail: flowCopy.realtimeSyncedDetail },
+    saving: { label: flowCopy.realtimeSaving, detail: flowCopy.realtimeSavingDetail },
+    offline_pending: { label: flowCopy.realtimeOfflinePending, detail: flowCopy.realtimeOfflinePendingDetail },
+    syncing: { label: flowCopy.realtimeSyncing, detail: flowCopy.realtimeSyncingDetail },
+    blocked: { label: flowCopy.realtimeBlocked, detail: flowCopy.realtimeBlockedDetail },
+    conflict: { label: flowCopy.realtimeBlocked, detail: flowCopy.conflict.title },
+    error: { label: flowCopy.realtimeBlocked, detail: flowCopy.syncError.title },
+    offline: { label: flowCopy.realtimeOfflinePending, detail: flowCopy.offline.title },
+  }[realtimeStatus]
   const latestCollaborationActivity = collaborationAwareness.activities[0]
   const persistenceCopy = persistenceStatus === 'conflict' && showLegacyCanvasConflict
     ? { ...flowCopy.conflict, action: 'refresh' as const }
     : persistenceStatus === 'offline'
       ? { ...flowCopy.offline, action: 'retry' as const }
       : { ...flowCopy.syncError, action: 'retry' as const }
-  const resolvePersistenceIssue = () => {
-    setPersistenceAction(persistenceCopy.action)
-    const task = persistenceCopy.action === 'refresh' ? onRefreshRemote() : onRetryPersistence()
-    void task.catch(() => undefined).finally(() => setPersistenceAction(''))
-  }
-  const keepLocalDraft = () => {
-    setPersistenceAction('retry')
-    void onRetryPersistence().catch(() => undefined).finally(() => setPersistenceAction(''))
-  }
-  const useRemoteCanvas = () => {
-    if (!window.confirm(flowCopy.useRemoteConfirm)) return
-    resolvePersistenceIssue()
-  }
+  const resolvePersistenceIssue = () => { void runPersistenceAction('retry') }
+  const keepLocalDraft = resolvePersistenceIssue
+  const useRemoteCanvas = () => { void runPersistenceAction('refresh') }
   const inspectPersistenceIssue = () => {
     if (persistenceStatus === 'conflict' && showLegacyCanvasConflict) {
       openUtilityPanel('collaboration')
@@ -3521,10 +3511,10 @@ export default function AgentWorkspace({
           </button>}
         </div>
         <div className="agent-workspace__header-actions">
-          {realtimeStatusPresentation ? realtimeStatus === 'blocked' ? <button type="button"
-            className={`agent-workspace__realtime-status is-${realtimeStatus}`} disabled={realtimeRetrying}
-            title={collaborationAwareness.realtimeRetryError ?? realtimeStatusPresentation.detail} onClick={retryRealtimeSync}
-          ><i aria-hidden="true" />{realtimeRetrying ? flowCopy.realtimeRetrying : realtimeStatusPresentation.label}{collaborationAwareness.realtimeRetryError ? <span className="sr-only" role="alert">{collaborationAwareness.realtimeRetryError}</span> : null}</button> : <span
+          {realtimeStatusPresentation ? realtimeStatus === 'blocked' || persistenceIssue ? <button type="button"
+            className={`agent-workspace__realtime-status is-${persistenceIssue ? 'blocked' : realtimeStatus}`} disabled={realtimeRetrying || Boolean(persistenceAction)}
+            title={persistenceIssue ? `${persistenceCopy.title} · ${persistenceCopy.actionLabel}` : collaborationAwareness.realtimeRetryError ?? realtimeStatusPresentation.detail} onClick={persistenceIssue ? inspectPersistenceIssue : retryRealtimeSync}
+          ><i aria-hidden="true" />{realtimeRetrying || persistenceAction ? flowCopy.realtimeRetrying : realtimeStatusPresentation.label}{collaborationAwareness.realtimeRetryError ? <span className="sr-only" role="alert">{collaborationAwareness.realtimeRetryError}</span> : null}</button> : <span
             className={`agent-workspace__realtime-status is-${realtimeStatus}`}
             role="status"
             title={realtimeStatusPresentation.detail}
@@ -3534,14 +3524,6 @@ export default function AgentWorkspace({
             title={flowCopy.collaborators(collaborationAwareness.onlineCollaboratorCount)}
             aria-label={flowCopy.collaborators(collaborationAwareness.onlineCollaboratorCount)}
           ><i aria-hidden="true" />{collaborationAwareness.onlineCollaboratorCount}</span> : null}
-          {persistenceIssue ? <button
-            type="button"
-            className={`agent-workspace__persistence-status is-${persistenceStatus}`}
-            aria-label={`${persistenceCopy.title}. ${persistenceAction ? flowCopy.processing : persistenceCopy.actionLabel}`}
-            title={`${persistenceCopy.title} · ${persistenceCopy.actionLabel}`}
-            disabled={Boolean(persistenceAction)}
-            onClick={inspectPersistenceIssue}
-          ><span aria-hidden="true">{persistenceStatus === 'conflict' ? '!' : '·'}</span></button> : null}
           <div ref={utilityMenuRef} className="agent-workspace__utility-menu-wrap" onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setUtilityMenuOpen(false) }}>
             <button ref={utilityMenuButtonRef} type="button" className={`agent-workspace__utility-menu-button${utilityPanelOpen ? ' is-active' : ''}`} aria-expanded={utilityMenuOpen} aria-controls={utilityMenuId} aria-label={copy.tools} title={copy.tools} onClick={() => { setUtilityMenuOpen((open) => !open); setHistoryOpen(false) }}><MoreIcon /></button>
             {utilityMenuOpen ? <div id={utilityMenuId} className="agent-workspace__utility-menu" aria-label={copy.tools}>
@@ -3592,6 +3574,7 @@ export default function AgentWorkspace({
           {!filteredSessionTimeline.length ? <p className="agent-workspace__history-empty">{flowCopy.noConversations}</p> : null}
         </div> : null}
       </header>
+      {persistenceError && !collaborationPanelOpen ? <div className="agent-persistence-error" role="alert">{persistenceError}</div> : null}
       <div className="agent-workspace__body">
       {latestCollaborationActivity?.unread || (!utilityPanelOpen && (readingRestoreNotice || reviewProjection.failed)) ? <div className="agent-workspace__chrome">
       {latestCollaborationActivity?.unread ? <div className="agent-workspace__collaboration-notice" role="status">
@@ -3639,6 +3622,8 @@ export default function AgentWorkspace({
           onClear={onClearCollaborationActivities}
           onKeepLocal={keepLocalDraft}
           onUseRemote={useRemoteCanvas}
+          persistenceAction={persistenceAction}
+          persistenceError={persistenceError}
           historyStatus={collaborationAwareness.historyStatus}
           historyHasMore={collaborationAwareness.historyHasMore}
           historyErrorAction={collaborationAwareness.historyErrorAction}

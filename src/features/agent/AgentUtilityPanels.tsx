@@ -1,4 +1,5 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
+import { AgentConflictActions } from './AgentConflictActions'
 import { agentArtifactTargetNodeIds } from '../../domain/agentArtifactTargets'
 import {
   botanicAgentArtifactModel,
@@ -138,6 +139,8 @@ export function AgentCollaborationPanel({
   onClear,
   onKeepLocal,
   onUseRemote,
+  persistenceAction,
+  persistenceError,
   showConflict = true,
   historyStatus,
   historyHasMore,
@@ -154,6 +157,8 @@ export function AgentCollaborationPanel({
   onClear: () => Promise<void>
   onKeepLocal: () => void
   onUseRemote: () => void
+  persistenceAction: 'retry' | 'refresh' | ''
+  persistenceError: string
   showConflict?: boolean
   historyStatus: 'idle' | 'loading' | 'loading-more' | 'saving' | 'error'
   historyHasMore: boolean
@@ -172,6 +177,7 @@ export function AgentCollaborationPanel({
   return <section className="agent-collaboration-panel" aria-label={copy.collaborationAria}>
     <p>{copy.collaborationDescription}</p>
     <div className="agent-collaboration-panel__summary"><strong>{copy.activityCount(activities.length)}</strong>{unreadCount ? <span>{copy.unreadActivities(unreadCount)}</span> : null}</div>
+    {persistenceError && !(showConflict && persistenceStatus === 'conflict') ? <p role="alert">{persistenceError}</p> : null}
     {showConflict && persistenceStatus === 'conflict' ? <div className="agent-collaboration-panel__conflict">
       <span role="alert"><strong>{copy.remoteCanvasTitle}</strong><small>{copy.remoteCanvasDetail}</small></span>
       {conflictRevision ? <small>{copy.revisionCompare(conflictRevision.localRevision, conflictRevision.remoteRevision)}</small> : null}
@@ -181,7 +187,7 @@ export function AgentCollaborationPanel({
           <button type="button" onClick={() => onLocate({ id: `conflict-${index}`, actorName: copy.remoteVersion, occurredAt: Date.now(), unread: false, count: 1, ...change })}>{change.summary}{change.target?.kind === 'node' ? <FocusIcon /> : null}</button>
         </li>)}</ul>
       </details> : <small>{copy.readingRemoteChanges}</small>}
-      <div><button type="button" onClick={onKeepLocal}>{copy.keepLocal}</button><button type="button" className="is-primary" onClick={onUseRemote}>{copy.useRemote}</button></div>
+      <AgentConflictActions locale={locale} action={persistenceAction} error={persistenceError} onKeepLocal={onKeepLocal} onUseRemote={onUseRemote} />
     </div> : null}
     {historyStatus === 'error' ? <button type="button" className="agent-collaboration-panel__sync-error" onClick={() => void onReload().catch(() => undefined)}>{historyErrorAction === 'read' ? copy.readSyncFailed : historyErrorAction === 'clear' ? copy.clearSyncFailed : copy.activitySyncFailed}</button> : null}
     <div className="agent-collaboration-panel__toolbar">
