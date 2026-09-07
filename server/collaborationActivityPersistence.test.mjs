@@ -10,6 +10,14 @@ import {
 
 const document = (overrides = {}) => ({ name: '项目', nodes: [], edges: [], agentSessions: [], agentRuns: [], ...overrides })
 
+test('对象键序变化不产生协作动态，真实内容变化仍显示', () => {
+  const before = document({ nodes: [{ id: 'n', type: 'text', data: { label: '文本', content: '原文' }, position: { x: 1, y: 2 } }] })
+  const after = document({ nodes: [{ position: { y: 2, x: 1 }, data: { content: '原文', label: '文本' }, type: 'text', id: 'n' }] })
+  assert.equal(collaborationChangeFromDocuments(before, after), undefined)
+  after.nodes[0].data.content = '新文'
+  assert.equal(collaborationChangeFromDocuments(before, after).summary, '更新了「文本」')
+})
+
 test('持久化协作历史不会为无意义自动保存制造记录', () => {
   assert.equal(collaborationChangeFromDocuments(document(), document()), undefined)
 })

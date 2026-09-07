@@ -35,5 +35,8 @@ test('诊断默认关闭；启用时同次写入关联请求 ID，重试使用�
     assert.equal(records[0].write.id, records[1].write.id)
     assert.equal(records[0].pageId, records[1].pageId)
     assert.deepEqual(records.map(record => record.revision), [3, 4])
+    tracing.traceCanvasWriteFailure(first, { code: 'INVALID_API_RESPONSE', status: 200, message: 'private-body', token: 'private-token' })
+    const failure = JSON.parse(logged.at(-1)!)
+    assert.deepEqual(failure, { pageId: records[0].pageId, requestId: first, code: 'INVALID_API_RESPONSE', status: 200 })
   } finally { console.info = originalInfo }
 })

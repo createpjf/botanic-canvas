@@ -9,12 +9,12 @@ import {
 import { normalizeAssetRecord } from '../domain/assets'
 import { reconcileAgentSessionsAfterDocumentSync, stripAgentSessionMessages } from '../domain/agentCollaboration'
 import { isRemoteDocumentConflict } from '../domain/remoteDocumentSync'
-import { canvasJsonEqual, createCanvasDocumentPatch, type CanvasDocumentPatch } from '../domain/canvasDocumentPatch'
+import { canvasJsonEqual, createCanvasDocumentPatch, canvasPatchIsApplied, canvasPatchCanRebase, type CanvasDocumentPatch } from '../domain/canvasDocumentPatch'
 import { ProductApiError, productRequest, serverPersistenceEnabled } from './productSession'
 import { discardLocalDraftAndRefreshRemote, persistAcceptedRemoteRefresh } from './remoteDocumentRefresh'
 import { canvasDb, enqueuePersistence, type CanvasMediaRecord } from './canvasDb'
 import { prepareCanvasRemoteReplacement } from './canvasRemoteReplacement'
-import { markCanvasWrite, traceCanvasWrite } from './canvasWriteTrace'
+import { markCanvasWrite, traceCanvasWrite, traceCanvasWriteFailure } from './canvasWriteTrace'
 
 export { canvasDb, canvasSyncOutboxStorage } from './canvasDb'
 
@@ -561,7 +561,7 @@ async function writeRemoteCanvasDocument(document: CanvasDocument) {
   const revision = remoteRevisions.get(document.id)
   const graphRevision = remoteGraphRevisions.get(document.id)
   const previous = remoteDocuments.get(document.id)
-  let patch = previous ? createCanvasDocumentPatch(previous, persistable, !v2) : undefined
+  const patch = previous ? createCanvasDocumentPatch(previous, persistable, !v2) : undefined
   const payload = v2 ? withoutCanvasGraph(persistable) : persistable
   const send = async (payload: CanvasDocumentPatch | CanvasDocument, method: 'PATCH' | 'PUT', expectedRevision?: number) => {
     const prepared = await serializeRemoteMediaValue(payload)
@@ -575,7 +575,7 @@ async function writeRemoteCanvasDocument(document: CanvasDocument) {
         ...(remoteGraphRevisions.has(document.id) && !v2 ? { 'X-Canvas-Graph-Revision': String(remoteGraphRevisions.get(document.id)) } : {}),
       },
       body: JSON.stringify(prepared),
-    })
+    }).catch(error => { traceCanvasWriteFailure(requestId, error); throw error })
   }
 
   let response: Awaited<ReturnType<typeof send>> | undefined = patch && !Object.keys(patch).length && previous && revision !== undefined
@@ -601,9 +601,8 @@ async function writeRemoteCanvasDocument(document: CanvasDocument) {
           throw error
         }
         if (confirmed) {
-          patch = createCanvasDocumentPatch(confirmed, persistable, !v2)
           const confirmedRevision = remoteRevisions.get(document.id)
-          if (!Object.keys(patch).length && confirmedRevision !== undefined) {
+          if (canvasPatchIsApplied(confirmed, patch) && confirmedRevision !== undefined) {
             response = {
               document: confirmed,
               revision: confirmedRevision,
@@ -612,9 +611,9 @@ async function writeRemoteCanvasDocument(document: CanvasDocument) {
             }
             break
           }
-          conflictAttempts += 1
-          continue
         }
+        // 已可能落库的写入不盲目重放；原始错误与草稿保留，避免 200 后继续制造版本。
+        throw error
       }
       if (!isRemoteDocumentConflict(error) || !patch || conflictAttempts >= 3) {
         if (isRemoteDocumentConflict(error)) remoteConflictRevisions.set(document.id, {
@@ -628,7 +627,11 @@ async function writeRemoteCanvasDocument(document: CanvasDocument) {
       conflictAttempts += 1
       // 同一用户的即时保存与离线草稿刚好交错时，仅重放“相对旧快照的增量”。
       // 不重发整份文档，避免把 Worker 已写入的输出节点从远端删掉。
-      await readRemoteCanvasDocument(document.id)
+      const latest = await readRemoteCanvasDocument(document.id)
+      if (!previous || !latest || !canvasPatchCanRebase(previous, latest, patch)) {
+        remoteConflictRevisions.set(document.id, { localRevision: revision, remoteRevision: remoteRevisions.get(document.id) ?? 0, localGraphRevision: graphRevision, remoteGraphRevision: remoteGraphRevisions.get(document.id) })
+        throw error
+      }
     }
   }
   remoteConflictRevisions.delete(document.id)

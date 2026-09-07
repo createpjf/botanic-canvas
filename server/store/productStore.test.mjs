@@ -35,6 +35,18 @@ function createStore() {
   }
 }
 
+test('仅 JSON 键序变化不推高图谱版本，真实节点修改仍推高', () => {
+  const { store } = createStore()
+  const owner = store.authenticate('owner-token')
+  const initial = { ...document('key-order'), nodes: [{ id: 'n', type: 'text', position: { x: 1, y: 2 }, data: { label: 'A' } }] }
+  const first = store.writeProject(owner.id, initial)
+  const reordered = { ...initial, nodes: [{ data: { label: 'A' }, position: { y: 2, x: 1 }, type: 'text', id: 'n' }] }
+  const second = store.writeProject(owner.id, reordered, first.revision, first.graphRevision)
+  assert.equal(second.graphRevision, first.graphRevision)
+  const third = store.writeProject(owner.id, { ...reordered, nodes: [{ ...reordered.nodes[0], position: { x: 3, y: 2 } }] }, second.revision, second.graphRevision)
+  assert.equal(third.graphRevision, second.graphRevision + 1)
+})
+
 test('updateProjectDocument 在锁内读最新文档并原子写回，无变更不 bump revision', () => {
   const { store } = createStore()
   const owner = store.authenticate('owner-token')

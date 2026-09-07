@@ -16,6 +16,20 @@ async function load(entry, mocks) {
   return import(`data:text/javascript;base64,${Buffer.from(result.outputFiles[0].text).toString('base64')}`)
 }
 
+test('读取服务批量上限不修改节点、不保存项目', async () => {
+  const { createCanvasAssetGraphActions } = await load('src/store/canvasAssetGraphActions.ts', { '../lib/db': 'export const writeGlobalAssetLibrary=async()=>{};' })
+  const document = { nodes: [{ id: 'g', type: 'generate', data: { batchCount: 8 } }], agentRuns: [{ id: 'run', status: 'completed' }] }
+  let state = { document, maximumBatchCount: 8 }
+  let writes = 0
+  const actions = createCanvasAssetGraphActions({ get: () => state, set: patch => { state = { ...state, ...patch } }, commitDocument: async () => { writes++ }, editingBlocked: () => false })
+  actions.setMaximumBatchCount(4)
+  actions.setMaximumBatchCount(4)
+  assert.equal(writes, 0)
+  assert.equal(state.maximumBatchCount, 4)
+  assert.equal(state.document, document)
+  assert.equal(document.nodes[0].data.batchCount, 8)
+})
+
 test('React Flow 初次测量只更新本机；手动尺寸调整仍保存', async () => {
   const document = { id: 'measure-test', nodes: [{ id: 'n', type: 'text', position: { x: 0, y: 0 }, data: { text: 'unchanged' } }], edges: [], generationJobs: [], assets: [] }
   const writes = [], transient = []
@@ -163,7 +177,7 @@ test('项目草稿重试隔离其他项目；无变化和 JSON 键序变化不�
   }))
   const doc = id => ({ id, name: id, updatedAt: 1, nodes: [{ id: 'node', type: 'text', position: { x: 1, y: 2 }, data: { label: '原图', text: '保留' } }], edges: [], agentSessions: [] })
   const requests = []
-  let writeGate, failWrite = false, onWrite = () => {}
+  let writeGate, failWrite = false, onWrite = () => {}, uncertainWrite, responseRevision = 1
   const remote = new Map(['current', 'other'].map(id => [id, doc(id)]))
   const previousWindow = globalThis.window
   const previousNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator')
@@ -176,6 +190,7 @@ test('项目草稿重试隔离其他项目；无变化和 JSON 键序变化不�
       requests.push({ id, method: options.method ?? 'GET', body: options.body && JSON.parse(options.body) })
       if (id === 'other') throw Object.assign(new Error('其他项目冲突'), { status: 409 })
       if (options.method) {
+        if (uncertainWrite === 'before') throw Object.assign(new globalThis.__draftRecovery.ApiError('响应不可读'), { status: 200, code: 'INVALID_API_RESPONSE' })
         const gate = writeGate
         writeGate = undefined
         onWrite()
@@ -183,14 +198,18 @@ test('项目草稿重试隔离其他项目；无变化和 JSON 键序变化不�
         else if (failWrite) throw Object.assign(new Error('暂时不可用'), { status: 503 })
         const patch = JSON.parse(options.body)
         remote.set(id, { ...remote.get(id), ...patch.fields, ...(patch.nodes?.upsert ? { nodes: patch.nodes.upsert } : {}) })
+        if (uncertainWrite === 'after') {
+          remote.get(id).nodes.push({ id: 'remote-new', type: 'text', position: { x: 9, y: 9 }, data: { text: '远端新增' } })
+          throw Object.assign(new globalThis.__draftRecovery.ApiError('回执超时'), { status: 0, code: 'REQUEST_TIMEOUT' })
+        }
       }
-      return { document: structuredClone(remote.get(id)), revision: requests.length, graphRevision: 1, syncProtocolEpoch: 1 }
+      return { document: structuredClone(remote.get(id)), revision: responseRevision++, graphRevision: 1, syncProtocolEpoch: 1 }
     },
   }
   try {
     const db = await load('src/lib/db.ts', {
       './canvasDb': 'export const canvasDb=globalThis.__draftRecovery.db; export const enqueuePersistence=f=>f(); export const canvasSyncOutboxStorage={};',
-      './productSession': 'export const serverPersistenceEnabled=true, productRequest=(...args)=>globalThis.__draftRecovery.request(...args); export class ProductApiError extends Error {}',
+      './productSession': 'export const serverPersistenceEnabled=true, productRequest=(...args)=>globalThis.__draftRecovery.request(...args); export class ProductApiError extends Error {} globalThis.__draftRecovery.ApiError=ProductApiError;',
     })
     await tables.pendingSync.put({ id: 'other', document: doc('other'), updatedAt: 1 })
     const local = { ...doc('current'), name: '我的编辑', updatedAt: 2 }
@@ -230,6 +249,17 @@ test('项目草稿重试隔离其他项目；无变化和 JSON 键序变化不�
     await db.syncPendingCanvasDrafts('current')
     assert.equal(remote.get('current').name, '最新编辑')
     assert.equal(await tables.pendingSync.get('current'), undefined)
+    requests.length = 0
+    uncertainWrite = 'after'
+    const accepted = await db.writeCanvasDocument({ ...latest, name: '已写入但回执丢失', updatedAt: 5 }, { immediate: true })
+    assert.equal(requests.filter(request => request.method === 'PATCH').length, 1, '读回已确认就不再重发')
+    assert.ok(accepted.nodes.some(node => node.id === 'remote-new'), '不将远端新增节点反算为本地删除')
+    assert.equal(await tables.pendingSync.get('current'), undefined)
+    requests.length = 0
+    uncertainWrite = 'before'
+    await assert.rejects(db.writeCanvasDocument({ ...accepted, name: '尚未确认', updatedAt: 6 }, { immediate: true }), /响应不可读/)
+    assert.equal(requests.filter(request => request.method === 'PATCH').length, 1, '无法确认时不盲目重发')
+    assert.equal((await tables.pendingSync.get('current')).document.name, '尚未确认')
   } finally {
     globalThis.window = previousWindow
     if (previousNavigator) Object.defineProperty(globalThis, 'navigator', previousNavigator)

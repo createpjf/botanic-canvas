@@ -888,14 +888,8 @@ export function createCanvasAssetGraphActions({
 
     setMaximumBatchCount: (count) => {
       const maximumBatchCount = Math.max(1, Math.round(count) || 1)
-      const document = get().document
-      const nodes = document.nodes.map((node) => node.type === 'generate'
-        ? { ...node, data: {
-            ...(node.data as GenerateNodeData),
-            batchCount: Math.min(maximumBatchCount, clampBatchCount((node.data as GenerateNodeData).batchCount)),
-          } }
-        : node) as CanvasNode[]
-      void commitDocument({ ...document, nodes }, { maximumBatchCount })
+      // 服务能力不是用户编辑；上限由输入/提交校验使用，不能读取健康状态就改写项目。
+      if (get().maximumBatchCount !== maximumBatchCount) set({ maximumBatchCount })
     },
   }
 }

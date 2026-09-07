@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
+import { canonicalHash } from '../canonicalHash.mjs'
 import { agentActionManualRetryConsumptionDecision, agentActionReceiptClaimDecision, agentActionReceiptResolutionDecision, agentSkillPersistenceDecision, agentThreadSummaryCompareAndSetDecision, agentTurnExecutionClaimDecision, authoritativeAgentActionManualRetryAuthorization, canvasGraphConflictCode, canvasMutationConflictCode, canvasSyncEpochStaleError, committedAgentTurnExecution, finalizedAgentTurnCancellation, normalizeAgentEntityIdPage, normalizeCanvasGraphMutation, normalizePendingAgentReviewRecoveryPage, normalizeStaleTurnQuery, normalizeTurnEventPage, normalizeUpdatedAtIdRecoveryPage, persistedAgentSkillVersion, reclaimableAgentTurnStatuses, requestedAgentTurnCancellation, settledAgentActionReceipt } from './productStoreContract.mjs'
 import postgres from 'postgres'
 import { ensureBootstrapAccessToken, ensurePostgresSchema } from './postgresSchema.mjs'
@@ -173,9 +174,8 @@ function canvasGraph(document) {
 }
 
 function sameGraph(left, right) {
-  return JSON.stringify(left) === JSON.stringify(right)
+  return canonicalHash(left) === canonicalHash(right)
 }
-
 async function insertAudit(sql, { actorId, action, projectId, targetId, detail = {}, createdAt }) {
   await sql`
     insert into audit_events (id, actor_id, action, project_id, target_id, detail, created_at)

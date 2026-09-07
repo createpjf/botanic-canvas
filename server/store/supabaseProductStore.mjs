@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { canonicalHash } from '../canonicalHash.mjs'
 import { agentThreadSummaryCompareAndSetDecision, canvasGraphConflictCode, canvasMutationConflictCode, canvasSyncEpochStaleError, normalizeAgentEntityIdPage, normalizeCanvasGraphMutation, normalizePendingAgentReviewRecoveryPage, normalizeStaleTurnQuery, normalizeTurnEventPage, normalizeUpdatedAtIdRecoveryPage, persistedAgentSkillVersion } from './productStoreContract.mjs'
 import { createClient } from '@supabase/supabase-js'
 import { isRetryableSupabaseError, retrySupabaseOperation } from '../supabaseRetry.mjs'
@@ -166,9 +167,8 @@ function canvasGraph(document) {
 }
 
 function sameGraph(left, right) {
-  return JSON.stringify(left) === JSON.stringify(right)
+  return canonicalHash(left) === canonicalHash(right)
 }
-
 /**
  * Supabase ProductStore。Auth 由 Supabase 管理；所有服务端数据写入使用 secret
  * key，浏览器凭 JWT 访问时仍受数据库与 Storage RLS 保护。

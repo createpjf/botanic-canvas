@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { canonicalHash } from './canonicalHash.mjs'
 
 const allowedKinds = new Set(['canvas', 'conversation', 'task', 'project'])
 const allowedTargetKinds = new Set(['node', 'message', 'task', 'project'])
@@ -86,7 +87,7 @@ function contentSignature(node) {
   const { position: _position, selected: _selected, ...rest } = node
   const data = { ...(rest.data ?? {}) }
   delete data.selected
-  return JSON.stringify({ ...rest, data })
+  return canonicalHash({ ...rest, data })
 }
 
 export function collaborationChangeFromDocuments(before, after) {
@@ -103,7 +104,7 @@ export function collaborationChangeFromDocuments(before, after) {
     kind: 'canvas',
     summary: removed.length === 1 ? `移除了「${nodeLabel(removed[0])}」` : `移除了 ${removed.length} 个画布节点`,
   }
-  const changed = (after?.nodes ?? []).filter((node) => beforeNodes.has(node.id) && JSON.stringify(beforeNodes.get(node.id)) !== JSON.stringify(node))
+  const changed = (after?.nodes ?? []).filter((node) => beforeNodes.has(node.id) && canonicalHash(beforeNodes.get(node.id)) !== canonicalHash(node))
   if (changed.length) {
     const movedOnly = changed.length === 1 && contentSignature(beforeNodes.get(changed[0].id)) === contentSignature(changed[0])
     return {
@@ -112,7 +113,7 @@ export function collaborationChangeFromDocuments(before, after) {
       target: { kind: 'node', nodeId: changed[0].id },
     }
   }
-  if (JSON.stringify(before?.edges ?? []) !== JSON.stringify(after?.edges ?? [])) return { kind: 'canvas', summary: '调整了画布连线' }
+  if (canonicalHash(before?.edges ?? []) !== canonicalHash(after?.edges ?? [])) return { kind: 'canvas', summary: '调整了画布连线' }
   if (before?.name !== after?.name) return { kind: 'project', summary: `将项目重命名为「${after?.name ?? '未命名项目'}」`, target: { kind: 'project' } }
   const beforeRuns = new Map((before?.agentRuns ?? []).map((run) => [run.id, run]))
   const run = (after?.agentRuns ?? []).find((candidate) => {

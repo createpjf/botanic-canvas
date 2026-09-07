@@ -59,3 +59,12 @@ export function traceCanvasWrite(document: CanvasDocument, previous: CanvasDocum
   }))
   return requestId
 }
+
+export function traceCanvasWriteFailure(requestId: string | undefined, error: unknown) {
+  if (!enabled || !requestId) return
+  const source = error as { code?: unknown; status?: unknown }
+  console.info('[canvas-write-failure]', JSON.stringify({ pageId, requestId,
+    code: typeof source?.code === 'string' && /^[A-Z_]{1,64}$/u.test(source.code) ? source.code : 'UNKNOWN',
+    status: typeof source?.status === 'number' ? source.status : undefined,
+  }))
+}

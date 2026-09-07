@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
+import { canonicalHash } from '../canonicalHash.mjs'
 import { agentActionManualRetryConsumptionDecision, agentActionReceiptClaimDecision, agentActionReceiptResolutionDecision, agentSkillPersistenceDecision, agentThreadSummaryCompareAndSetDecision, agentTurnExecutionClaimDecision, authoritativeAgentActionManualRetryAuthorization, canvasGraphConflictCode, canvasMutationConflictCode, canvasSyncEpochStaleError, committedAgentTurnExecution, finalizedAgentTurnCancellation, normalizeAgentEntityIdPage, normalizeCanvasGraphMutation, normalizePendingAgentReviewRecoveryPage, normalizeStaleTurnQuery, normalizeTurnEventPage, normalizeUpdatedAtIdRecoveryPage, persistedAgentSkillVersion, reclaimableAgentTurnStatuses, requestedAgentTurnCancellation, settledAgentActionReceipt } from './productStoreContract.mjs'
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
@@ -80,7 +81,7 @@ function canvasGraph(document) {
 }
 
 function sameGraph(left, right) {
-  return JSON.stringify(left) === JSON.stringify(right)
+  return canonicalHash(left) === canonicalHash(right)
 }
 
 function projectDocumentSummary(document) {

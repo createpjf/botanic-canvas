@@ -1,4 +1,5 @@
 import * as Y from 'yjs'
+import { canonicalHash } from '../canonicalHash.mjs'
 import { canvasGraphConflictCode } from '../store/productStoreContract.mjs'
 import { isCanonicalImageFormat } from '../media/mediaFormats.mjs'
 
@@ -275,7 +276,7 @@ function sanitizeNodeRecords(document, current, recordIds, geometryIds, configId
 }
 
 function sameGraph(left, right) {
-  return JSON.stringify(left) === JSON.stringify(right)
+  return canonicalHash(left) === canonicalHash(right)
 }
 
 function materializeRecords(current, records, changedIds, { preserveMedia = false } = {}) {
