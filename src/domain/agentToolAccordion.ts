@@ -637,7 +637,8 @@ export function presentAgentTimelineConversation(timeline: AgentTimelineState) {
     if (block.error || block.errorCode || !(submit?.error || submit?.errorCode)) return block
     return { ...block, ...timelineFailureFields(submit.error, submit.errorCode) }
   })
-  return { live, visible, collapsed: [] as TimelineBlock[] }
+  const collapsed: TimelineBlock[] = visible.filter((block): boolean => block.type === 'step' && block.status === 'succeeded' && !isGenerateStep(block))
+  return { live, visible: visible.filter((block) => !collapsed.includes(block)), collapsed }
 }
 
 /** 对话里用动作，不用内部管道名。 */

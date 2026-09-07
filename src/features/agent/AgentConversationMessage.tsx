@@ -53,9 +53,10 @@ import { AgentMarkdownSources } from './AgentMarkdown'
 import { AgentPromptResponse } from './AgentPromptResponse'
 import { AgentCanvasActionPreview } from './AgentCanvasActionPreview'
 import { AgentActionImpact, AgentPlanImpactSummary } from './AgentImpactSummary'
-import { AgentMessageRichContent, AgentRichText } from './AgentMentionText'
+import { AgentMessageMentions, AgentMessageRichContent, AgentRichText } from './AgentMentionText'
 import { agentMessageNeedsCollapse, splitAgentMessageSources } from '../../domain/agentMarkdown'
 import type { BotanicAgentMentionCatalog } from '../../domain/agentMentions'
+import { botanicAgentMessageRichView } from '../../domain/agentMentions'
 import {
   botanicAgentMessageHasUtilities,
   botanicAgentMessageIsRunLinked,
@@ -73,7 +74,7 @@ import {
 } from '../../domain/agentCreativeComposition'
 import { useProductI18n } from '../../i18n/react'
 import type { ProductLocale } from '../../i18n/core'
-import type { BotanicAgentRunReview } from '../../domain/agentReviewContract'
+import { botanicAgentMessageIsReview } from '../../domain/agentMessageUtilities'
 import { agentTimelineOrbState, agentTimelineStepToolName, timelineStepShowsWebSources, timelineWebSourceHref, type AgentTimelineState, type TimelineBlock, type TimelineStepKind, type TimelineWebSource } from '../../domain/agentTimeline'
 import { agentTimelineHasRenderableContent, agentToolDurationLabel, conversationTimelineStepTitle, presentAgentTimelineConversation, presentAgentToolAccordion, presentAgentToolAccordionFromCalls } from '../../domain/agentToolAccordion'
 import { AgentToolCallAccordion, AgentToolCallIcon } from './AgentActionCard'
@@ -293,28 +294,6 @@ function AgentMessageUtilities({
       {actions.copy ? <button type="button" aria-label={copied ? t('已复制', 'Copied') : t('复制消息', 'Copy message')} title={t('复制消息', 'Copy message')} onClick={() => void copy()}><CopyIcon /></button> : null}
       {copied ? <small className="agent-message__copied" role="status">{t('已复制', 'Copied')}</small> : null}
     </div>
-  </div>
-}
-
-function AgentReviewDecision({
-  review,
-  pending,
-  onDecision,
-}: {
-  review: BotanicAgentRunReview
-  pending: boolean
-  onDecision?: (decision: 'accepted' | 'rejected') => void
-}) {
-  const { locale } = useProductI18n()
-  if (!review.id || !onDecision) return null
-  if (review.status && review.status !== 'pending') {
-    const label = review.status === 'accepted' ? (locale === 'en' ? 'Accepted' : '已接受') : review.status === 'rejected' ? (locale === 'en' ? 'Rejected' : '已退回') : (locale === 'en' ? 'Retry requested' : '已请求重试')
-    return <p className="agent-review-decision" role="status">{label}{review.decisionNote ? ` · ${review.decisionNote}` : ''}</p>
-  }
-  return <div className="agent-review-decision" aria-label={locale === 'en' ? 'Review decision' : '评审决策'}>
-    <span>{locale === 'en' ? 'Review' : '评审'}</span>
-    <button type="button" disabled={pending} onClick={() => onDecision('accepted')}>{locale === 'en' ? 'Accept' : '接受'}</button>
-    <button type="button" disabled={pending} onClick={() => onDecision('rejected')}>{locale === 'en' ? 'Reject' : '退回'}</button>
   </div>
 }
 
@@ -540,19 +519,18 @@ function AgentMessageTimeline({
   const view = presentAgentTimelineConversation(timeline)
   if (!view.visible.length && !view.collapsed.length && !timeline.truncation && !liveAccordion) return null
 
-  // 竖线轨道只服务可见动作行；accordion 用间距分组，toolLive 不再点亮 is-live，避免线压过图标。
-  const flowRailLive = view.visible.some((block) => (
-    (block.type === 'thinking' && block.status === 'running')
-    || (block.type === 'step' && block.status === 'running')
-  ))
-
-  return <div className={`agent-timeline is-flow${flowRailLive ? ' is-live' : ''}`} aria-label={locale === 'en' ? 'Agent live progress' : 'Agent 实时进度'}>
-    {liveAccordion ? <AgentToolCallAccordion view={liveAccordion} /> : null}
-    {view.visible.map(renderBlock)}
-    {view.collapsed.length ? <details className="agent-timeline__settled">
-      <summary><span>{locale === 'en' ? 'View steps' : '查看步骤'}</span></summary>
-      <div className="agent-timeline__settled-list">{view.collapsed.map(renderBlock)}</div>
-    </details> : null}
+  const timing = timeline.timing
+  const end = timing?.live ? now : timing?.endedAt
+  const elapsed = timing?.startedAt !== undefined && end !== undefined ? agentToolDurationLabel(Math.max(0, end - timing.startedAt), locale) : undefined
+  const failures = view.visible.filter((block) => block.type === 'step' && (block.status === 'failed' || block.status === 'aborted'))
+  const toolFailed = accordion?.groups.some((group) => group.status === 'failed')
+  return <div className="agent-timeline is-total" aria-label={locale === 'en' ? 'Activity' : '执行记录'}>
+    <details className="agent-timeline__total" key={toolFailed ? 'failed' : 'normal'} open={toolFailed || undefined}>
+      <summary><span>{elapsed ? `${locale === 'en' ? 'Total time' : '用时'} ${elapsed}` : locale === 'en' ? 'View activity' : '查看过程'}</span><ChevronDownIcon aria-hidden="true" /></summary>
+      {liveAccordion ? <AgentToolCallAccordion view={liveAccordion} /> : null}
+      {[...view.visible.filter((block) => !failures.includes(block)), ...view.collapsed].map(renderBlock)}
+    </details>
+    {failures.map(renderBlock)}
     {timeline.truncation && onLoadMore ? <button type="button" className="agent-timeline__load-more" disabled={loadingMore} onClick={onLoadMore}>
       {loadingMore ? (locale === 'en' ? 'Loading…' : '加载中…') : (locale === 'en' ? 'More activity' : '更多活动')}
     </button> : null}
@@ -591,7 +569,7 @@ function AgentPlanContextChips({
       const ref = mentionCatalog?.references?.find((candidate) => candidate.id === item.nodeId)
       return <AgentAttachment key={item.nodeId} data={attachmentFromContextItem({
         id: item.nodeId,
-        label: ref?.label ?? item.label,
+        label: item.label,
         kind: item.kind,
         ...(ref?.image ? { image: ref.image } : {}),
       })}>
@@ -846,21 +824,14 @@ function AgentPlanPromptReview({
   onCommit: (value: string) => void
 }) {
   const { locale } = useProductI18n()
-  const [expanded, setExpanded] = useState(false)
   const comparable = Boolean(instruction.trim() && instruction.trim() !== draft.trim())
-  const long = draft.length > 96 || draft.split('\n').length > 3
-  return <section className="agent-prompt-review" aria-label={locale === 'en' ? 'Refined prompt' : '润色后的提示词'}>
-    <header>
-      <strong>{submitted ? (locale === 'en' ? 'Prompt used' : '本次提示词') : (locale === 'en' ? 'Prompt' : '提示词')}</strong>
-      {!submitted && long ? <button type="button" className="agent-prompt-review__toggle" onClick={() => setExpanded((open) => !open)}>{expanded ? (locale === 'en' ? 'Collapse' : '收起') : (locale === 'en' ? 'Expand' : '展开')}</button> : null}
-    </header>
+  return <details className="agent-prompt-review" aria-label={locale === 'en' ? 'Refined prompt' : '润色后的提示词'}>
+    <summary>{submitted ? (locale === 'en' ? 'Prompt used' : '本次提示词') : (locale === 'en' ? 'Edit prompt' : '编辑提示词')}</summary>
     {submitted
       ? <div className="agent-prompt-review__submitted"><pre className="agent-prompt-output__text"><AgentRichText text={draft} catalogs={mentionCatalog} /></pre></div>
       : <textarea
-        className={!expanded && long ? 'is-clamped' : undefined}
         value={draft}
         onChange={(event) => onDraftChange(event.target.value)}
-        onFocus={() => setExpanded(true)}
         onBlur={(event) => onCommit(event.currentTarget.value)}
         maxLength={6000}
         aria-label={locale === 'en' ? 'Refined prompt' : '润色后提示词'}
@@ -868,7 +839,7 @@ function AgentPlanPromptReview({
     {(trailing || comparable) ? <div className="agent-prompt-review__meta-row">
       {trailing}
       {comparable ? <details className="agent-prompt-review__compare">
-        <summary>{locale === 'en' ? 'View original' : '看原文'}</summary>
+        <summary>{locale === 'en' ? 'Compare original request' : '对比原始要求'}</summary>
         <AgentPromptDiff original={instruction} revised={draft} />
         {submitted ? null : <div className="agent-prompt-review__actions">
           <button type="button" className="agent-text-action" onClick={() => { onDraftChange(instruction); onCommit(instruction) }}>{locale === 'en' ? 'Use original' : '用原文'}</button>
@@ -876,7 +847,7 @@ function AgentPlanPromptReview({
         </div>}
       </details> : null}
     </div> : null}
-  </section>
+  </details>
 }
 
 function AgentCompositionCard({
@@ -1053,8 +1024,6 @@ export function AgentConversationMessage({
   onDiscardDelivery,
   onFeedback,
   onSaveAsMemory,
-  onReviewDecision,
-  reviewDecisionPending = false,
 }: AgentConversationMessageProps) {
   const { locale } = useProductI18n()
   const t = (zh: string, en: string) => locale === 'en' ? en : zh
@@ -1176,7 +1145,7 @@ export function AgentConversationMessage({
     : timeline?.blocks.some((block) => block.type === 'step' || block.type === 'raw_group')
       ? t('正在执行…', 'Running…')
       : t('正在规划…', 'Planning…')
-  const messageProse = message.kind === 'composition' && message.composition
+  const messageProse = botanicAgentMessageIsReview(message) ? null : message.kind === 'composition' && message.composition
     ? <AgentCompositionCard
       composition={message.composition}
       busy={planning || submittingMessageId === message.id}
@@ -1192,10 +1161,11 @@ export function AgentConversationMessage({
           // 时间线画得出内容时进度在上面；空时间线仍要占位，不能让气泡整段空白。
           : timeline && agentTimelineHasRenderableContent(timeline) ? null : <Shimmer as="p" className="agent-message__pending" duration={1.8}>{pendingLabel}</Shimmer>
         : <AgentCollapsibleContent content={message.content} prompt={message.prompt} mentionCatalog={mentionCatalog} />
-      : <AgentMessageRichContent content={message.content} mentions={message.mentions} catalogs={mentionCatalog} />) : null
+      : <AgentMessageRichContent content={message.content} mentions={message.mentions} catalogs={mentionCatalog} hideMentions={message.role === 'user'} />) : null
 
   return <Message from={message.role} data-settled={botanicAgentMessageIsSettled(message, linkedRun, streaming || runCancelling)} className={`agent-message is-${message.role} is-${message.kind}${timeline ? ' has-timeline' : ''}${allowsSays ? ' is-bob-large' : ''}${showUtilities ? utilitySurface.className : ''}`} role={liveStatus ? 'status' : undefined} aria-live={liveStatus ? 'polite' : undefined} aria-busy={messageBusy || undefined}>
     {bob ? <div className="agent-message__role" data-bob-mood={bob.mood} data-bob-says={bob.says}><BobCharacter mood={bob.mood} says={bob.says} saysCycles={bob.cycles} onSaysComplete={() => bobPlays.markPlayed(bob.says)} /></div> : null}
+    {message.role === 'user' ? <AgentMessageMentions mentions={botanicAgentMessageRichView({ content: message.content, mentions: message.mentions, catalogs: mentionCatalog }).mentions} catalogs={mentionCatalog} /> : null}
     <MessageContent className="agent-message__body">
       <AgentReferenceUsageDetails usage={timeline?.references} catalog={mentionCatalog} nodeIds={contextOptionIds} onLocateNode={onLocateNode}
         projectId={projectId} sessionId={sessionId} plannerModel={plannerModel} disabled={streaming || agentBusy}
@@ -1219,7 +1189,6 @@ export function AgentConversationMessage({
         <p>{recoveryIssue.message}</p>
         {recoveryIssue.steps.length ? <details><summary>{t('涉及的操作', 'Affected operations')}</summary><ul>{recoveryIssue.steps.map((step) => <li key={step}>{step}</li>)}</ul></details> : null}
       </div> : null}
-      {message.review ? <AgentReviewDecision review={message.review} pending={reviewDecisionPending} onDecision={onReviewDecision ? (decision) => onReviewDecision(message, decision) : undefined} /> : null}
       {isRunLinkedMessage && !message.plan && (outputNodeIds.length > 0 || continueResultControl) ? <div className="agent-run-message__bar" aria-label={t('结果操作', 'Result actions')}>
         {outputNodeIds.length ? <button type="button" className="agent-run-message__action" onClick={() => onFocusNodes(outputNodeIds)}><PinNodeIcon /><span>{t('定位画布', 'Locate on canvas')}</span></button> : null}
         {continueResultControl}
@@ -1336,7 +1305,7 @@ export function AgentConversationMessage({
           {planSubmitted
             ? null
             : <>
-              <AgentPlanSettingsEditor
+              <details className="agent-plan__settings-disclosure"><summary>{t('调整参数', 'Adjust settings')}</summary><AgentPlanSettingsEditor
                 settings={plan.settings}
                 // 换模型不能顺便换媒体类型：视频计划带着 duration，切到图片模型会在提交时被拒。
                 models={generationModels.filter((model) => (model.mediaKind === 'video') === (botanicAgentPlanMediaKind(plan) === 'video'))}
@@ -1350,43 +1319,44 @@ export function AgentConversationMessage({
                   : {})}
                 disabled={submittingMessageId === message.id || planStopped}
                 onChange={(settings) => onCommitPlanSettings(message, settings)}
-              />
-              {contextItems.length ? <AgentPlanContextChips items={contextItems} mentionCatalog={mentionCatalog} /> : null}
+              /></details>
               {promptReview}
             </>}
-          {branchPrompts.length ? <section className="agent-plan-branches" aria-label={t('变体分支，原参考图保留，各分支单独出图', 'Variation branches; original references are preserved and each branch generates separately')}>
+          {contextItems.length ? <AgentPlanContextChips items={contextItems} mentionCatalog={mentionCatalog} /> : null}
+          {branchPrompts.length > 1 ? <details className="agent-plan-branches" aria-label={t('变体分支，原参考图保留，各分支单独出图', 'Variation branches; original references are preserved and each branch generates separately')}>
+            <summary>{t(`查看 ${branchPrompts.length} 个版本`, `View ${branchPrompts.length} versions`)}</summary>
             <ol>{branchPrompts.map((branch, index) => <li key={`${branch.label}-${index}`}>
               <b>{branch.label}</b>
               <p><AgentRichText text={branch.delta || branch.prompt} catalogs={mentionCatalog} /></p>
               {branch.delta ? <details className="agent-plan-branches__full"><summary>{t('完整提示词', 'Full prompt')}</summary><pre className="agent-prompt-output__text"><AgentRichText text={branch.prompt} catalogs={mentionCatalog} /></pre></details> : null}
             </li>)}</ol>
-          </section> : null}
+          </details> : null}
           {pendingActionCount ? <details className="agent-message__route"><summary>{t('执行路由', 'Execution route')}</summary><div><span>{t('规划', 'Planning')}</span><b>{agentPlannerModelLabel(plan.plannerModel ?? plannerModel)}</b><span>{t('生成', 'Generation')}</span><b>{plan.settings.model}</b><span>{t('外部行动', 'External actions')}</span><b>{t(`${pendingActionCount} 项，确认后执行`, `${pendingActionCount} to run after approval`)}</b></div></details> : null}
           {planSubmitted ? null : <div className="agent-plan__footer">
             {/* 停在这里一定有原因，必须说清楚，否则用户只会觉得“自动模式没生效”。 */}
             {autoPauseHint ? <small className="agent-plan__auto-paused">{autoPauseHint}</small> : null}
             {/* 信任按理由逐条交出：勾一次，这一类以后不再拦。外部行动和模型推断意图不在这里。 */}
-            {waivableReason && !planStopped ? <label className="agent-plan__waiver">
-              <input
-                type="checkbox"
-                checked={false}
+            {waivableReason && !planStopped ? <details className="agent-plan__waiver"><summary>{t('确认设置', 'Confirmation settings')}</summary>
+              <button
+                type="button"
                 disabled={submittingMessageId === message.id}
-                onChange={() => onWaiveConfirmation(waivableReason)}
-              />
+                onClick={() => onWaiveConfirmation(waivableReason)}
+              >
               <span>{waivableReason === 'batch_count'
                 ? t('多张出图以后直接执行', 'Run multi-image plans without asking')
                 : t('这类出图以后直接执行', 'Run image plans without asking')}</span>
-            </label> : null}
+              </button>
+            </details> : null}
             {planStopped ? <span role="status">{t('已请求停止', 'Stop requested')}</span> : <button type="button" className="agent-plan__confirm" disabled={submittingMessageId === message.id || blockedByActions} onClick={() => onConfirmPlan(message)}>{locale === 'en' ? (submittingMessageId === message.id ? 'Submitting…' : blockedByActions ? 'Confirm the actions below' : message.status === 'failed' ? 'Retry generation' : `Generate ${plan.output.count} image${plan.output.count === 1 ? '' : 's'}`) : botanicAgentPlanConfirmActionLabel(plan, submittingMessageId === message.id ? 'submitting' : blockedByActions ? 'blocked' : message.status === 'failed' ? 'failed' : 'ready')}</button>}
           </div>}
         </>
-        const planShell = (className: string, content: ReactNode) => <Plan className={className} defaultOpen isStreaming={planning && !planSubmitted}>
+        const planShell = (className: string, content: ReactNode) => <Plan key={planSubmitted ? 'receipt' : 'confirmation'} className={className} defaultOpen={!planSubmitted} isStreaming={planning && !planSubmitted}>
           <PlanHeader>
             <div>
-              <PlanTitle>{planSubmitted ? t('已提交计划', 'Submitted plan') : t('生成计划', 'Generation plan')}</PlanTitle>
-              <PlanDescription>{planSubmitted ? t('本次执行的确认回执', 'Confirmation receipt for this run') : t('检查参数与行动后执行', 'Review settings and actions before running')}</PlanDescription>
+              <PlanTitle>{planSubmitted ? t('已提交', 'Submitted') : presentBotanicAgentPlanSummary(plan.summary) || t('确认生成', 'Confirm generation')}</PlanTitle>
+              <PlanDescription>{[planCountLabel(plan), customSize ? `${plan.settings.outputWidth}×${plan.settings.outputHeight}` : plan.settings.aspectRatio, plan.settings.resolution, plan.settings.duration ? `${plan.settings.duration}${t('秒', 's')}` : '', modelLabel].filter(Boolean).join(' · ')}</PlanDescription>
             </div>
-            <PlanAction><PlanTrigger aria-label={planSubmitted ? t('展开已提交计划', 'Expand submitted plan') : t('展开生成计划', 'Expand generation plan')} /></PlanAction>
+            <PlanAction><PlanTrigger aria-label={planSubmitted ? t('查看提交详情', 'View submission details') : t('展开生成计划', 'Expand generation plan')}>{planSubmitted ? t('查看详情', 'View details') : undefined}</PlanTrigger></PlanAction>
           </PlanHeader>
           <PlanContent>{content}</PlanContent>
         </Plan>

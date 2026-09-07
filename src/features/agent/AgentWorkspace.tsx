@@ -1387,19 +1387,19 @@ export default function AgentWorkspace({
   const welcomeBob = bobWelcomePresentation(prefersReducedMotion() ? { hmm: 1, wow: 0 } : welcomeSays.plays)
 
   const welcomePlayedRef = useRef(false)
+  const showWelcome = !utilityPanelOpen && !hasMessages && !messageHistory?.loading && !messageHistory?.error
   useGSAP(() => {
-    if (utilityPanelOpen || hasMessages || prefersReducedMotion() || welcomePlayedRef.current) return
+    if (!showWelcome || prefersReducedMotion() || welcomePlayedRef.current) return
     welcomePlayedRef.current = true
     // Flip 开栏时跳过欢迎 stagger，避免和侧栏展开叠成两次入场。
     if (fromEmptyGuide) return
-    const welcome = gsap.timeline({ defaults: { duration: botanicMotion.duration.panel, ease: botanicMotion.ease } })
-    welcome
+    gsap.timeline({ defaults: { duration: botanicMotion.duration.panel, ease: botanicMotion.ease } })
       .from('.agent-workspace__mark', { autoAlpha: 0, scale: 0.92 }, 0)
       .from('.agent-workspace__welcome small', { autoAlpha: 0, y: 6 }, '>-0.12')
       .from('.agent-workspace__welcome h2', { autoAlpha: 0, y: 8 }, '>-0.16')
       .from('.agent-workspace__welcome p', { autoAlpha: 0, y: 6 }, '>-0.18')
       .from('.agent-workspace__starters button', { autoAlpha: 0, y: 8, stagger: 0.05 }, '>-0.12')
-  }, { scope: workspaceRef, dependencies: [fromEmptyGuide, hasMessages, utilityPanelOpen, locale] })
+  }, { scope: workspaceRef, dependencies: [fromEmptyGuide, showWelcome, locale], revertOnUpdate: true })
 
   useGSAP(() => {
     if (!readingPositionRestoredRef.current || !latestRenderedMessageId) return
@@ -3679,7 +3679,7 @@ export default function AgentWorkspace({
         <ConversationContent>
         {messageHistory?.error ? <div className="agent-reading-restore" role="alert"><span title={messageHistory.error}>{locale === 'en' ? hasMessages ? 'Messages could not be updated.' : 'Messages could not be loaded.' : hasMessages ? '消息更新失败' : '消息读取失败'}</span><button type="button" disabled={messageHistory.loading} onClick={() => void messageHistory.retry().catch(() => undefined)}>{locale === 'en' ? 'Retry' : '重试'}</button></div> : null}
         {messageHistory?.loading && !hasMessages ? <div role="status">{locale === 'en' ? 'Loading messages…' : '正在读取消息…'}</div> : null}
-        {!hasMessages && !messageHistory?.loading && !messageHistory?.error ? <section className="agent-workspace__welcome">
+        {showWelcome ? <section className="agent-workspace__welcome">
           <span className="agent-workspace__mark" data-bob-mood={welcomeBob.mood} data-bob-says={welcomeBob.says}><BobCharacter mood={welcomeBob.mood} says={welcomeBob.says} saysCycles={welcomeBob.cycles} onSaysComplete={() => welcomeSays.markPlayed(welcomeBob.says)} /></span>
           <small>{copy.welcomeMark}</small>
           <h2>{target ? copy.welcomeTarget(agentTargetDisplayLabel(target)) : copy.welcome}</h2>

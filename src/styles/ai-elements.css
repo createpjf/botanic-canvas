@@ -275,6 +275,9 @@
   cursor: pointer;
 }
 .botanic-agent-shell .ai-plan__trigger:hover { background: #eef5ee; color: #2d633b; }
+.botanic-agent-shell .is-submitted .ai-plan__trigger { width: auto; min-width: 64px; padding-inline: 8px; white-space: nowrap; font-size: 12px; }
+.botanic-agent-shell .agent-plan__settings-disclosure > summary { min-height: 24px; cursor: pointer; font-size: 12px; }
+.botanic-agent-shell .agent-plan__settings-disclosure[open] > summary { margin-bottom: 8px; }
 .botanic-agent-shell .ai-plan__trigger svg { width: 16px; height: 16px; transition: transform 160ms ease; }
 .botanic-agent-shell .agent-message__plan[data-state="open"] .ai-plan__trigger svg { transform: rotate(180deg); }
 .botanic-agent-shell .ai-plan__content { min-width: 0; }
@@ -350,7 +353,7 @@
 .botanic-agent-shell .ai-model-selector__select { min-width: 0; }
 .botanic-agent-shell .ai-suggestions { min-width: 0; }
 .botanic-agent-shell .agent-workspace__starters.ai-suggestions { display: grid; }
-.botanic-agent-shell .agent-workspace__starter { text-align: start; white-space: normal; }
+.botanic-agent-shell .agent-workspace__starter { grid-template-columns: minmax(0, 1fr); justify-content: stretch; justify-items: start; align-items: start; height: auto; text-align: start; white-space: normal; }
 
 .botanic-agent-shell .ai-inline-citation { display: inline; min-width: 0; }
 .botanic-agent-shell .ai-inline-citation__text { min-width: 0; transition: background-color 160ms ease, color 160ms ease; }
@@ -405,3 +408,10 @@
   .botanic-agent-shell .ai-plan__trigger svg,
   .botanic-agent-shell .ai-queue__section-label > svg:first-child { transition: none; }
 }
+.botanic-agent-shell .agent-timeline.is-total { padding: 0; margin: 0; border: 0; }
+.botanic-agent-shell .agent-timeline__total > summary { display: flex; align-items: center; justify-content: flex-start; gap: 6px; min-height: 32px; padding: 0; margin: 0; list-style: none; color: #65766a; font-size: 12px; line-height: 1.5; font-variant-numeric: tabular-nums; cursor: pointer; }
+.botanic-agent-shell .agent-timeline__total > summary::-webkit-details-marker { display: none; }
+.botanic-agent-shell .agent-timeline__total > summary svg { width: 14px; height: 14px; stroke-width: 1.5; flex: none; }
+.botanic-agent-shell .agent-timeline__total[open] > summary svg { transform: rotate(180deg); }
+.botanic-agent-shell .agent-timeline__total > summary:focus-visible { outline: 2px solid #6f9c77; outline-offset: 2px; border-radius: 4px; }
+.botanic-agent-shell .agent-timeline.is-total .agent-timeline__step-meta { display: none; }

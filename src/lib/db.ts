@@ -553,7 +553,7 @@ function withoutCanvasGraph(document: CanvasDocument) {
 async function writeRemoteCanvasDocument(document: CanvasDocument) {
   const persistable = stripAgentSessionMessages(document)
   // 本地优先打开的项目可能尚未完成后台版本读取。首次写入前补齐 revision，
-  // 让 PATCH 仍受 If-Match 保护，而不是用无条件 PUT 覆盖远端版本。
+  // 让 PATCH 仍受 revision 条件保护，而不是用无条件 PUT 覆盖远端版本。
   if (!remoteDocuments.has(document.id) && !remoteRevisions.has(document.id)) {
     await readRemoteCanvasDocument(document.id)
   }
@@ -571,7 +571,7 @@ async function writeRemoteCanvasDocument(document: CanvasDocument) {
       headers: {
         'Content-Type': 'application/json',
         ...(requestId ? { 'X-Request-ID': requestId } : {}),
-        ...(expectedRevision === undefined ? {} : { 'If-Match': String(expectedRevision) }),
+        ...(expectedRevision === undefined ? {} : { 'X-Canvas-Revision': String(expectedRevision) }),
         ...(remoteGraphRevisions.has(document.id) && !v2 ? { 'X-Canvas-Graph-Revision': String(remoteGraphRevisions.get(document.id)) } : {}),
       },
       body: JSON.stringify(prepared),
@@ -628,6 +628,11 @@ async function writeRemoteCanvasDocument(document: CanvasDocument) {
       // 同一用户的即时保存与离线草稿刚好交错时，仅重放“相对旧快照的增量”。
       // 不重发整份文档，避免把 Worker 已写入的输出节点从远端删掉。
       const latest = await readRemoteCanvasDocument(document.id)
+      const latestRevision = remoteRevisions.get(document.id)
+      if (latest && latestRevision !== undefined && canvasPatchIsApplied(latest, patch)) {
+        response = { document: latest, revision: latestRevision, graphRevision: remoteGraphRevisions.get(document.id) ?? 1, syncProtocolEpoch: lastKnownCanvasSyncProtocolEpoch(document.id) }
+        break
+      }
       if (!previous || !latest || !canvasPatchCanRebase(previous, latest, patch)) {
         remoteConflictRevisions.set(document.id, { localRevision: revision, remoteRevision: remoteRevisions.get(document.id) ?? 0, localGraphRevision: graphRevision, remoteGraphRevision: remoteGraphRevisions.get(document.id) })
         throw error
@@ -685,7 +690,7 @@ export async function renameCanvasProject(id: string, name: string) {
     method: 'PATCH',
     headers: {
       'Content-Type': 'application/json',
-      ...(revision === undefined ? {} : { 'If-Match': String(revision) }),
+      ...(revision === undefined ? {} : { 'X-Canvas-Revision': String(revision) }),
       ...(remoteGraphRevisions.has(id) ? { 'X-Canvas-Graph-Revision': String(remoteGraphRevisions.get(id)) } : {}),
     },
     body: JSON.stringify({ name }),
@@ -700,7 +705,12 @@ export async function renameCanvasProject(id: string, name: string) {
       if (!isRemoteDocumentConflict(error) || conflictAttempts >= 3) throw error
       conflictAttempts += 1
       // 画布保存刚好抢先提交时，名称 PATCH 不需要覆盖整份文档；刷新 revision 后仅重放名称即可。
-      await readRemoteCanvasDocument(id)
+      const latest = await readRemoteCanvasDocument(id)
+      const revision = remoteRevisions.get(id)
+      if (latest?.name === name && revision !== undefined) {
+        response = { document: latest, revision, graphRevision: remoteGraphRevisions.get(id) ?? 1, syncProtocolEpoch: lastKnownCanvasSyncProtocolEpoch(id) }
+        break
+      }
     }
   }
   rememberRemoteSyncProtocolEpoch(id, response.syncProtocolEpoch)

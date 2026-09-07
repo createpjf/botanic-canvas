@@ -7,6 +7,16 @@ import { canvasMutationConflictCode, canvasSyncEpochStaleCode } from '../store/p
 
 const projectWritePermissionCodes = new Set(['PROJECT_ACCESS_FORBIDDEN', 'PROJECT_WRITE_FORBIDDEN'])
 
+function expectedProjectRevision(request) {
+  // 专用头穿过 CDN，不让代理把业务 revision 当作 HTTP 实体 ETag 消费。
+  const values = ['x-canvas-revision', 'if-match'].map(name => request.headers[name]).filter(value => value !== undefined)
+  const revisions = values.map(value => typeof value === 'string' && /^(?:\d+|"\d+")$/.test(value) ? Number(value.replaceAll('"', '')) : NaN)
+  if (revisions.some(value => !Number.isSafeInteger(value) || value < 0) || new Set(revisions).size > 1) {
+    throw Object.assign(new Error('项目版本条件无效或不一致。'), { statusCode: 400, code: 'INVALID_PROJECT_REVISION' })
+  }
+  return revisions[0]
+}
+
 /**
  * 项目、项目文档、成员与项目审计的 HTTP 模块。
  * 项目版本与图谱版本在这里共同校验，避免组合根重复实现冲突语义。
@@ -115,8 +125,7 @@ export function createProjectRouteHandler({
       const name = text(body?.name, '项目名称', 60)
       const current = await productStore.readProject(user.id, projectId)
       if (!current) return error(response, 404, 'PROJECT_NOT_FOUND', '未找到项目或你没有访问权限。')
-      const expected = request.headers['if-match']?.replaceAll('"', '')
-      const expectedRevision = expected && /^\d+$/.test(expected) ? Number(expected) : current.revision
+      const expectedRevision = expectedProjectRevision(request) ?? current.revision
       try {
         const saved = await productStore.writeProject(user.id, {
           ...current.document,
@@ -178,8 +187,7 @@ export function createProjectRouteHandler({
       await requireProjectPermission(productStore, user.id, projectId, 'edit', { allowMissing: true })
       const document = await readJson(request)
       if (!document || document.id !== projectId || typeof document.name !== 'string') return error(response, 400, 'INVALID_DOCUMENT', '项目文档格式无效。')
-      const expected = request.headers['if-match']?.replaceAll('"', '')
-      const expectedRevision = expected && /^\d+$/.test(expected) ? Number(expected) : undefined
+      const expectedRevision = expectedProjectRevision(request)
       const graphRevision = expectedGraphRevision(request, undefined)
       try {
         const current = await productStore.readProject(user.id, projectId)
@@ -215,8 +223,7 @@ export function createProjectRouteHandler({
       const user = await requireUser(request)
       const projectId = decodeURIComponent(documentMatch[1])
       await requireProjectPermission(productStore, user.id, projectId, 'edit')
-      const expected = request.headers['if-match']?.replaceAll('"', '')
-      const expectedRevision = expected && /^\d+$/.test(expected) ? Number(expected) : undefined
+      const expectedRevision = expectedProjectRevision(request)
       const graphRevision = expectedGraphRevision(request, undefined)
       try {
         const current = await productStore.readProject(user.id, projectId)

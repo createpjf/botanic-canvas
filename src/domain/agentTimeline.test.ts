@@ -355,6 +355,7 @@ test('对话时间线：空思考不出现，步骤按顺序流在主列', () =>
 
   const settled = presentAgentTimelineConversation({
     blocks: [
+      { id: 'exec:prepare', type: 'step', status: 'succeeded', kind: 'write', title: '准备生成', sourceToolIds: [] },
       { id: 'thinking', type: 'thinking', status: 'done', startedAt: 1_000, endedAt: 1_000, text: '' },
       { id: 'exec:submit', type: 'step', status: 'succeeded', kind: 'write', title: '提交生成任务', sourceToolIds: [] },
       { id: 'exec:branch', type: 'step', status: 'succeeded', kind: 'write', title: '生成 · 首次生成', sourceToolIds: [] },
@@ -362,7 +363,7 @@ test('对话时间线：空思考不出现，步骤按顺序流在主列', () =>
   })
   assert.equal(settled.live, false)
   assert.deepEqual(settled.visible.map((block) => block.id), ['exec:branch'])
-  assert.deepEqual(settled.collapsed, [])
+  assert.deepEqual(settled.collapsed.map((block) => block.id), ['exec:prepare'])
 
   const failed = presentAgentTimelineConversation({
     blocks: [

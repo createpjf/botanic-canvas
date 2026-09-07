@@ -83,6 +83,44 @@ function skillApplyAgentState() {
   }] }
 }
 
+test('项目写入使用专用 revision 条件，兼容旧头且拒绝过期、无效和矛盾条件', async () => {
+  const dependencies = testDependencies()
+  const document = { id: 'project-1', name: 'Demo', nodes: [], edges: [] }
+  let writes = 0
+  dependencies.runtime.mediaService.normalizeDocument = async value => value
+  dependencies.runtime.productStore = {
+    async authenticate() { return { id: 'user-1' } },
+    async projectAccess() { return { exists: true, role: 'owner' } },
+    async readProject() { return { document, revision: 3, graphRevision: 2 } },
+    async writeProject(_userId, next, revision) {
+      writes += 1
+      assert.notEqual(revision, undefined, '显式条件不能被丢弃')
+      if (revision !== 3) throw Object.assign(new Error('版本冲突'), { code: 'PROJECT_CONFLICT' })
+      return { document: next, revision: 4, graphRevision: 2 }
+    },
+  }
+  const application = createBotanicHttpServer(dependencies)
+  for (const [method, url, body] of [
+    ['PATCH', '/api/projects/project-1', { name: '新名称' }],
+    ['PATCH', '/api/projects/project-1/document', { fields: { name: '新名称' } }],
+    ['PUT', '/api/projects/project-1/document', document],
+  ]) {
+    for (const [headers, status] of [
+      [{ 'x-canvas-revision': '3' }, 200],
+      [{ 'if-match': '"3"' }, 200],
+      [{ 'x-canvas-revision': '2' }, 409],
+      [{ 'x-canvas-revision': 'invalid' }, 400],
+      [{ 'x-canvas-revision': '3', 'if-match': '"2"' }, 400],
+    ]) {
+      const before = writes
+      const { response } = testResponse()
+      await application.handleRequest(testRequest({ method, url, body, headers }), response)
+      assert.equal(response.statusCode, status, `${method} ${url} ${JSON.stringify(headers)}: ${response.body}`)
+      if (status === 400) assert.equal(writes, before, '无效条件不能进入存储写入')
+    }
+  }
+})
+
 test('可注入 HTTP Server 无需启动生产运行时即可响应健康检查', async () => {
   const application = createBotanicHttpServer(testDependencies())
   const { headers, response } = testResponse()

@@ -80,15 +80,17 @@ export function AgentMessageRichContent({
   content,
   mentions,
   catalogs,
+  hideMentions = false,
 }: {
   content: string
   mentions?: readonly BotanicAgentMessageMention[]
   catalogs?: BotanicAgentMentionCatalog
+  hideMentions?: boolean
 }) {
   const view = botanicAgentMessageRichView({ content, mentions, catalogs })
   const hasText = view.spans.some((span) => span.kind === 'text' ? Boolean(span.text) : true)
   return <>
-    <AgentMessageMentions mentions={view.mentions} catalogs={catalogs} />
+    {hideMentions ? null : <AgentMessageMentions mentions={view.mentions} catalogs={catalogs} />}
     {hasText ? <p><AgentRichText spans={view.spans} catalogs={catalogs} /></p> : null}
   </>
 }

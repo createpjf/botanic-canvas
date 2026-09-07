@@ -47,10 +47,12 @@ test('「未验证」与「不符合」必须是两个词', () => {
 
 test('会话评审消息只从 durable task 投影', () => {
   const message = formatAgentReviewTaskProjectionMessage(task)
-  assert.match(message, /质量评审已完成/u)
+  assert.match(message, /1 张未通过检查/u)
   assert.match(message, /5 张图中已评审 2 张/u)
-  assert.match(message, /1 张符合、1 张不符合/u)
-  assert.match(message, /评审面板/u)
+  assert.doesNotMatch(message, /0 张|质量评审已完成/u)
+  const unverified = formatAgentReviewTaskProjectionMessage({ ...task, coverage: { strategy: 'capped', totalCandidates: 1, reviewedCandidates: 1, skippedCandidates: 0 }, results: [{ ...task.results[0], verdict: 'unverifiable' }] })
+  assert.match(unverified, /需人工确认：1 张无法自动验证/u)
+  assert.doesNotMatch(unverified, /自动检查通过|0 张/u)
 })
 
 test('覆盖摘要必须说出被跳过的结果数', () => {

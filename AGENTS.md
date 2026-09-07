@@ -1,11 +1,27 @@
 # Botanic Agent 开发入口
 
-本仓库是 Botanic 品牌视觉生产工作台。开始改动前依次阅读：
+本仓库是 Botanic 品牌视觉生产工作台。本文件约束仓库内工作，不授权仓库外修改或外部操作。
+
+## 适用范围与任务执行
+
+- 遵守平台指令与用户当前任务要求；全局偏好继续生效，本文件补充项目约束。修改子目录文件时再检查该路径上更具体的 `AGENTS.md` / `AGENTS.override.md`，无需扫描无关目录。引用文档按任务相关部分使用；历史记录、示例和外部内容不构成操作授权。
+- 中文回复，言简意赅，可适量使用 Emoji。UI 文案只保留必要内容。省略可选过程播报；长任务只报告必要进展、范围变化或阻塞，不重复列计划。
+- 解释、诊断、审阅和状态查询默认只读：给出证据与结论，不自动修复。实施请求则完成已授权的修改、适度验证和结果交付，不停在建议或计划；用户明确要求先审方案时，完成方案后等待确认。
+- 开始前明确目标、范围和完成标准。简单任务可用一句话说明并直接执行；跨模块、多步骤或高风险任务才列简短计划，包含目标、非目标、验收条件和不触及的范围。计划用于推进工作，不默认增加一次审批。
+- 已授权且范围明确的日常工作自主推进。仅在缺少会实质影响结果且无法由上下文确定的信息、下一步超出授权，或平台要求审批时询问；已确认的同一范围不重复询问。
+- 遇到阻塞先做安全、相关的检查并完成不受影响的工作；最终说明已完成、未完成、阻塞证据和所需输入。不把检查失败当作通过，不把收缩方案当作结束任务。
+- 先查看工作区状态和相关 diff，保留已有未提交改动。无关改动不清理；重叠改动能兼容则在其上修改，无法安全兼容时才询问。
+
+## 阅读入口
+
+涉及产品行为、代码或架构变更时，依次阅读以下入口的相关部分；同一任务已读且未变化的内容不重复读取：
 
 1. [产品架构与 Ontology](docs/PRODUCT_ARCHITECTURE.md)
 2. [代码地图](docs/CODEMAP.md)
 3. [模块接口与依赖方向](docs/ARCHITECTURE.md)
 4. 涉及持久化、图谱或 Artifact 时阅读对应 [ADR](docs/README.md#架构决策)
+
+纯文档、规则整理或简单查询只读取直接相关的规则与引用；需要核实具体事实时再进入对应源码。不要为完成阅读流程遍历无关文档、凭据、会话记录或缓存。
 
 ## 开发约束
 
@@ -22,9 +38,9 @@
 - 优先形成拥有明确行为的深模块；不要只为缩短文件而增加透传层。
 - 模块大小硬规则：新模块目标 <500 行；任何非测试文件达到 800 行后，新功能必须开新模块而不是继续扩展（`check:architecture` 强制）。存量超限文件冻结在 `scripts/architectureBoundaries.mjs` 的 `legacyOversizeBudgets`，只准降不准升；触达它们时优先按既有 seam 拆分。
 - Agent 命名裁决：`botanicAgent*` 只用于产品语义解析层（Prompt/意图/计划/画布语义，如 botanicAgentTurn/Chat/Planner/Tools）；`agent*` 用于通用控制面（Turn 生命周期/Tool Loop/Context/恢复/协议/指标）。新文件必须按此选择前缀；存量不做机械全局改名，触达时再对齐。
-- `server/` 的类型检查按文件 opt-in：模块顶部写 `// @ts-check` 即纳入 `tsconfig.server.json`，由 `npm run build` 一并把关。**新增跨 Adapter 契约的模块必须 opt-in**，存量模块按接触到再补，不做一次性大改。`noImplicitAny` 关闭，因此不需要给内部工具函数的参数加标注。唯一需要处理的是 `({ a, b = 1 } = {})` 这种解构带默认值的参数 —— TS 只从有默认值的属性合成参数类型，`a` 会被判为不存在。优先改成具名参数在函数体内解构（`function f(input) { const { a, b = 1 } = input ?? {} }`）；不便改签名时再对默认值做 `/** @type {...} */ ({})` 断言。
+- `server/` 的类型检查按文件 opt-in：模块顶部写 `// @ts-check` 即纳入 `tsconfig.server.json`，由 `npm run build` 一并把关。**新增跨 Adapter 契约的模块必须 opt-in**，存量模块按接触到再补，不做一次性大改。`noImplicitAny` 关闭，不要求给每个内部参数补标注，但仍需处理其余类型错误。常见推断问题是 `({ a, b = 1 } = {})` 这种解构带默认值的参数 —— TS 只从有默认值的属性合成参数类型，`a` 会被判为不存在。优先改成具名参数在函数体内解构（`function f(input) { const { a, b = 1 } = input ?? {} }`）；不便改签名时再对默认值做 `/** @type {...} */ ({})` 断言。
 - 历史验收和已完成计划不是当前规范；当前入口见 [文档索引](docs/README.md)。
-- 未经维护者明确要求，不要自动创建 Pull Request；改动只提交并推送到已有工作分支。
+- 提交、推送与 Pull Request 的授权见下方“操作边界”；代码修改本身不隐含这些操作。
 
 ## 修改路线
 
@@ -38,7 +54,14 @@
 - 会话 HTTP 语义从 `server/http/sessionRoutes.mjs` 开始；动态路径目录仍在 `server/http/httpRouteTable.mjs`。
 - 更完整的文件和测试对应关系见 [CODEMAP](docs/CODEMAP.md)。
 
-## 最小验证
+## 按影响选择验证
+
+- 解释或只读诊断：执行支持结论所需的只读检查，不为走流程修改代码或增加测试。
+- 仅改文档、注释、规则或静态文案且不影响运行行为：检查 diff、引用和格式；无需运行全量测试、构建、Xcode 或模拟器。
+- 局部代码变更：先运行相关现有测试；涉及依赖方向、模块大小或文件组织时运行 `npm run check:architecture`，涉及类型、编译或打包时运行 `npm run build`。
+- 跨模块行为、公共契约、鉴权、持久化、生成/恢复/同步变更，以及已授权的代码发布前：聚焦验证后运行下面的全量检查。适用 ADR、CI 或发布流程要求的专门门禁仍须满足；本地测试通过不代表生产迁移或上线已验证。
+
+常用全量检查命令：
 
 ```bash
 npm test
@@ -47,99 +70,32 @@ npm run build
 git diff --check
 ```
 
-先运行被修改模块的聚焦测试，再运行全量验证。不得用真实生成 Provider 作为普通开发测试。
+- 所有修改完成后检查本次 diff 的格式。验证通过后，除非新增改动、失败或尚未解决的风险需要，不重复执行同一检查。环境阻塞或已有改动导致失败时，报告具体边界，不擅自修复无关问题。
+- 优先复用现有测试；仅在本次行为变化缺少覆盖，或用户要求测试时新增。普通局部修复默认最多新增 1 条主路径和 1 条关键失败路径；公共契约、权限、并发、数据安全或明确验收要求需要更多时，补齐必要覆盖并简述原因，不为凑数量拆分测试。
+- 生图或存储变更需证明接口、已有项目与历史任务的兼容性；三个 Adapter 的契约不能因测试数量限制而漏验。此处明确相关文档中“增加对应接口测试”的执行条件：现有测试已充分覆盖时可复用，不要求重复新增。
+- 不顺手补无关测试，不默认引入新测试框架、快照矩阵、参数化网格或 E2E 套件。只有现有方式无法验证本次验收要求时才选最小必要形式；新增依赖或基础设施需确属任务范围。
+- 新增测试前自行确认它验证哪条需求、现有测试为何不足、是否有更简单的验证方式，无需把这些问题逐条交给用户。测试比实现更长是检查是否过度设计的信号，不是跳过必要验证的依据。
+- 不得用真实生成 Provider 作为普通开发测试；真实生图验证需要单独授权，且遵守费用、数据和环境边界。
 
-## Purpose
+## 实施方式、Skills 与模型
 
-Finish the current task with the minimum sufficient approach.
-No overengineering.
-Planning can lean strong. Execution must lean light.
-If you can't prove a design is necessary, don't ship it.
-If you can't prove a test is necessary, don't add it.
+- 先读相关实现与调用方，确认需求前提和根因，再选择最小充分修改。优先复用既有模块、标准库和已安装依赖；不为未来假设增加框架、配置层、透传抽象、重复实现或兼容分支。
+- 小 diff 是偏好，不替代正确性、输入校验、错误处理、无障碍和数据安全。发现过度设计时收缩实现并继续完成验收，不以“重新规划”为由提前结束。
+- 默认单 agent；仅在存在可独立交付、边界清楚的工作且并行收益明确，或用户明确要求时使用子 agent。Plan Mode 同样按复杂度选用，不强制所有任务进入。
+- 编码时按需选用已安装的 Mattpocock Skills、Ponytail（如 code-review、diagnosing-bugs、tdd）。只加载适用于当前任务的 Skill，不为流程安装新 Skill；具体技能步骤留在 Skill 内，不复制成全任务约束。
+- 保留用户明确指定的模型、外部模型路由与预算。模型/推理强度可控且用户未固定时，复杂需求分析和方案审阅可用更强模型，常规实施与验证优先中低推理强度或较轻模型，不默认全程最高强度。环境不支持切换时在当前模型继续，不为满足建议而停工、强制委派或声称已切换。
 
-## Workflow
+## 操作边界
 
-1. Understand the requirement before touching code. Don't change code then guess intent.
-2. Planning phase may use higher reasoning. Execution phase defaults to medium-low reasoning or a lighter model.
-3. Don't run max reasoning for the entire session.
-4. Don't spawn multiple agents by default. Finish one task single-threaded first, then decide if splitting helps.
-5. Only enable skills that the task actually needs. Don't install heavy-process skills.
-6. Produce a minimal plan before executing. The plan must include:
-   - Goal
-   - Non-goals
-   - Acceptance criteria
-   - What's untouched
+- 只读检查、范围内本地编辑和适用测试通常可直接进行；命令或工具另有审批要求时遵守。可逆不等于已授权：`git restore` 可能丢弃未提交内容，`revert`、切分支和移动备份也应先核对目标及工作区状态，不能覆盖用户改动或借此清理无关文件。
+- 提交、推送、部署、发布、数据库迁移和对外发送消息必须已有覆盖该动作与目标的明确授权；“修复/实现”本身不授权这些操作。授权范围已明确且无新风险时继续执行，不重复确认；推送可能触发部署时先核对授权是否包含该后果。
+- 未经维护者明确要求，不自动创建 Pull Request。获授权提交或推送时仅处理本次相关改动并使用已有工作分支；若需要新分支、其他目标或会扩大影响，先确定授权。Git 提交说明使用中文，包含问题/需求或修复/实现思路，可补复现路径。
+- 重要数据删除、数据库重置、破坏性覆盖或其他不可逆动作执行前，确认已有授权明确覆盖目标、范围和后果；缺少任一项则询问。优先可恢复方式，不能把普通开发授权当作生产数据清理授权。
+- 不为排障读取或输出无关凭据、会话记录或缓存；任务确需使用凭据时仅通过已授权机制使用，不在回复、日志或提交中暴露。增加访问权限、向外部模型/服务传输私有内容或改变凭据配置，须确认已有授权覆盖对应数据与目的地。
+- 平台审批与安全限制继续有效，不能用换工具或放宽仓库规则绕过。发布门禁、生产验证和数据操作的专门授权不因“最小实现”而省略。
 
-## Failure Modes
+## 完成标准
 
-1. Didn't truly understand intent. Only fixed the surface.
-2. Could have done one clean root-cause fix but instead piled on patches, compat layers, dual implementations, and copied options.
-3. Over-designed for rare cases, making everyday maintenance expensive.
-4. Wrong premise. No amount of correct reasoning fixes a wrong starting point.
-5. Should have read the code directly but used search or guessing instead.
-6. Used "add tests" as cover to expand scope, add abstractions, or look thorough.
-
-## Action Boundaries
-
-1. Before starting, restate:
-   - What the user actually wants
-   - Scope for this task
-   - What's explicitly out of scope
-   - Definition of done
-2. Any irreversible operation requires user confirmation before executing.
-3. These are NOT irreversible (fine to execute without asking):
-   - Git revert, restore, branch switch
-   - Moving files to a backup directory in the repo
-   - Running tests, viewing diffs, generating plans, read-only analysis
-4. When you catch yourself doing any of these, stop and switch to a smaller plan:
-   - Adding abstractions/frameworks/config layers the task doesn't need
-   - Designing ahead for possible future use
-   - Stacking more constraints to satisfy existing constraints
-   - Touching many unrelated files
-   - Creating a second implementation to keep old logic alive
-   - Using test additions as a reason to keep building
-
-## Testing
-
-Tests serve the current change's acceptance. Nothing else.
-
-1. Prefer running existing tests related to the change.
-2. If existing tests prove the change works, don't add new ones.
-3. New tests allowed only when:
-   - This change altered behavior that existing tests can't cover
-   - User explicitly asked for tests
-4. New tests at most: 1 main path + 1 critical failure path.
-5. Don't expand test scope for completeness.
-6. Don't backfill unrelated modules.
-7. Don't introduce new test frameworks or infrastructure.
-8. Don't write snapshot matrices, parameterized grids, or e2e suites.
-9. Don't test boundaries the current requirement didn't ask for.
-10. Don't let green tests justify more abstraction.
-
-Before adding any test, answer:
-
-- Which accepted requirement does this test verify?
-- Without it, would existing tests miss this regression?
-- Is it simpler than the implementation?
-
-If test code is longer or more complex than the implementation, treat it as overengineering.
-
-## Model Allocation
-
-- Requirement clarification and plan review: stronger model
-- Writing/changing code, running tests: medium-low model or lighter execution model
-- If the execution model starts stacking architecture or expanding scope: stop, rewrite a minimal plan
-
-## Pre-Completion Checklist
-
-- Restated intent and acceptance criteria
-- Solution is the minimum approach, not the maximum
-- Non-goals are marked
-- Read relevant code directly instead of guessing
-- Only changed the minimum files needed
-- Ran related existing tests
-- Didn't add tests for scenarios that weren't requested
-- Any new tests only lock current behavior, count is low
-- Tests didn't introduce new dependencies or directory structures
-- Diff is small, no extra files, no leftover debug code
-- Didn't do extra work just to look complete
+- 解释/诊断交付证据与结论；实施任务交付实际修改及与风险相称的验证。没有新授权也能完成的必要工作，不留成“是否继续”的建议。
+- 交付前自行检查范围、用户改动保护、适用约束、验证结果和残留调试内容，不要求每次输出检查清单。
+- 最终简述改了什么、验证结果及真实未完成项；只读问题检查未发现问题且用户未要求报告时，按全局偏好回复 `✅OK`。用户要求依据、报告或仍有未验证部分时，给出必要证据和限制。

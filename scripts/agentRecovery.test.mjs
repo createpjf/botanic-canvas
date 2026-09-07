@@ -190,6 +190,12 @@ test('项目草稿重试隔离其他项目；无变化和 JSON 键序变化不�
       requests.push({ id, method: options.method ?? 'GET', body: options.body && JSON.parse(options.body) })
       if (id === 'other') throw Object.assign(new Error('其他项目冲突'), { status: 409 })
       if (options.method) {
+        assert.ok(options.headers['X-Canvas-Revision'], '写入必须携带专用版本条件')
+        assert.equal(options.headers['If-Match'], undefined, '避免代理层消费 HTTP 实体条件')
+        if (uncertainWrite === 'conflict412') {
+          remote.get(id).name = '另一页面的修改'
+          throw Object.assign(new globalThis.__draftRecovery.ApiError('真实版本冲突'), { status: 412 })
+        }
         if (uncertainWrite === 'before') throw Object.assign(new globalThis.__draftRecovery.ApiError('响应不可读'), { status: 200, code: 'INVALID_API_RESPONSE' })
         const gate = writeGate
         writeGate = undefined
@@ -197,7 +203,8 @@ test('项目草稿重试隔离其他项目；无变化和 JSON 键序变化不�
         if (gate) await gate
         else if (failWrite) throw Object.assign(new Error('暂时不可用'), { status: 503 })
         const patch = JSON.parse(options.body)
-        remote.set(id, { ...remote.get(id), ...patch.fields, ...(patch.nodes?.upsert ? { nodes: patch.nodes.upsert } : {}) })
+        remote.set(id, { ...remote.get(id), ...patch.fields, ...(patch.name ? { name: patch.name } : {}), ...(patch.nodes?.upsert ? { nodes: patch.nodes.upsert } : {}) })
+        if (uncertainWrite === 'after412') throw Object.assign(new globalThis.__draftRecovery.ApiError('代理条件失败'), { status: 412 })
         if (uncertainWrite === 'after') {
           remote.get(id).nodes.push({ id: 'remote-new', type: 'text', position: { x: 9, y: 9 }, data: { text: '远端新增' } })
           throw Object.assign(new globalThis.__draftRecovery.ApiError('回执超时'), { status: 0, code: 'REQUEST_TIMEOUT' })
@@ -250,6 +257,16 @@ test('项目草稿重试隔离其他项目；无变化和 JSON 键序变化不�
     assert.equal(remote.get('current').name, '最新编辑')
     assert.equal(await tables.pendingSync.get('current'), undefined)
     requests.length = 0
+    uncertainWrite = 'after412'
+    const confirmed = await db.writeCanvasDocument({ ...latest, name: '412 但已落库', updatedAt: 5 }, { immediate: true })
+    assert.equal(confirmed.name, '412 但已落库')
+    assert.equal(requests.filter(request => request.method === 'PATCH').length, 1, '412 读回确认成功不能重复写入')
+    assert.equal(await tables.pendingSync.get('current'), undefined)
+    requests.length = 0
+    const renamed = await db.renameCanvasProject('current', '重命名已落库')
+    assert.equal(renamed.name, '重命名已落库')
+    assert.equal(requests.filter(request => request.method === 'PATCH').length, 1, '重命名的 412 读回确认也不能重复写入')
+    requests.length = 0
     uncertainWrite = 'after'
     const accepted = await db.writeCanvasDocument({ ...latest, name: '已写入但回执丢失', updatedAt: 5 }, { immediate: true })
     assert.equal(requests.filter(request => request.method === 'PATCH').length, 1, '读回已确认就不再重发')
@@ -260,6 +277,12 @@ test('项目草稿重试隔离其他项目；无变化和 JSON 键序变化不�
     await assert.rejects(db.writeCanvasDocument({ ...accepted, name: '尚未确认', updatedAt: 6 }, { immediate: true }), /响应不可读/)
     assert.equal(requests.filter(request => request.method === 'PATCH').length, 1, '无法确认时不盲目重发')
     assert.equal((await tables.pendingSync.get('current')).document.name, '尚未确认')
+    requests.length = 0
+    uncertainWrite = 'conflict412'
+    await assert.rejects(db.writeCanvasDocument({ ...accepted, name: '本地待保存', updatedAt: 7 }, { immediate: true }), /真实版本冲突/)
+    assert.equal(requests.filter(request => request.method === 'PATCH').length, 1, '真实冲突不得覆盖另一页面')
+    assert.equal(remote.get('current').name, '另一页面的修改')
+    assert.equal((await tables.pendingSync.get('current')).document.name, '本地待保存', '冲突保留草稿')
   } finally {
     globalThis.window = previousWindow
     if (previousNavigator) Object.defineProperty(globalThis, 'navigator', previousNavigator)

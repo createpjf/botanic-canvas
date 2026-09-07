@@ -5,6 +5,7 @@ import {
   botanicAgentLatestEvaluableMessageId,
   botanicAgentMessageHasUtilities,
   botanicAgentMessageIsRunLinked,
+  botanicAgentMessageIsReview,
   botanicAgentMessageIsSettled,
   botanicAgentMessageUtilityActions,
   botanicAgentClarificationProgress,
@@ -20,6 +21,14 @@ function message(partial: Partial<BotanicAgentMessage> & Pick<BotanicAgentMessag
     ...partial,
   }
 }
+
+test('评审消息只按结构身份识别，保留 Run 结果资格且不误伤普通文字', () => {
+  const review = message({ id: 'agent-review-run-1', runId: 'run-1' })
+  assert.equal(botanicAgentMessageIsReview(review), true)
+  assert.equal(botanicAgentMessageIsRunLinked(review, { id: 'run-1' }), true)
+  assert.equal(botanicAgentMessageIsReview(message({ id: 'text', content: '请解释质量评审已完成的含义' })), false)
+  assert.equal(botanicAgentMessageIsReview(message({ id: review.id, runId: review.runId, role: 'user' })), false)
+})
 
 test('用户消息可编辑和复制，但不评价', () => {
   assert.deepEqual(botanicAgentMessageUtilityActions(message({

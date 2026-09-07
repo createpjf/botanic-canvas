@@ -360,10 +360,7 @@ export function AgentComposer({
         </QueueSectionContent>
       </QueueSection>
     </Queue> : null}
-    {contextItems.length || mountedSkills.length ? <details className="agent-composer__attachments">
-      <summary className="agent-composer__context-toggle">
-        <span>{copy.referenced}</span><b>{contextItems.length + mountedSkills.length}</b><ChevronDownIcon aria-hidden="true" />
-      </summary>
+    {contextItems.length || mountedSkills.length ? <div className="agent-composer__attachments">
       <div className="agent-composer__references-body">
           {contextItems.length ? <div className="agent-composer__attach-row" aria-label={`${copy.referenced} ${contextItems.length}`}>
             <AgentAttachments variant="inline" className="agent-composer__attach-chips">
@@ -388,7 +385,7 @@ export function AgentComposer({
             </AgentAttachments>
           </div> : null}
       </div>
-    </details> : null}
+    </div> : null}
     {skillMenuOpen ? <div id={suggestionListId} className="agent-composer__mention-menu" role="listbox" aria-multiselectable="true" aria-label={copy.callSkill} onPointerDown={(event) => event.stopPropagation()}>
       {commandOptions.length ? <div className="agent-composer__mention-section" role="group" aria-label={copy.commands}><strong>{copy.commands}</strong>{commandOptions.map((command, index) => <button id={`${suggestionListId}-option-${index}`} key={`command-${command.id}`} type="button" role="option" tabIndex={-1} aria-selected={false} className={selectedSuggestionIndex === index ? 'is-active' : undefined} aria-label={command.label} onMouseEnter={() => setActiveSuggestionIndex(index)} onMouseDown={(event) => event.preventDefault()} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onSelectCommand(command.id) }}>{localCommandIcon(command)}<b>{command.label}</b><small>{command.detail}</small></button>)}</div> : null}
       {skillOptions.length ? <div className="agent-composer__mention-section" role="group" aria-label={copy.callSkill}><strong>{copy.callSkill}<span className="agent-composer__mention-count">{mountedSkills.length}/{BOTANIC_AGENT_MOUNTED_SKILL_LIMIT}</span></strong>{skillOptions.map((skill, index) => {

@@ -13,3 +13,5 @@ supabase/.temp/
 .DS_Store
 .playwright-mcp/
 .cursor/*.log
+.env.local
+.env.smokestack

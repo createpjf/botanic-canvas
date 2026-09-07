@@ -123,3 +123,7 @@ export function botanicAgentLatestEvaluableMessageId(messages: UtilityMessage[])
   }
   return null
 }
+/** 评审回执仍可承载 Run 结果；只隐藏其评审正文，不移除消息或 Artifact。 */
+export function botanicAgentMessageIsReview(message: Pick<BotanicAgentMessage, 'id' | 'role' | 'runId' | 'review'>) {
+  return message.role === 'assistant' && (Boolean(message.review) || Boolean(message.runId && message.id === `agent-review-${message.runId}`))
+}

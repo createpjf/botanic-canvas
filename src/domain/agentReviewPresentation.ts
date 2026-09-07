@@ -197,19 +197,15 @@ export function formatAgentReviewTaskProjectionMessage(
   const passed = rows.filter((row) => row.verdict === 'pass').length
   const failed = rows.filter((row) => row.verdict === 'fail').length
   const unverifiable = rows.filter((row) => row.verdict === 'unverifiable').length
-  return locale === 'en'
-    ? [
-        'Quality review completed.',
-        coverage,
-        `${passed} met, ${failed} failed, and ${unverifiable} were not verified.`,
-        'Open the Review panel to accept, reject, or request a retry.',
-      ].join('\n')
-    : [
-        '质量评审已完成。',
-        coverage,
-        `${passed} 张符合、${failed} 张不符合、${unverifiable} 张未验证。`,
-        '请在评审面板中接受、拒绝或请求重试。',
-      ].join('\n')
+  const en = locale === 'en'
+  const skipped = task.coverage?.skippedCandidates ?? 0
+  return [
+    failed ? (en ? `${failed} did not pass checks.` : `${failed} 张未通过检查。`) : '',
+    unverifiable ? (en ? `Needs confirmation: ${unverifiable} could not be verified.` : `需人工确认：${unverifiable} 张无法自动验证。`) : '',
+    skipped ? coverage : '',
+    !failed && !unverifiable && !skipped && passed ? (en ? 'Automatic checks passed.' : '自动检查通过。') : '',
+    !rows.length ? (en ? 'No review results available.' : '暂无可用评审结果。') : '',
+  ].filter(Boolean).join('\n')
 }
 
 export type AgentReviewCandidateRow = {
