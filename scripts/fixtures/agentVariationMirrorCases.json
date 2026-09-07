@@ -2,6 +2,11 @@
   "$comment": "镜像一致性夹具：src/domain（agentVariations.ts + agent.ts）与 server/botanicAgentVariations.mjs 必须对同一输入给出相同结论。两侧测试都加载本文件；任何一侧单独改行为都会在这里失败。改行为时先改两侧实现，再用两侧实现重新生成期望。",
   "resolveCases": [
     {
+      "name": "单张改色验收指令不得将保持项展开成四张场景变体",
+      "input": { "instruction": "Staging 指定图编辑验收：仅编辑已引用的「Staging 反向同步 05」。将绿色陶瓷花盆改为哑光蓝色，薄荷、构图、白色背景和光线保持不变。只生成 1 张，保留原图，不要自动重试。先给出计划，等待确认。" },
+      "expected": { "kind": "none" }
+    },
+    {
       "name": "模型已确定双图时比例和清晰度不是创作变体",
       "input": { "instruction": "UAT生图：生成两张白底植物插画，3:4、2K。", "requestedIntent": "initial_generation", "modelResolved": true },
       "expected": { "kind": "none" }
@@ -219,6 +224,10 @@
     }
   ],
   "batchDetectionCases": [
+    { "instruction": "只生成 1 张，保持构图不变", "expected": false },
+    { "instruction": "生成 0 张", "expected": false },
+    { "instruction": "生成 2 张", "expected": true },
+    { "instruction": "生成 10 张", "expected": true },
     {
       "instruction": "三种肤色各来一张",
       "expected": true
