@@ -14,6 +14,7 @@ import { ProductApiError, productRequest, serverPersistenceEnabled } from './pro
 import { discardLocalDraftAndRefreshRemote, persistAcceptedRemoteRefresh } from './remoteDocumentRefresh'
 import { canvasDb, enqueuePersistence, type CanvasMediaRecord } from './canvasDb'
 import { prepareCanvasRemoteReplacement } from './canvasRemoteReplacement'
+import { markCanvasWrite, traceCanvasWrite } from './canvasWriteTrace'
 
 export { canvasDb, canvasSyncOutboxStorage } from './canvasDb'
 
@@ -564,10 +565,12 @@ async function writeRemoteCanvasDocument(document: CanvasDocument) {
   const payload = v2 ? withoutCanvasGraph(persistable) : persistable
   const send = async (payload: CanvasDocumentPatch | CanvasDocument, method: 'PATCH' | 'PUT', expectedRevision?: number) => {
     const prepared = await serializeRemoteMediaValue(payload)
+    const requestId = traceCanvasWrite(document, remoteDocuments.get(document.id), method === 'PATCH' ? payload as CanvasDocumentPatch : undefined, expectedRevision, remoteGraphRevisions.get(document.id))
     return productRequest<{ document: CanvasDocument; revision: number; graphRevision: number; syncProtocolEpoch?: number }>(`/api/projects/${encodeURIComponent(document.id)}/document`, {
       method,
       headers: {
         'Content-Type': 'application/json',
+        ...(requestId ? { 'X-Request-ID': requestId } : {}),
         ...(expectedRevision === undefined ? {} : { 'If-Match': String(expectedRevision) }),
         ...(remoteGraphRevisions.has(document.id) && !v2 ? { 'X-Canvas-Graph-Revision': String(remoteGraphRevisions.get(document.id)) } : {}),
       },
@@ -781,6 +784,7 @@ export async function persistAcknowledgedRemoteCanvasPatch(
 
 export async function writeCanvasDocument(document: CanvasDocument, options: { immediate?: boolean } = {}) {
   if (document.id === 'workspace-placeholder') return // 路由加载占位不是项目，不写入或重放到云端。
+  markCanvasWrite(document)
   if (serverPersistenceEnabled) {
     // 先写入 IndexedDB 草稿，再把同一变更排入云端队列；断网也不会丢失编辑。
     await persistLocalDocument(document, true)
