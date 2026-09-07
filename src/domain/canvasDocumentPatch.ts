@@ -26,6 +26,15 @@ function collectionPatch<T extends { id: string }>(previous: T[], next: T[]): Co
   } : undefined
 }
 
+function persistentNode(node: CanvasDocument['nodes'][number]) {
+  const { measured: _measured, selected: _selected, dragging: _dragging, resizing: _resizing, ...persistent } = node
+  if (persistent.type === 'result' && 'selected' in persistent.data) {
+    const { selected: _resultSelected, ...data } = persistent.data
+    return { ...persistent, data } as typeof node
+  }
+  return persistent as typeof node
+}
+
 /** 只提交真实编辑；工作流专用 API 与 V2 图谱的权威边界保持不变。 */
 export function createCanvasDocumentPatch(previous: CanvasDocument, next: CanvasDocument, includeGraph = true): CanvasDocumentPatch {
   const fields: Record<string, unknown> = {}
@@ -34,7 +43,7 @@ export function createCanvasDocumentPatch(previous: CanvasDocument, next: Canvas
     if (ignored.has(key)) continue
     if (!canvasJsonEqual(previous[key as keyof CanvasDocument], next[key as keyof CanvasDocument])) fields[key] = next[key as keyof CanvasDocument]
   }
-  const nodes = includeGraph ? collectionPatch(previous.nodes, next.nodes) : undefined
+  const nodes = includeGraph ? collectionPatch(previous.nodes.map(persistentNode), next.nodes.map(persistentNode)) : undefined
   const edges = includeGraph ? collectionPatch(previous.edges, next.edges) : undefined
   if (Object.keys(fields).length || nodes || edges) fields.updatedAt = next.updatedAt
   return {

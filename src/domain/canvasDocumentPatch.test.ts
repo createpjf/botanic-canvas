@@ -9,6 +9,13 @@ const original = {
   edges: [], productionWorkflows: [], productionWorkflowRuns: [],
 } as unknown as CanvasDocument
 
+test('节点本机测量和选中不产生 HTTP PATCH，真实尺寸仍提交', () => {
+  const measured = {...original.nodes[0], measured:{width:240,height:100}, selected:true, dragging:false}
+  assert.deepEqual(createCanvasDocumentPatch(original, {...original,nodes:[measured]}), {})
+  const resized = {...measured,width:300,height:120}
+  assert.deepEqual(createCanvasDocumentPatch(original, {...original,nodes:[resized]}).nodes?.upsert, [{...original.nodes[0],width:300,height:120}])
+})
+
 test('只发送真实修改；V2 图谱和工作流集合不进入文档 PATCH', () => {
   const next = { ...original, name: '新标题', updatedAt: 2, nodes: [], productionWorkflows: [{ id: 'workflow' }] } as CanvasDocument
   assert.deepEqual(createCanvasDocumentPatch(original, next), { fields: { name: '新标题', updatedAt: 2 }, nodes: { remove: ['original'] } })

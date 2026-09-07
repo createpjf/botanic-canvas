@@ -27,6 +27,18 @@ test('云端 JSON 对象键序变化后投影回协作图不产生本地写入',
   graph.destroy()
 })
 
+test('节点测量不广播，显式尺寸调整仍广播', () => {
+  const original = node('n', 10)
+  const updates: Uint8Array[] = []
+  const graph = createCollaborativeGraph({ initialGraph: {nodes:[original],edges:[]}, onUpdate: value => updates.push(value), onRemoteGraph: () => {} })
+  updates.length = 0
+  graph.replaceLocalGraph({nodes:[{...original, measured:{width:240,height:100}}],edges:[]})
+  assert.equal(updates.length, 0, '本机尺寸测量不能争抢 graphRevision')
+  graph.replaceLocalGraph({nodes:[{...original, width:300,height:120}],edges:[]})
+  assert.equal(updates.length, 1)
+  graph.destroy()
+})
+
 test('协作图谱把节点与连线增量同步给另一位编辑者', () => {
   const initial = { nodes: [node('node-a', 10)], edges: [] as Edge[] }
   let remoteGraph = initial

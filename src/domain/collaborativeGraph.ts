@@ -70,6 +70,8 @@ function collaborativeNode(node: CanvasNode): CanvasNode {
   const normalized = sanitizeCollaborativeValue(node) as CanvasNode
   delete normalized.selected
   delete normalized.dragging
+  delete normalized.measured
+  delete normalized.resizing
   if (normalized.type === 'result' && 'selected' in normalized.data) {
     delete normalized.data.selected
   }
@@ -117,6 +119,7 @@ export function mergeCollaborativeCanvasGraph(
           : undefined
       return {
         ...clone(node),
+        ...(local?.measured ? { measured: local.measured } : {}),
         selected,
         data: node.type === 'result'
           ? { ...clone(node.data), ...(localImage ? { image: localImage } : {}), selected }

@@ -8,13 +8,37 @@ async function load(entry, mocks) {
   const result = await build({
     entryPoints: [entry], bundle: true, write: false, format: 'esm', platform: 'node', jsx: 'automatic',
     plugins: [{ name: 'test-boundaries', setup(builder) {
-      builder.onResolve({ filter: /^yjs$/ }, () => ({ path: import.meta.resolve('yjs'), external: true }))
+      builder.onResolve({ filter: /^(yjs|@xyflow\/react)$/ }, args => ({ path: import.meta.resolve(args.path), external: true }))
       builder.onResolve({ filter: /.*/ }, args => args.path in mocks ? { path: args.path, namespace: 'mock' } : undefined)
       builder.onLoad({ filter: /.*/, namespace: 'mock' }, args => ({ contents: mocks[args.path], loader: 'js' }))
     } }],
   })
   return import(`data:text/javascript;base64,${Buffer.from(result.outputFiles[0].text).toString('base64')}`)
 }
+
+test('React Flow 初次测量只更新本机；手动尺寸调整仍保存', async () => {
+  const document = { id: 'measure-test', nodes: [{ id: 'n', type: 'text', position: { x: 0, y: 0 }, data: { text: 'unchanged' } }], edges: [], generationJobs: [], assets: [] }
+  const writes = [], transient = []
+  globalThis.__measureTest = { document,
+    setNodes: nodes => { writes.push(nodes); document.nodes = nodes },
+    setNodesTransient: nodes => { transient.push(nodes); document.nodes = nodes },
+  }
+  try {
+    const { useCanvasInteractionCoordinator } = await load('src/features/canvas/useCanvasInteractionCoordinator.ts', {
+      react: 'export const useState=x=>[typeof x==="function"?x():x,()=>{}],useRef=x=>({current:x}),useEffect=()=>{},useMemo=f=>f(),useCallback=f=>f;',
+      '../../store/canvasStore': 'export const useCanvasStore=f=>f(globalThis.__measureTest); useCanvasStore.getState=()=>globalThis.__measureTest;',
+      '../../i18n/react': 'export const useProductI18n=()=>({locale:"zh-CN"});',
+      '../../lib/uploadedAssets': 'export const readUploadedAssetInput=()=>{},validateUploadFiles=()=>{};',
+    })
+    const view = useCanvasInteractionCoordinator({ document, hydrated: true, restoredViewportZoom: 1, hiddenResultNodeIds: new Set(), focusedLineageEdgeIds: new Set(), hasLineageFocus: false, assetLibraryAssets: [], screenToFlowPositionRef: {current:null}, canvasPaneRef: {current:null}, viewportReadyRef: {current:true}, onSelectionReset() {} })
+    view.onNodesChange([{ id: 'n', type: 'dimensions', dimensions: { width: 240, height: 100 } }])
+    assert.equal(writes.length, 0, 'ResizeObserver 测量不能进入文档保存')
+    assert.deepEqual(document.nodes[0].measured, {width:240,height:100})
+    view.onNodesChange([{ id: 'n', type: 'dimensions', dimensions: { width: 300, height: 120 }, setAttributes: true, resizing: true }])
+    assert.equal(writes.length, 1, '用户调整节点尺寸仍需保存')
+    assert.equal(document.nodes[0].width, 300)
+  } finally { delete globalThis.__measureTest }
+})
 
 test('使用云端必须保留读取期间的新草稿；失败不清理，成功原子备份并替换', async () => {
   const rows = Object.fromEntries(['documents', 'documentBackups', 'media', 'pendingSync', 'canvasGraphOutbox'].map(name => [name, new Map()]))

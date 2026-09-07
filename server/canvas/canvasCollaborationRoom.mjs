@@ -60,6 +60,8 @@ function persistableNode(node) {
   }
   delete normalized.selected
   delete normalized.dragging
+  delete normalized.measured
+  delete normalized.resizing
   if (normalized.type === 'result' && normalized.data) delete normalized.data.selected
   return normalized
 }

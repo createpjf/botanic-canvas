@@ -46,6 +46,8 @@ test('两侧清洗都剥离本机瞬态状态', () => {
       : nodeBody
     assert.match(nodeSanitizerBody, /delete\s+normalized\.selected/, `${file} 的 collaborativeNode 未剥离 selected`)
     assert.match(nodeSanitizerBody, /delete\s+normalized\.dragging/, `${file} 的 collaborativeNode 未剥离 dragging`)
+    assert.match(nodeSanitizerBody, /delete\s+normalized\.measured/, `${file} 未剥离本机测量值`)
+    assert.match(nodeSanitizerBody, /delete\s+normalized\.resizing/, `${file} 未剥离本机尺寸调整状态`)
     assert.match(edgeBody, /delete\s+normalized\.selected/, `${file} 的 collaborativeEdge 未剥离 selected`)
   }
 })

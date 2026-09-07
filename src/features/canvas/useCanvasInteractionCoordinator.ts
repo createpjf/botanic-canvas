@@ -117,7 +117,7 @@ export function useCanvasInteractionCoordinator({
   const onNodesChange: OnNodesChange<CanvasNode> = useCallback((changes) => {
     if (!hydrated) return
     const nextNodes = applyNodeChanges(changes, useCanvasStore.getState().document.nodes)
-    if (changes.every((change) => change.type === 'select')) {
+    if (changes.every((change) => change.type === 'select' || (change.type === 'dimensions' && !change.setAttributes && change.resizing === undefined))) {
       setNodesTransient(nextNodes)
       return
     }
