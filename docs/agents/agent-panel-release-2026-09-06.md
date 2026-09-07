@@ -2,6 +2,15 @@
 
 ## 当前发布准备结论 · 2026-09-07
 
+### main 发布推进
+
+- 用户已授权全部本地开发合并 main 并部署生产。20 文件提交为 `4e250fd`；确认 origin/main 的树与祖先 `7810a84` 完全一致后，以 `a07afab` 接回 squash 历史，不丢弃 main 独有代码、不强推。
+- 隔离 localhost:4195 Chromium 全量：29 passed、19 skipped；跳过项需要额外隔离账号/运行夹具，不作为真实链路通过。两条旧展开断言和旧附件折叠入口已按新 UI 语义更新；移动端输入恢复 16px，桌面保持 14px。构建/架构/diff 检查通过，生产依赖 audit 为 0 vulnerabilities。
+- 生产健康响应确认 persistence=postgres、auth=supabase；此次新 Supabase RPC 文件不应用到独立 PostgreSQL Adapter，不自动执行共享迁移。
+- 生产 main 推送自动触发 Railway API/Worker 与 Vercel。先发布支持专用版本头的 API，再推 main，避免新前端早于兼容服务端。
+- 发布前回滚记录：Vercel `dpl_DAVcyhUQWbk22qvRfEU8Ut2PXGFK`（ef01a56）；API `54620be8-d132-4d37-8330-56aaa83e512d`；Worker `e8de420e-c540-4184-8bdf-a421006efccd`。
+- 生产部署结果以后续实际平台状态为准。真实 Staging 断网、付费补图/取消与真机仍未完成，不以本地隔离 E2E 替代。
+
 本节为最新状态，下方历史记录保留原时间点结论，不代表当前全部通过。
 
 - 基线：`9691b7b32bf5aa771d8c6c0f054856d0dabc8067`，分支 `feat/agent-elements-p1-p2`。20 个本地变更文件尚未提交；未推送、未合并、未部署生产。

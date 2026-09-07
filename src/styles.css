@@ -5266,7 +5266,7 @@ button.agent-attachment:hover,
   .agent-workspace__starters { grid-template-columns: 1fr; }
   .agent-workspace__starters button { min-height: 72px; }
   .agent-workspace :is(input, textarea, .botanic-select__trigger) { font-size: 16px; }
-  .agent-workspace .agent-composer textarea { font-size: 14px; font-weight: 400; line-height: 1.55; }
+  .agent-workspace .agent-composer textarea { font-size: 16px; font-weight: 400; line-height: 1.55; }
   .agent-workspace :is(.agent-skill-panel__form input, .botanic-select__trigger) { min-height: 40px; }
   .agent-skill-panel__search input, .agent-skill-panel__source-filter { min-height: 40px; }
   .agent-memory-panel__meta .botanic-select__trigger,

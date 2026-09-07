@@ -98,7 +98,8 @@ test('截图粘进对话框，窄屏附件不重叠且键盘移除保留焦点',
   // 回落语义 —— 截图的 name 是 image.png，直接用会得到一列无法区分的「image」。
   const chip = page.locator('.agent-composer__attach-chips .agent-attachment.is-image')
   await expect(chip).toHaveCount(1)
-  await page.locator('.agent-composer__attachments > summary').click()
+  await expect(page.locator('.agent-composer__attachments > summary')).toHaveCount(0)
+  await expect(chip).toBeVisible()
   await expect(chip.getByRole('button')).toHaveAttribute('aria-label', /^移除 粘贴的图片 \d{2}:\d{2}$/)
   await pasteInto(page, 'aside.agent-workspace textarea', { files: [{ name: 'reference.png', type: 'image/png', base64: PNG_40x30 }] })
   await expect(chip).toHaveCount(2)
