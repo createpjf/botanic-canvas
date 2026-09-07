@@ -1,10 +1,11 @@
 import type { BotanicAgentMessage, BotanicAgentRun } from './agent.ts'
 import { agentPlanCancellationRun } from './agentPlanCancellation.ts'
 
-/** 同一 Run 的状态和评审正文只保留最后一张结果卡；确认卡与用户消息不参与。 */
+/** 同一 Run 只保留最后一张结果卡；待确认计划与用户消息不参与。 */
 export function agentConversationMessages(messages: readonly BotanicAgentMessage[]) {
   const isResult = (message: BotanicAgentMessage) => message.role === 'assistant'
-    && Boolean(message.runId) && ['run', 'notice', 'text'].includes(message.kind)
+    && Boolean(message.runId) && (['run', 'notice', 'text'].includes(message.kind)
+      || (message.kind === 'plan' && message.status === 'submitted'))
   const latest = new Map<string, string>()
   for (const message of messages) if (isResult(message)) latest.set(message.runId!, message.id)
   return messages.filter(message => !isResult(message) || latest.get(message.runId!) === message.id)

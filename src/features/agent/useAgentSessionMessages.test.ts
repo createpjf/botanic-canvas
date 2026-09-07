@@ -12,6 +12,9 @@ test('Run 结果与评审文本只展示一次，保留其他任务、用户和�
   const plan = { ...status, id: 'plan', kind: 'plan' as const }
   assert.deepEqual(agentConversationMessages([user, plan, status, other, review]).map(m => m.id), ['user', 'plan', 'other', 'review'])
   assert.equal(status.runId, 'run-1')
+  const submitted = { ...plan, status: 'submitted' as const }
+  assert.deepEqual(agentConversationMessages([submitted, status, review]).map(m => m.id), ['review'])
+  assert.deepEqual(agentConversationMessages([submitted]).map(m => m.id), ['plan'])
 })
 
 test('计划回包丢失后按原提交身份关联Run，不复活失败确认或串到其他任务', () => {
