@@ -36,7 +36,7 @@ import { readAgentTargetDocument } from '../../lib/agentTargetRecovery'
 import { serverPersistenceEnabled } from '../../lib/productSession'
 import { localizeProductError } from '../../i18n/core'
 import { useProductI18n } from '../../i18n/react'
-import { useCanvasStore } from '../../store/canvasStore'
+import { canReadRemoteCanvasProject, useCanvasStore } from '../../store/canvasStore'
 import { recordSentryBreadcrumb } from '../../lib/sentry'
 import { useAgentSessionMessages } from '../agent/useAgentSessionMessages'
 import { useAgentArtifactIndex } from '../agent/useAgentArtifactIndex'
@@ -151,6 +151,8 @@ export function useCanvasAgentExecutionBridge({
   const readingAnchorWritesRef = useRef(new Map<string, Promise<void>>())
 
   const sessionMeta = document.agentSessions.find((session) => session.id === document.activeAgentSessionId)
+  const ensureAgentSessionPersisted = useCanvasStore((state) => state.ensureAgentSessionPersisted)
+  const remoteProjectReady = useCanvasStore(canReadRemoteCanvasProject)
   useEffect(() => {
     if (!agentOpen || sessionMeta) return
     ensureAgentSession(selectedFocusNodeIds)
@@ -158,7 +160,7 @@ export function useCanvasAgentExecutionBridge({
   const sessionMessages = useAgentSessionMessages(
     document.id,
     document.activeAgentSessionId,
-    { messages: sessionMeta?.messages ?? [], runs: document.agentRuns },
+    { messages: sessionMeta?.messages ?? [], runs: document.agentRuns, prepare: ensureAgentSessionPersisted },
     agentOpen && Boolean(document.activeAgentSessionId),
   )
   const activeSession = sessionMeta
@@ -230,7 +232,7 @@ export function useCanvasAgentExecutionBridge({
       .map((run) => `run:${run.id}:${run.status}:${run.updatedAt}`),
   ].join('|'), [document.agentRuns, document.generationJobs])
 
-  const { index: artifactIndex, loadMore: loadMoreArtifacts } = useAgentArtifactIndex(document.id, agentOpen && serverPersistenceEnabled, artifactRefreshKey)
+  const { index: artifactIndex, loadMore: loadMoreArtifacts } = useAgentArtifactIndex(document.id, agentOpen && serverPersistenceEnabled && remoteProjectReady, artifactRefreshKey)
 
   const indexedArtifacts = artifactIndex.projectId === document.id ? artifactIndex.artifacts : []
   const artifacts = useMemo(
@@ -368,7 +370,7 @@ export function useCanvasAgentExecutionBridge({
     const replacements = await prepareAgentMediaSources(sources, (source) => persistAgentReferenceMedia(activeDocument.id, source))
     if (Object.keys(replacements).length) await replaceMediaSources(replacements)
     // 有视觉输入时必须确保服务端能读到同一份图片；失败由调用方展示并中止 Turn。
-    await flushPendingCanvasDocumentWrites()
+    await flushPendingCanvasDocumentWrites(activeDocument.id)
     return contextNodeIds
   }, [replaceMediaSources])
 
@@ -797,7 +799,7 @@ export function useCanvasAgentExecutionBridge({
     loadOlderAgentMessages: sessionMessages.loadOlderMessages,
     hasOlderAgentMessages: sessionMessages.hasOlderMessages,
     loadingOlderAgentMessages: sessionMessages.loadingOlder,
-    refreshAgentSessionMessages: sessionMessages.refresh,
+    refreshAgentSessionMessages: sessionMessages.refreshFromRemote,
     agentMessagesLoading: sessionMessages.loading,
     agentMessagesError: sessionMessages.error,
     focusRequest,

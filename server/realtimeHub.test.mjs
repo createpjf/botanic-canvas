@@ -12,6 +12,38 @@ import { issueRealtimeTicket } from './auth/realtimeTicket.mjs'
 
 const testOrigin = 'http://localhost'
 
+test('升级失败记录安全阶段和错误分类，不泄露票据或依赖异常正文', async (context) => {
+  const logs = []
+  context.mock.method(console, 'warn', (line) => logs.push(JSON.parse(line)))
+  const server = createServer()
+  const hub = createProjectRealtimeHub({
+    server,
+    ticketSecret: 'test-secret',
+    instanceId: 'instance-test',
+    productStore: {
+      async readProject() { throw Object.assign(new Error('private-upstream-content'), { code: 'DATABASE_RETRYABLE' }) },
+    },
+  })
+  context.after(() => hub.close())
+  const rejectUpgrade = (ticket) => new Promise((resolve) => server.emit('upgrade', {
+    url: `/api/realtime?projectId=project-1&ticket=${encodeURIComponent(ticket)}`,
+    headers: { host: 'localhost', origin: testOrigin, 'x-request-id': 'request-upgrade-1' },
+  }, { destroy: resolve }, Buffer.alloc(0)))
+  await rejectUpgrade('private-invalid-ticket')
+  const ticket = issueRealtimeTicket({ userId: 'user-1', projectId: 'project-1', origin: testOrigin, secret: 'test-secret' })
+  await rejectUpgrade(ticket)
+  assert.deepEqual(logs.map(({ stage, code }) => ({ stage, code })), [
+    { stage: 'ticket', code: 'INVALID_REALTIME_TICKET' },
+    { stage: 'project', code: 'DATABASE_RETRYABLE' },
+  ])
+  assert.ok(logs.every((entry) => entry.event === 'canvas_sync.upgrade_rejected'
+    && entry.instanceId === 'instance-test' && entry.requestId === 'request-upgrade-1'
+    && Number.isFinite(entry.durationMs)))
+  assert.equal(logs[1].projectId, 'project-1')
+  assert.doesNotMatch(JSON.stringify(logs), /private-|user-1|test-secret|ticket=/)
+  assert.ok(!JSON.stringify(logs).includes(ticket))
+})
+
 function listen(server) {
   return new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
 }

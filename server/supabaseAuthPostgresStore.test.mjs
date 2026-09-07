@@ -25,7 +25,7 @@ test('无效登录不会写入 PostgreSQL', async () => {
   let writes = 0
   const store = createSupabaseAuthPostgresStore({
     productStore: { async ensureAuthenticatedUser() { writes += 1 }, async readUser() { return undefined } },
-    client: { auth: { async getUser() { return { data: { user: null }, error: new Error('invalid token') } } } },
+    client: { auth: { async getUser() { return { data: { user: null }, error: { status: 403, code: 'bad_jwt' } } } } },
   })
   assert.equal(await store.authenticate('expired'), undefined)
   assert.equal(writes, 0)
@@ -38,10 +38,48 @@ test('Hybrid 模式在 Supabase 无法识别令牌时兼容旧访问令牌', asy
       async authenticate(token) { return token === 'legacy-token' ? { id: 'legacy-owner', role: 'owner' } : undefined },
     },
     allowLegacyTokens: true,
-    client: { auth: { async getUser() { return { data: { user: null }, error: new Error('not a Supabase JWT') } } } },
+    client: { auth: { async getUser() { return { data: { user: null }, error: { status: 403, code: 'bad_jwt' } } } } },
   })
 
   assert.deepEqual(await store.authenticate('legacy-token'), { id: 'legacy-owner', role: 'owner' })
+})
+
+test('Auth 暂时不可用与限流不冒充登录失效，也不降级使用旧令牌', async () => {
+  let failure = { status: 503, name: 'AuthRetryableFetchError' }
+  const store = createSupabaseAuthPostgresStore({
+    productStore: {
+      async ensureAuthenticatedUser() { assert.fail('故障期间不能授权') },
+      async authenticate() { assert.fail('故障期间不能降级鉴权') },
+    },
+    allowLegacyTokens: true,
+    client: { auth: { async getUser() { return { data: { user: null }, error: failure } } } },
+  })
+  await assert.rejects(store.authenticate('token'), error => error.statusCode === 503 && error.code === 'AUTH_UNAVAILABLE')
+  await assert.rejects(store.authAssurance('token'), error => error.statusCode === 503 && error.code === 'AUTH_UNAVAILABLE')
+  failure = { status: 429 }
+  await assert.rejects(store.authenticate('token'), error => error.statusCode === 429 && error.code === 'RATE_LIMITED')
+})
+
+test('真实 Auth SDK 的身份响应体也受截止时间约束，超时返回可恢复服务故障', async (t) => {
+  const deadline = new AbortController()
+  t.mock.method(AbortSignal, 'timeout', ms => { assert.equal(ms, 6_000); return deadline.signal })
+  let ready
+  const started = new Promise(resolve => { ready = resolve })
+  const network = t.mock.method(globalThis, 'fetch', async (_url, { signal }) => new Response(new ReadableStream({
+    start(controller) {
+      signal.addEventListener('abort', () => controller.error(signal.reason), { once: true })
+      ready()
+    },
+  }), { headers: { 'Content-Type': 'application/json' } }))
+  const store = createSupabaseAuthPostgresStore({
+    productStore: { async ensureAuthenticatedUser() { assert.fail('超时不能授予权限') } },
+    url: 'https://auth.botanic.test', secretKey: 'test-placeholder',
+  })
+  const pending = store.authenticate('test-token')
+  await started
+  deadline.abort(new DOMException('Timed out', 'TimeoutError'))
+  await assert.rejects(pending, error => error.statusCode === 503 && error.code === 'AUTH_UNAVAILABLE')
+  assert.equal(network.mock.callCount(), 1)
 })
 
 test('Hybrid 模式优先采用有效 Supabase 身份，不把未授权账号降级为旧令牌', async () => {
@@ -227,7 +265,7 @@ test('敏感操作只接受已由 Supabase 验证且达到 AAL2 的会话', asyn
 test('伪造或无效会话不能获得敏感操作认证上下文', async () => {
   const store = createSupabaseAuthPostgresStore({
     productStore: { async ensureAuthenticatedUser() {}, async readUser() {} },
-    client: { auth: { async getUser() { return { data: { user: null }, error: new Error('invalid') } } } },
+    client: { auth: { async getUser() { return { data: { user: null }, error: { status: 403, code: 'bad_jwt' } } } } },
   })
 
   assert.equal(await store.authAssurance('header.payload.signature'), undefined)

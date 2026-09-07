@@ -487,6 +487,24 @@ test('Agent 消息 Turn 请求冲突经过统一 HTTP 层保留 409，不上报 
   assert.equal(reported.length, 0)
 })
 
+test('鉴权依赖暂时不可用保留 503 和错误码，不误判为需要重新登录', async () => {
+  const dependencies = testDependencies()
+  dependencies.runtime.productStore = {
+    async authenticate() {
+      throw Object.assign(new Error('登录服务暂时不可用，请稍后重试。'), { code: 'AUTH_UNAVAILABLE', statusCode: 503 })
+    },
+  }
+  const application = createBotanicHttpServer(dependencies)
+  const { response, headers } = testResponse()
+  await application.handleRequest(testRequest({
+    method: 'GET', url: '/api/projects', headers: { 'x-request-id': 'auth-unavailable-1' },
+  }), response)
+  assert.equal(response.statusCode, 503)
+  assert.equal(JSON.parse(response.body).error.code, 'AUTH_UNAVAILABLE')
+  assert.equal(headers['X-Request-ID'], 'auth-unavailable-1')
+  assert.equal(headers['Set-Cookie'], undefined)
+})
+
 test('客户端中断请求返回 499，不上报 5xx', async () => {
   const dependencies = testDependencies()
   const reported = []

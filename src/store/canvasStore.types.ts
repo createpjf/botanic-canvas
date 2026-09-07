@@ -164,6 +164,9 @@ export type CanvasStore = {
   retryBatchVariationItem: (runId: string, itemId: string) => Promise<boolean>
   updateAgentRunStatus: (runId: string, status: BotanicAgentRunStatus, error?: string) => void
   ensureAgentSession: (contextNodeIds?: string[]) => string
+  ensureAgentSessionPersisted: (projectId: string, sessionId: string) => Promise<void>
+  /** 仅运行时的新建项目标记，不写入 CanvasDocument；缓存项目仍可独立恢复远端读取。 */
+  localOnlyProjectId?: string
   startNewAgentSession: (contextNodeIds?: string[]) => string
   appendAgentMessage: (sessionId: string, message: BotanicAgentMessage) => void
   upsertAgentMessage: (sessionId: string, message: BotanicAgentMessage) => void

@@ -40,6 +40,7 @@ type LocalizableError = {
 
 const englishErrorMessages: Record<string, string> = {
   AUTH_REQUIRED: 'Your session expired. Sign in again.',
+  AUTH_UNAVAILABLE: 'Sign-in verification is temporarily unavailable. Try again shortly.',
   REQUEST_TIMEOUT: 'The request timed out. Try again.',
   RATE_LIMITED: 'Too many requests. Wait a moment and try again.',
   PROJECT_NOT_FOUND: 'This project is unavailable or has been deleted.',

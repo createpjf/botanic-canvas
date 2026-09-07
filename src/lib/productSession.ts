@@ -78,30 +78,20 @@ type ProductRequestInit = RequestInit & {
   timeoutMessage?: string
 }
 
-function withAuthTimeout<T>(request: Promise<T>, message: string): Promise<T> {
-  return new Promise((resolve, reject) => {
-    let settled = false
-    const timeoutId = window.setTimeout(() => {
-      if (settled) return
-      settled = true
-      reject(new ProductApiError(message, 0, 'REQUEST_TIMEOUT'))
-    }, authSessionTimeoutMs)
-
-    void request.then(
-      (value) => {
-        if (settled) return
-        settled = true
-        window.clearTimeout(timeoutId)
-        resolve(value)
-      },
-      (error) => {
-        if (settled) return
-        settled = true
-        window.clearTimeout(timeoutId)
-        reject(error)
-      },
-    )
-  })
+async function withAuthTimeout<T>(request: Promise<T>, message: string, signal?: AbortSignal): Promise<T> {
+  let timeoutId: number | undefined
+  let abort: (() => void) | undefined
+  try {
+    return await Promise.race([request, new Promise<never>((_resolve, reject) => {
+      timeoutId = window.setTimeout(() => reject(new ProductApiError(message, 0, 'REQUEST_TIMEOUT')), authSessionTimeoutMs)
+      abort = () => reject(new DOMException('The request was cancelled.', 'AbortError'))
+      if (signal?.aborted) abort()
+      else signal?.addEventListener('abort', abort, { once: true })
+    })])
+  } finally {
+    window.clearTimeout(timeoutId)
+    if (abort) signal?.removeEventListener('abort', abort)
+  }
 }
 
 /**
@@ -117,11 +107,12 @@ function sessionUserFallback(user: { id: string; email?: string; user_metadata?:
   return { id: user.id, email, name: displayName, role: 'member' }
 }
 
-async function authorizationHeader(): Promise<Record<string, string>> {
+async function authorizationHeader(signal?: AbortSignal): Promise<Record<string, string>> {
   if (!supabase) return {}
   const { data } = await withAuthTimeout(
     supabase.auth.getSession(),
     '登录状态读取超时，请重新登录。',
+    signal,
   )
   return data.session ? { Authorization: `Bearer ${data.session.access_token}` } : {}
 }
@@ -233,7 +224,7 @@ export async function productRequest<T>(path: string, init: ProductRequestInit =
         && !init.signal?.aborted
         && caught instanceof ProductApiError
         && (retryableProductResponseStatuses.has(caught.status)
-          || (caught.status === 0 && caught.code !== 'REQUEST_TIMEOUT'))
+          || (caught.status === 0 && caught.code === 'NETWORK_ERROR'))
       if (!retryable) {
         captureSentryApiFailure(caught, {
           path,
@@ -252,66 +243,71 @@ async function productRequestOnce<T>(path: string, init: ProductRequestInit = {}
   const requestTimeoutMs = Number.isFinite(requestedTimeoutMs)
     ? Math.min(120_000, Math.max(1_000, requestedTimeoutMs!))
     : productRequestTimeoutMs
-  let response: Response
   const controller = new AbortController()
   let requestId: string = globalThis.crypto.randomUUID()
   const abortFromCaller = () => controller.abort()
   if (requestInit.signal?.aborted) controller.abort()
   else requestInit.signal?.addEventListener('abort', abortFromCaller, { once: true })
   const timeoutId = window.setTimeout(() => controller.abort(), requestTimeoutMs)
+  const locale = readProductLocale()
   try {
+    controller.signal.throwIfAborted()
     const headers = new Headers(requestInit.headers)
     headers.set('Accept', 'application/json')
     headers.set('Accept-Language', readProductLocale())
     requestId = headers.get('X-Request-ID') ?? requestId
     headers.set('X-Request-ID', requestId)
-    for (const [key, value] of Object.entries(await authorizationHeader())) headers.set(key, value)
-    response = await fetch(path, {
+    for (const [key, value] of Object.entries(await authorizationHeader(controller.signal))) headers.set(key, value)
+    controller.signal.throwIfAborted()
+    const response = await fetch(path, {
       ...requestInit,
       credentials: 'include',
       headers,
       signal: controller.signal,
     })
-  } catch {
-    const locale = readProductLocale()
-    const message = !requestInit.signal?.aborted && controller.signal.aborted
+    requestId = response.headers.get('X-Request-ID') ?? requestId
+    const contentType = response.headers.get('Content-Type') ?? ''
+    const invalidResponseCode = response.status >= 500 ? 'WORKSPACE_UNAVAILABLE' : 'INVALID_API_RESPONSE'
+    const invalidResponseMessage = invalidResponseCode === 'WORKSPACE_UNAVAILABLE'
+      ? locale === 'en' ? 'The workspace service is unavailable. Try again shortly.' : '工作区服务暂时无法连接，请稍后重试。'
+      : locale === 'en' ? 'Unable to read the workspace response. Try again.' : '工作区响应读取失败，请重试。'
+    let payload: T | ApiErrorPayload | null | undefined
+    if (response.status === 204) payload = undefined
+    else if (!contentType.toLowerCase().includes('json')) {
+      throw new ProductApiError(invalidResponseMessage, response.status, invalidResponseCode, requestId)
+    } else {
+      try {
+        payload = await response.json() as T | ApiErrorPayload | null
+      } catch (caught) {
+        if (controller.signal.aborted || !(caught instanceof SyntaxError)) throw caught
+        throw new ProductApiError(invalidResponseMessage, response.status, invalidResponseCode, requestId)
+      }
+    }
+    controller.signal.throwIfAborted()
+    if (!response.ok) {
+      const error = payload as ApiErrorPayload | null
+      invalidateProductSessionIfRequired({ status: response.status, code: error?.error?.code })
+      throw new ProductApiError(localizeProductError({
+        status: response.status,
+        code: error?.error?.code,
+        message: error?.error?.message,
+      }, locale, {
+        'zh-CN': '工作区服务返回异常。',
+        en: 'The workspace service returned an error. Try again.',
+      }), response.status, error?.error?.code, requestId)
+    }
+    return payload as T
+  } catch (caught) {
+    if (requestInit.signal?.aborted) throw new DOMException('The request was cancelled.', 'AbortError')
+    if (caught instanceof ProductApiError) throw caught
+    const message = controller.signal.aborted
       ? locale === 'en' ? 'The workspace service timed out. Try again.' : (timeoutMessage ?? '工作区服务响应超时，请稍后重试。')
       : locale === 'en' ? 'Unable to connect to the workspace service. Check your connection and try again.' : '无法连接工作区服务，请检查网络或稍后重试。'
-    throw new ProductApiError(message, 0, controller.signal.aborted ? 'REQUEST_TIMEOUT' : undefined, requestId)
+    throw new ProductApiError(message, 0, controller.signal.aborted ? 'REQUEST_TIMEOUT' : 'NETWORK_ERROR', requestId)
   } finally {
     window.clearTimeout(timeoutId)
     requestInit.signal?.removeEventListener('abort', abortFromCaller)
   }
-  const responseRequestId = response.headers.get('X-Request-ID') ?? requestId
-  const contentType = response.headers.get('Content-Type') ?? ''
-  const invalidResponseCode = response.status >= 500 ? 'WORKSPACE_UNAVAILABLE' : 'INVALID_API_RESPONSE'
-  const invalidResponseMessage = invalidResponseCode === 'WORKSPACE_UNAVAILABLE'
-    ? readProductLocale() === 'en' ? 'The workspace service is unavailable. Try again shortly.' : '工作区服务暂时无法连接，请稍后重试。'
-    : readProductLocale() === 'en' ? 'Unable to read the workspace response. Try again.' : '工作区响应读取失败，请重试。'
-  let payload: T | ApiErrorPayload | null | undefined
-  if (response.status === 204) payload = undefined
-  else if (!contentType.toLowerCase().includes('json')) {
-    throw new ProductApiError(invalidResponseMessage, 502, invalidResponseCode, responseRequestId)
-  } else {
-    try {
-      payload = await response.json() as T | ApiErrorPayload | null
-    } catch {
-      throw new ProductApiError(invalidResponseMessage, 502, invalidResponseCode, responseRequestId)
-    }
-  }
-  if (!response.ok) {
-    const error = payload as ApiErrorPayload | null
-    invalidateProductSessionIfRequired({ status: response.status, code: error?.error?.code })
-    throw new ProductApiError(localizeProductError({
-      status: response.status,
-      code: error?.error?.code,
-      message: error?.error?.message,
-    }, readProductLocale(), {
-      'zh-CN': '工作区服务返回异常。',
-      en: 'The workspace service returned an error. Try again.',
-    }), response.status, error?.error?.code, responseRequestId)
-  }
-  return payload as T
 }
 
 const reportAccountSecurityEvent = createSecurityAuditReporter(async (action) => {

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useReducer, useRef, useState } from 'react'
 import type { BotanicAgentSession, BotanicAgentSkill, BotanicAgentSkillCatalogItem } from '../../domain/agent'
 import { createProjectAgentSkill, listBotanicAgentSystemSkills, listProjectAgentSkills } from '../../lib/agentApi'
 import { localizeProductError, type ProductLocale } from '../../i18n/core'
+import { canReadRemoteCanvasProject, useCanvasStore } from '../../store/canvasStore'
 import {
   agentSkillFormReducer,
   canSubmitAgentSkillForm,
@@ -34,6 +35,7 @@ export function useAgentSkillRegistry(input: {
     projectId, session, locale, panelOpen,
     serverPersistenceEnabled, isCurrentAgentProject, onSkillsChange, createFailedMessage,
   } = input
+  const remoteProjectReady = useCanvasStore(canReadRemoteCanvasProject)
 
   const [skills, setSkills] = useState<BotanicAgentSkill[]>([])
   const [systemSkills, setSystemSkills] = useState<BotanicAgentSkillCatalogItem[]>([])
@@ -64,7 +66,7 @@ export function useAgentSkillRegistry(input: {
     void listBotanicAgentSystemSkills()
       .then((items) => { if (active) setSystemSkills(items) })
       .catch(() => { if (active) setSystemSkills([]) })
-    void listProjectAgentSkills(projectId).then((items) => {
+    if (remoteProjectReady) void listProjectAgentSkills(projectId).then((items) => {
       if (active) setSkills(items.filter((skill) => skill.lifecycle ? skill.lifecycle === 'published' : skill.status === 'active'))
     }).catch((reason) => {
       if (active) dispatch({ type: 'submitFailed', error: localizeProductError(reason, locale, {
@@ -73,7 +75,7 @@ export function useAgentSkillRegistry(input: {
       }) })
     })
     return () => { active = false }
-  }, [locale, projectId, panelOpen, serverPersistenceEnabled])
+  }, [locale, projectId, panelOpen, remoteProjectReady, serverPersistenceEnabled])
 
   const editName = useCallback((value: string) => dispatch({ type: 'editName', value }), [])
   const editInstructions = useCallback((value: string) => dispatch({ type: 'editInstructions', value }), [])

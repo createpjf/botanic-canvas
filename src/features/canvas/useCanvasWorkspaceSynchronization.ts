@@ -11,7 +11,7 @@ import {
 } from '../../domain/collaborationActivity'
 import { canvasSyncFailureMessage, shouldRefreshFromRealtimeEvent, type CanvasSyncStatus, type ProjectRealtimeConnectionState } from '../../domain/realtimeSync'
 import { pendingCanvasSyncOutcome } from '../../domain/remoteDocumentSync'
-import { executePersistentBotanicAgentRun, listPersistentBotanicAgentRuns, listPersistentBotanicAgentSessions, readPersistentBotanicAgentState } from '../../lib/agentApi'
+import { executePersistentBotanicAgentRun, listPersistentBotanicAgentRuns, readPersistentBotanicAgentState } from '../../lib/agentApi'
 import { listProjectCollaborationActivities, updateProjectCollaborationActivityReceipt } from '../../lib/collaborationApi'
 import { appliedRemoteRevision, flushPendingCanvasDocumentWrites, lastKnownCanvasSyncProtocolEpoch, previewRemoteCanvasDocument, refreshCanvasDocumentFromRemote, syncPendingCanvasDrafts, type CanvasConflictRevision } from '../../lib/db'
 import { recordSentryBreadcrumb } from '../../lib/sentry'
@@ -19,7 +19,7 @@ import { connectCanvasCollaboration, type CanvasCollaboration } from '../../lib/
 import { serverPersistenceEnabled } from '../../lib/productSession'
 import { localizeProductError, type ProductLocale } from '../../i18n/core'
 import { useProductI18n } from '../../i18n/react'
-import { useCanvasStore } from '../../store/canvasStore'
+import { canReadRemoteCanvasProject, useCanvasStore } from '../../store/canvasStore'
 import type { CollaborationStatus } from '../../store/canvasStore.types'
 import { canvasSystemLabel } from './canvasI18n'
 import { retryCanvasRealtimeSync, type CanvasRealtimeRetryAttempt } from './canvasRealtimeRetry'
@@ -82,7 +82,7 @@ function localizeCollaborationChange<T extends CollaborationDocumentChange>(chan
 type CanvasWorkspaceSynchronizationOptions = {
   workspaceActive: boolean
   currentUserId?: string
-  refreshAgentSessionMessagesRef?: { current: () => Promise<void> }
+  refreshAgentSessionMessagesRef?: { current: (invalidated?: boolean) => Promise<void> }
 }
 
 export type CollaborationAwareness = {
@@ -129,6 +129,7 @@ export function useCanvasWorkspaceSynchronization({
   )))
   const persistenceStatus = useCanvasStore((state) => state.persistenceStatus)
   const hydrated = useCanvasStore((state) => state.hydrated)
+  const remoteProjectReady = useCanvasStore(canReadRemoteCanvasProject)
   const hydrate = useCanvasStore((state) => state.hydrate)
   const openDocument = useCanvasStore((state) => state.openDocument)
   const refreshDocumentFromRemote = useCanvasStore((state) => state.refreshDocumentFromRemote)
@@ -145,10 +146,13 @@ export function useCanvasWorkspaceSynchronization({
   const collaborationActivityLoadRef = useRef<{ projectId: string; promise: Promise<void> } | null>(null)
   const agentRunRecoveryRef = useRef<Promise<boolean> | null>(null)
   const remoteDocumentRefreshRef = useRef<{ projectId: string; promise: Promise<boolean> } | null>(null)
+  const agentRefreshRef = useRef<{ projectId: string; controller: AbortController; dirty: boolean; promise: Promise<void> } | null>(null)
+  const runRefreshRef = useRef<{ projectId: string; promise: Promise<void> } | null>(null)
   const pendingRemoteGraphChangeRef = useRef<CollaborationDocumentChange | undefined>(undefined)
   const collaboratorNamesRef = useRef(new Map<string, string>())
 
   const refreshDocumentFromRemoteOnce = useCallback((options: { preserveCanvasGraph?: boolean } = {}) => {
+    if (!canReadRemoteCanvasProject(useCanvasStore.getState())) return Promise.resolve(false)
     const projectId = useCanvasStore.getState().document.id
     const inFlight = remoteDocumentRefreshRef.current
     if (inFlight?.projectId === projectId) return inFlight.promise
@@ -197,6 +201,7 @@ export function useCanvasWorkspaceSynchronization({
   }, [copy.collaborator, currentUserId, locale])
 
   const loadCollaborationActivities = useCallback(async () => {
+    if (!canReadRemoteCanvasProject(useCanvasStore.getState())) return
     const projectId = useCanvasStore.getState().document.id
     if (!serverPersistenceEnabled || projectId === 'workspace-placeholder') return
     if (collaborationActivityLoadRef.current?.projectId === projectId) return collaborationActivityLoadRef.current.promise
@@ -308,33 +313,49 @@ export function useCanvasWorkspaceSynchronization({
     setCollaborationAwareness((current) => ({ ...current, activities: [], unreadActivityCount: 0, historyStatus: 'idle', historyHasMore: false, historyNextBefore: undefined, historyErrorAction: undefined }))
   }, [locale])
 
-  const refreshAgentEntitiesFromRemote = useCallback(async () => {
+  const refreshAgentEntitiesFromRemote = useCallback((invalidated = false): Promise<void> => {
+    if (!canReadRemoteCanvasProject(useCanvasStore.getState())) return Promise.resolve()
     const projectId = useCanvasStore.getState().document.id
-    if (!serverPersistenceEnabled || projectId === 'workspace-placeholder') return
-    const [{ sessions: remoteSessions }, state] = await Promise.all([
-      listPersistentBotanicAgentSessions(projectId),
-      readPersistentBotanicAgentState(projectId, { includeMessages: false }),
+    if (!serverPersistenceEnabled) return Promise.resolve()
+    const pending = agentRefreshRef.current
+    if (pending?.projectId === projectId && !pending.controller.signal.aborted) {
+      if (invalidated) pending.dirty = true
+      return pending.promise
+    }
+    pending?.controller.abort()
+    const request = { projectId, controller: new AbortController(), dirty: false, promise: Promise.resolve() }
+    agentRefreshRef.current = request
+    const active = () => useCanvasStore.getState().document.id === projectId && !request.controller.signal.aborted
+    request.promise = (async () => {
+      do {
+        request.dirty = false
+        // 三个 Adapter 的 state 都包含同权限、同上限的 Session 投影，不再重复列举。
+        const state = await readPersistentBotanicAgentState(projectId, { includeMessages: false, signal: request.controller.signal })
+        if (!active()) return
+        const remoteSessions = overlayLocalAgentSessionMessages(state.sessions, useCanvasStore.getState().document.agentSessions)
+        useCanvasStore.setState((current) => {
+          const agentSessions = mergeCollaborativeAgentSessions(current.document.agentSessions, remoteSessions)
+          const activeAgentSessionId = agentSessions.some(session => session.id === current.document.activeAgentSessionId)
+            ? current.document.activeAgentSessionId : agentSessions[0]?.id
+          return { document: { ...current.document, agentSessions, agentMemory: state.memory, activeAgentSessionId } }
+        })
+        state.runs.forEach(run => applyAgentRunSnapshot(run))
+      } while (active() && request.dirty)
+    })().finally(() => { if (agentRefreshRef.current === request) agentRefreshRef.current = null })
+    return request.promise
+  }, [applyAgentRunSnapshot])
+
+  const refreshIndependentReads = useCallback(async (invalidated = false) => {
+    const results = await Promise.allSettled([
+      refreshDocumentFromRemoteOnce(), refreshAgentEntitiesFromRemote(invalidated),
+      refreshAgentSessionMessagesRef?.current?.(invalidated), loadCollaborationActivities(),
     ])
-    if (useCanvasStore.getState().document.id !== projectId) return
-    const localSessions = useCanvasStore.getState().document.agentSessions
-    const remoteSessionsForMerge = overlayLocalAgentSessionMessages(remoteSessions, localSessions)
-    useCanvasStore.setState((current) => {
-      const agentSessions = mergeCollaborativeAgentSessions(current.document.agentSessions, remoteSessionsForMerge)
-      const activeAgentSessionId = agentSessions.some((session) => session.id === current.document.activeAgentSessionId)
-        ? current.document.activeAgentSessionId
-        : agentSessions[0]?.id
-      return {
-        document: {
-          ...current.document,
-          agentSessions,
-          agentMemory: state.memory,
-          activeAgentSessionId,
-        },
+    results.forEach((result, index) => {
+      if (result.status === 'rejected' && result.reason?.name !== 'AbortError') {
+        recordSentryBreadcrumb('canvas-sync', `${['画布', 'Agent 状态', '消息', '协作记录'][index]}刷新失败，其他读取继续。`)
       }
     })
-    state.runs.forEach((run) => applyAgentRunSnapshot(run))
-    await refreshAgentSessionMessagesRef?.current?.()
-  }, [applyAgentRunSnapshot, refreshAgentSessionMessagesRef])
+  }, [loadCollaborationActivities, refreshAgentEntitiesFromRemote, refreshAgentSessionMessagesRef, refreshDocumentFromRemoteOnce])
 
   const retryCollaborationHistory = useCallback(async () => {
     if (collaborationAwareness.historyErrorAction === 'read') return dismissRemoteChange()
@@ -390,7 +411,7 @@ export function useCanvasWorkspaceSynchronization({
       if (!remote || useCanvasStore.getState().document.id !== projectId) return false
       const opened = await openDocument(projectId)
       if (opened && useCanvasStore.getState().document.id === projectId) {
-        await refreshAgentEntitiesFromRemote()
+        void refreshIndependentReads(true)
         if (useCanvasStore.getState().document.id !== projectId) return false
         useCanvasStore.setState({ persistenceStatus: 'saved', assistantMessage: copy.cloudVersionSelected })
       }
@@ -401,7 +422,7 @@ export function useCanvasWorkspaceSynchronization({
         en: canvasSynchronizationCopy.en.remoteRefreshFailed,
       }))
     }
-  }, [copy.cloudVersionSelected, locale, openDocument, refreshAgentEntitiesFromRemote])
+  }, [copy.cloudVersionSelected, locale, openDocument, refreshIndependentReads])
 
   const recoverAgentRunResults = useCallback(async () => {
     if (agentRunRecoveryRef.current) return agentRunRecoveryRef.current
@@ -426,30 +447,40 @@ export function useCanvasWorkspaceSynchronization({
   }, [recoverGenerationResultsFromRemote, refreshDocumentFromRemoteOnce])
 
   const recoverPersistentAgentRuns = useCallback(async () => {
+    if (!canReadRemoteCanvasProject(useCanvasStore.getState())) return
     const projectId = useCanvasStore.getState().document.id
-    const runs = await listPersistentBotanicAgentRuns(projectId)
-    if (useCanvasStore.getState().document.id !== projectId) return
-    let shouldRecoverResults = false
-    for (const persistedRun of runs) {
-      let run = persistedRun
-      if (shouldResumeQueuedAgentRunExecution(run)) {
-        // execute 使用 runId 稳定幂等键；多设备同时恢复也不会创建重复任务。
-        try {
-          run = (await executePersistentBotanicAgentRun(projectId, run.id, {
-            onWorkflowReady: async (workflow) => {
-              if (workflow.canvasPatch) await applyAgentWorkflowPatch(workflow.canvasPatch)
-              else await refreshDocumentFromRemoteOnce()
-            },
-          })).run
-        } catch {
-          // 保留 queued 快照，下一轮轮询或重连再自动确认。
+    if (runRefreshRef.current?.projectId === projectId) return runRefreshRef.current.promise
+    const recovery = (async () => {
+      const runs = await listPersistentBotanicAgentRuns(projectId)
+      if (useCanvasStore.getState().document.id !== projectId) return
+      let shouldRecoverResults = false
+      for (const persistedRun of runs) {
+        let run = persistedRun
+        if (shouldResumeQueuedAgentRunExecution(run)) {
+          // execute 使用 runId 稳定幂等键；多设备同时恢复也不会创建重复任务。
+          try {
+            run = (await executePersistentBotanicAgentRun(projectId, run.id, {
+              onWorkflowReady: async (workflow) => {
+                if (useCanvasStore.getState().document.id !== projectId) return
+                if (workflow.canvasPatch) await applyAgentWorkflowPatch(workflow.canvasPatch)
+                else await refreshDocumentFromRemoteOnce()
+              },
+            })).run
+          } catch {
+            // 保留 queued 快照，下一轮轮询或重连再自动确认。
+          }
         }
+        if (useCanvasStore.getState().document.id !== projectId) return
+        const current = useCanvasStore.getState().document.agentRuns.find((candidate) => candidate.id === run.id)
+        if (shouldRecoverAgentRunResults(current, run)) shouldRecoverResults = true
+        applyAgentRunSnapshot(run)
       }
-      const current = useCanvasStore.getState().document.agentRuns.find((candidate) => candidate.id === run.id)
-      if (shouldRecoverAgentRunResults(current, run)) shouldRecoverResults = true
-      applyAgentRunSnapshot(run)
+      if (shouldRecoverResults) await recoverAgentRunResults()
+    })()
+    runRefreshRef.current = { projectId, promise: recovery }
+    try { await recovery } finally {
+      if (runRefreshRef.current?.promise === recovery) runRefreshRef.current = null
     }
-    if (shouldRecoverResults) await recoverAgentRunResults()
   }, [applyAgentRunSnapshot, applyAgentWorkflowPatch, recoverAgentRunResults, refreshDocumentFromRemoteOnce])
 
   useEffect(() => {
@@ -465,27 +496,27 @@ export function useCanvasWorkspaceSynchronization({
   useEffect(() => {
     if (!hydrated || !serverPersistenceEnabled) return
     const syncDrafts = () => {
+      void refreshIndependentReads()
       void synchronizeLocalDrafts()
         .then(() => refreshDocumentFromRemoteOnce())
         .then(() => recoverUnknownGenerationSubmission())
         .then(() => recoverPersistentAgentRuns())
-        .then(() => loadCollaborationActivities())
         .catch(() => recordSentryBreadcrumb('canvas-sync', '草稿同步链中断，等待下一次 focus/online 重试。'))
     }
     syncDrafts()
     window.addEventListener('online', syncDrafts)
     return () => window.removeEventListener('online', syncDrafts)
-  }, [hydrated, loadCollaborationActivities, recoverPersistentAgentRuns, recoverUnknownGenerationSubmission, refreshDocumentFromRemoteOnce, synchronizeLocalDrafts])
+  }, [hydrated, recoverPersistentAgentRuns, recoverUnknownGenerationSubmission, refreshDocumentFromRemoteOnce, refreshIndependentReads, synchronizeLocalDrafts])
 
   useEffect(() => {
     if (!hydrated || !workspaceActive || !serverPersistenceEnabled) return
     const refresh = () => {
       collaborationRef.current?.refresh()
+      void refreshIndependentReads()
       void refreshDocumentFromRemoteOnce()
         .then(() => recoverUnknownGenerationSubmission())
         .then(() => recoverPersistentAgentRuns())
-        .then(() => loadCollaborationActivities())
-        .catch(() => undefined)
+        .catch(() => recordSentryBreadcrumb('canvas-sync', '任务恢复失败，独立读取继续。'))
     }
     const refreshWhenVisible = () => {
       if (window.document.visibilityState === 'visible') refresh()
@@ -496,10 +527,11 @@ export function useCanvasWorkspaceSynchronization({
       window.removeEventListener('focus', refresh)
       window.document.removeEventListener('visibilitychange', refreshWhenVisible)
     }
-  }, [hydrated, loadCollaborationActivities, recoverPersistentAgentRuns, recoverUnknownGenerationSubmission, refreshDocumentFromRemoteOnce, workspaceActive])
+  }, [hydrated, recoverPersistentAgentRuns, recoverUnknownGenerationSubmission, refreshDocumentFromRemoteOnce, refreshIndependentReads, workspaceActive])
 
   useEffect(() => {
     if (!hydrated || !workspaceActive || !serverPersistenceEnabled) return
+    if (!remoteProjectReady) return
     const current = useCanvasStore.getState().document
     const updateRealtimeStatus = (state: ProjectRealtimeConnectionState | CanvasSyncStatus, failure?: { code: string }) => {
       if (useCanvasStore.getState().document.id !== current.id) return
@@ -569,7 +601,8 @@ export function useCanvasWorkspaceSynchronization({
           })
         }
         // 同一账号的另一台设备 actorId 相同，也必须刷新独立 Agent 实体。
-        void refreshAgentEntitiesFromRemote().catch(() => undefined)
+        void refreshAgentEntitiesFromRemote(true).catch(() => recordSentryBreadcrumb('canvas-sync', 'Agent 状态更新失败，消息独立刷新。'))
+        void refreshAgentSessionMessagesRef?.current?.(true).catch(() => recordSentryBreadcrumb('canvas-sync', '消息更新失败，保留已读取内容。'))
       },
       onPresenceChanged: (event) => {
         collaboratorNamesRef.current = new Map(event.members.flatMap((member) => member.actorName ? [[member.userId, member.actorName] as const] : []))
@@ -579,14 +612,13 @@ export function useCanvasWorkspaceSynchronization({
         }))
       },
       onReconnected: () => {
+        void refreshIndependentReads(true)
         void synchronizeLocalDrafts()
           .then(() => recoverUnknownGenerationSubmission())
           .then(() => recoverPersistentAgentRuns())
-          .then(() => refreshAgentEntitiesFromRemote())
           .then(() => refreshDocumentFromRemoteOnce())
           .then(() => resumeBatchVariations())
-          .then(() => loadCollaborationActivities())
-          .catch(() => undefined)
+          .catch(() => recordSentryBreadcrumb('canvas-sync', '重连任务恢复失败，独立读取继续。'))
       },
       onConnectionStateChanged: updateRealtimeStatus,
       onSyncStatusChanged: updateRealtimeStatus,
@@ -606,7 +638,9 @@ export function useCanvasWorkspaceSynchronization({
       collaboration.close()
       if (useCanvasStore.getState().document.id === current.id) useCanvasStore.setState({ collaborationStatus: 'disabled' })
     }
-  }, [applyAgentRunSnapshot, applyCollaborativeGraph, copy.canvasUpdated, currentUserId, documentId, hydrated, loadCollaborationActivities, locale, recordRemoteChange, recoverAgentRunResults, recoverPersistentAgentRuns, recoverUnknownGenerationSubmission, refreshAgentEntitiesFromRemote, refreshDocumentFromRemoteOnce, resumeBatchVariations, synchronizeLocalDrafts, workspaceActive])
+  }, [applyAgentRunSnapshot, applyCollaborativeGraph, copy.canvasUpdated, currentUserId, documentId, hydrated, loadCollaborationActivities, locale, recordRemoteChange, recoverAgentRunResults, recoverPersistentAgentRuns, recoverUnknownGenerationSubmission, refreshAgentEntitiesFromRemote, refreshAgentSessionMessagesRef, refreshDocumentFromRemoteOnce, refreshIndependentReads, remoteProjectReady, resumeBatchVariations, synchronizeLocalDrafts, workspaceActive])
+
+  useEffect(() => () => { agentRefreshRef.current?.controller.abort() }, [documentId])
 
   useEffect(() => {
     collaboratorNamesRef.current.clear()
@@ -620,8 +654,8 @@ export function useCanvasWorkspaceSynchronization({
 
   useEffect(() => {
     if (!hydrated || !workspaceActive || !serverPersistenceEnabled) return
-    void loadCollaborationActivities().catch(() => undefined)
-  }, [documentId, hydrated, loadCollaborationActivities, workspaceActive])
+    void refreshIndependentReads()
+  }, [documentId, hydrated, refreshIndependentReads, remoteProjectReady, workspaceActive])
 
   useEffect(() => {
     if (persistenceStatus !== 'conflict' || !serverPersistenceEnabled || (collaborationAwareness.syncProtocolEpoch ?? 1) >= 2) {
@@ -646,7 +680,7 @@ export function useCanvasWorkspaceSynchronization({
   useEffect(() => {
     if (!hydrated || !workspaceActive || !serverPersistenceEnabled) return
     void recoverPersistentAgentRuns().catch(() => undefined)
-  }, [documentId, hydrated, recoverPersistentAgentRuns, workspaceActive])
+  }, [documentId, hydrated, recoverPersistentAgentRuns, remoteProjectReady, workspaceActive])
 
   useEffect(() => {
     if (!hydrated || !workspaceActive || !serverPersistenceEnabled) return

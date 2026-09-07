@@ -231,6 +231,7 @@ export function createCanvasDocumentLifecycleActions({
         canvasDocumentReadyAssistantMessage(document, readProductLocale()),
       )
       set({
+        localOnlyProjectId: inputDocument.id,
         document: recoveredGeneration.document,
         hydrated: true,
         persistenceStatus: 'saved',

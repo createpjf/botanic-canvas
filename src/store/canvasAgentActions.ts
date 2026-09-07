@@ -32,6 +32,7 @@ type AgentStoreActions = Pick<CanvasStore,
   | 'checkAgentRunStop'
   | 'updateAgentRunStatus'
   | 'ensureAgentSession'
+  | 'ensureAgentSessionPersisted'
   | 'startNewAgentSession'
   | 'appendAgentMessage'
   | 'upsertAgentMessage'
@@ -94,6 +95,35 @@ export function createCanvasAgentActions({
 }): AgentStoreActions {
   const retryingBranches = new Set<string>()
   const cancellingRuns = new Map<string, Promise<boolean>>()
+  // Session 的写队列与首次读取共用同一完成信号，不新增持久化状态。
+  const sessionWrites = new Map<string, Promise<BotanicAgentSession | undefined>>()
+  const sessionRevisions = new Map<string, number>()
+  const newSessions = new Set<string>()
+  const persistSession = (projectId: string, snapshot: BotanicAgentSession) => {
+    const key = `${projectId}\u0000${snapshot.id}`
+    const previous = sessionWrites.get(key) ?? Promise.resolve(undefined)
+    const write = async () => {
+      const current = get().document.id === projectId
+        ? get().document.agentSessions.find(session => session.id === snapshot.id) : undefined
+      const revision = Math.max(sessionRevisions.get(key) ?? 0, snapshot.revision ?? 0, current?.revision ?? 0)
+      const saved = await persistAgentSession(projectId, { ...snapshot, revision })
+      if (!saved) return undefined
+      newSessions.delete(key)
+      sessionRevisions.set(key, saved.revision ?? revision)
+      if (get().document.id === projectId) {
+        const document = get().document
+        set({ document: { ...document, agentSessions: document.agentSessions.map(session => session.id === saved.id
+          ? { ...session, revision: Math.max(session.revision ?? 0, saved.revision ?? revision) } : session) } })
+      }
+      return saved
+    }
+    const operation = previous.then(write, write)
+    sessionWrites.set(key, operation)
+    void operation.finally(() => {
+      if (sessionWrites.get(key) === operation) sessionWrites.delete(key)
+    }).catch(() => undefined)
+    return operation
+  }
   const checkAgentRunStop = async (runId: string) => {
     const projectId = get().document.id
     if (!persistentAgentRunApi.readCancellation) return false
@@ -127,7 +157,7 @@ export function createCanvasAgentActions({
     }
     if (!options.persistSession) return
     const session = document.agentSessions.find((item) => item.id === document.activeAgentSessionId)
-    if (session) void persistAgentSession(document.id, session).catch((caught) => {
+    if (session) void persistSession(document.id, session).catch((caught) => {
       if (get().document.id !== document.id) return
       const source = caught as { code?: string; message?: string } | undefined
       set({ assistantMessage: source?.message || 'Agent 会话设置同步失败，请刷新后重试。' })
@@ -259,6 +289,14 @@ export function createCanvasAgentActions({
       })
     },
 
+    ensureAgentSessionPersisted: async (projectId, sessionId) => {
+      const document = get().document
+      const session = document.id === projectId && document.agentSessions.find(item => item.id === sessionId)
+      if (!session) throw new DOMException('The conversation changed.', 'AbortError')
+      if (!newSessions.has(`${projectId}\u0000${sessionId}`) || (session.revision ?? 0) > 0) return
+      await (sessionWrites.get(`${projectId}\u0000${sessionId}`) ?? persistSession(projectId, session))
+    },
+
     ensureAgentSession: (contextNodeIds = []) => {
       const document = get().document
       const active = document.agentSessions.find((session) => session.id === document.activeAgentSessionId)
@@ -272,6 +310,7 @@ export function createCanvasAgentActions({
         id: `agent-session-${crypto.randomUUID()}`,
         contextNodeIds,
       })
+      newSessions.add(`${document.id}\u0000${session.id}`)
       commitAgentSessionDocument({
         ...document,
         agentSessions: [session, ...document.agentSessions],

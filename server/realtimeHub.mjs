@@ -445,26 +445,49 @@ export function createProjectRealtimeHub({
   })
 
   const onUpgrade = async (request, socket, head) => {
+    const startedAt = now()
+    const suppliedRequestId = request.headers['x-request-id']
+    const requestId = typeof suppliedRequestId === 'string' && /^[A-Za-z0-9._:-]{1,128}$/.test(suppliedRequestId)
+      ? suppliedRequestId : randomUUID()
+    let stage = 'request'
+    let safeProjectId
+    const rejectUpgrade = (code) => {
+      // 只记录阶段与白名单代码；URL 中的 ticket 和上游异常正文不得进入日志。
+      console.warn(JSON.stringify({
+        event: 'canvas_sync.upgrade_rejected', requestId, instanceId,
+        stage, code, projectId: safeProjectId, durationMs: Math.max(0, now() - startedAt),
+      }))
+      socket.destroy()
+    }
     try {
       const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`)
       if (url.pathname !== '/api/realtime') return socket.destroy()
       const projectId = url.searchParams.get('projectId') ?? ''
       const canvasSyncProtocol = url.searchParams.get('protocol') === '2' ? 2 : 1
+      stage = 'ticket'
       const authorized = verifyRealtimeTicket(url.searchParams.get('ticket') ?? '', {
         projectId,
         origin: request.headers.origin,
         secret: ticketSecret,
       })
-      const project = authorized && await productStore.readProject(authorized.userId, projectId)
-      if (!authorized || !project) return socket.destroy()
+      if (!authorized) return rejectUpgrade('INVALID_REALTIME_TICKET')
+      if (/^[A-Za-z0-9._:-]{1,200}$/.test(projectId)) safeProjectId = projectId
+      stage = 'project'
+      const project = await productStore.readProject(authorized.userId, projectId)
+      if (!project) return rejectUpgrade('PROJECT_UNAVAILABLE')
+      stage = 'permission'
       const canEdit = await productStore.canEditProject(authorized.userId, projectId)
+      stage = 'room'
       const roomEntry = await collaborationRoom(authorized.userId, projectId, project)
+      stage = 'refresh'
       await refreshRoomIfStale(roomEntry, authorized.userId, project.graphRevision)
+      stage = 'upgrade'
       webSocketServer.handleUpgrade(request, socket, head, (client) => {
         webSocketServer.emit('connection', client, request, { ...authorized, canEdit, roomEntry, canvasSyncProtocol })
       })
-    } catch {
-      socket.destroy()
+    } catch (caught) {
+      rejectUpgrade(['DATABASE_RETRYABLE', 'PROJECT_NOT_FOUND', 'PROJECT_ACCESS_FORBIDDEN', 'CANVAS_SYNC_EPOCH_STALE'].includes(caught?.code)
+        ? caught.code : 'UPGRADE_FAILED')
     }
   }
   server.on('upgrade', onUpgrade)

@@ -3692,8 +3692,8 @@ export default function AgentWorkspace({
         /></div> : null}
         {!utilityPanelOpen ? <Conversation data-agent-flip className="agent-workspace__conversation">
         <ConversationContent>
-        {messageHistory?.error ? <div className="agent-reading-restore" role="alert"><span>{locale === 'en' ? 'Messages could not be loaded.' : '消息读取失败'}</span><button type="button" disabled={messageHistory.loading} onClick={() => void messageHistory.retry().catch(() => undefined)}>{locale === 'en' ? 'Retry' : '重试'}</button></div> : null}
-        {messageHistory?.loading ? <div role="status">{locale === 'en' ? 'Loading messages…' : '正在读取消息…'}</div> : null}
+        {messageHistory?.error ? <div className="agent-reading-restore" role="alert"><span title={messageHistory.error}>{locale === 'en' ? hasMessages ? 'Messages could not be updated.' : 'Messages could not be loaded.' : hasMessages ? '消息更新失败' : '消息读取失败'}</span><button type="button" disabled={messageHistory.loading} onClick={() => void messageHistory.retry().catch(() => undefined)}>{locale === 'en' ? 'Retry' : '重试'}</button></div> : null}
+        {messageHistory?.loading && !hasMessages ? <div role="status">{locale === 'en' ? 'Loading messages…' : '正在读取消息…'}</div> : null}
         {!hasMessages && !messageHistory?.loading && !messageHistory?.error ? <section className="agent-workspace__welcome">
           <span className="agent-workspace__mark" data-bob-mood={welcomeBob.mood} data-bob-says={welcomeBob.says}><BobCharacter mood={welcomeBob.mood} says={welcomeBob.says} saysCycles={welcomeBob.cycles} onSaysComplete={() => welcomeSays.markPlayed(welcomeBob.says)} /></span>
           <small>{copy.welcomeMark}</small>

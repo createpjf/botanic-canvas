@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { CanvasDocument } from '../domain/canvas.ts'
+import type { BotanicAgentSession } from '../domain/agent.ts'
 import { createCanvasAgentActions } from './canvasAgentActions.ts'
 import type { CanvasStore } from './canvasStore.types.ts'
 
@@ -25,7 +26,7 @@ function emptyDocument(): CanvasDocument {
   }
 }
 
-function createDelayedPersistenceHarness({ revision = 1, graphRevision = 1, retryBranch = async () => { throw new Error('测试未调用远程分支重试') } } = {}) {
+function createDelayedPersistenceHarness({ revision = 1, graphRevision = 1, retryBranch = async () => { throw new Error('测试未调用远程分支重试') }, persistSession = async (_projectId: string, _session: BotanicAgentSession): Promise<BotanicAgentSession | undefined> => undefined } = {}) {
   let state = { document: emptyDocument(), persistenceStatus: 'saving' } as CanvasStore
   const pendingDocuments: CanvasDocument[] = []
   const localMirrors: CanvasDocument[] = []
@@ -46,6 +47,7 @@ function createDelayedPersistenceHarness({ revision = 1, graphRevision = 1, retr
     invalidateDocumentPersistence: () => { invalidatedPersistence += 1 },
     persistAgentSession: async (projectId, session) => {
       persistedSessions.push({ projectId, title: session.title })
+      return persistSession(projectId, session)
     },
     persistLocalDocumentMirror: async (document) => { localMirrors.push(document) },
   })
@@ -74,6 +76,29 @@ test('首次打开 Agent 时连续确保会话、添加上下文和消息仍落�
   assert.equal(latestDocument.agentSessions.length, 1)
   assert.deepEqual(latestDocument.agentSessions[0].contextNodeIds, ['asset-hero'])
   assert.deepEqual(getState().document.agentSessions[0].messages.map((message) => message.id), ['message-first-frame'])
+})
+
+test('首次消息读取等待同一次 Session 持久化，失败重试沿用会话身份，已保存会话不重复写入', async () => {
+  const writes: Array<{ session: BotanicAgentSession; resolve: (session: BotanicAgentSession) => void; reject: (error: Error) => void }> = []
+  const h = createDelayedPersistenceHarness({ persistSession: (_projectId, session) => new Promise((resolve, reject) => writes.push({ session, resolve, reject })) })
+  const id = h.actions.ensureAgentSession()
+  const projectId = h.getState().document.id
+  let ready = false
+  const first = h.actions.ensureAgentSessionPersisted(projectId, id).then(() => { ready = true })
+  await Promise.resolve()
+  assert.equal(writes.length, 1)
+  assert.equal(ready, false)
+  writes[0].reject(new Error('保存失败'))
+  await assert.rejects(first, /保存失败/)
+  const retry = h.actions.ensureAgentSessionPersisted(projectId, id)
+  await Promise.resolve()
+  assert.equal(writes.length, 2)
+  assert.equal(writes[1].session.id, id)
+  writes[1].resolve({ ...writes[1].session, revision: 1 })
+  await retry
+  await h.actions.ensureAgentSessionPersisted(projectId, id)
+  assert.equal(writes.length, 2)
+  assert.equal(h.getState().document.agentSessions[0].revision, 1)
 })
 
 test('补图命令拒绝已完成分支和重复点击，不绕过当前任务身份', async () => {
@@ -106,7 +131,7 @@ test('Agent 阅读位置先更新本地会话，不触发整份画布文档写�
   assert.equal(latestSession?.readingAnchorUpdatedAt, 30)
 })
 
-test('Agent 会话的模型、挂载 Skill 和自定义标题会持久化', () => {
+test('Agent 会话的模型、挂载 Skill 和自定义标题会持久化', async () => {
   const { actions, pendingDocuments, persistedSessions } = createDelayedPersistenceHarness()
   const sessionId = actions.ensureAgentSession()
 
@@ -127,6 +152,7 @@ test('Agent 会话的模型、挂载 Skill 和自定义标题会持久化', () =
   assert.equal(session?.plannerModel, 'kimi-k3')
   assert.deepEqual(session?.mountedSkillIds, ['controlled_edit', 'project-night-scene'])
   assert.equal(session?.title, '夜景生成方案')
+  await actions.ensureAgentSessionPersisted('project-agent-session-race', sessionId)
   assert.ok(persistedSessions.some((item) => item.title === '夜景生成方案'))
   assert.equal(persistedSessions.length, 4)
 })

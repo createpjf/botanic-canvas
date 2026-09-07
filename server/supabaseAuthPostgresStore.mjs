@@ -20,6 +20,12 @@ function authClient({ url, secretKey, client }) {
   if (!url || !secretKey) throw new Error('SUPABASE_URL 与 SUPABASE_SECRET_KEY 未配置。')
   return createClient(url, secretKey, {
     auth: { autoRefreshToken: false, persistSession: false, detectSessionInUrl: false },
+    global: { fetch: (input, init) => {
+      // 只约束身份读取（包括响应体），不改变邀请邮件等管理操作的预算。
+      if (init?.method !== 'GET' || new URL(String(input)).pathname !== '/auth/v1/user') return fetch(input, init)
+      const deadline = AbortSignal.timeout(6_000)
+      return fetch(input, { ...init, signal: init.signal ? AbortSignal.any([init.signal, deadline]) : deadline })
+    } },
   })
 }
 
@@ -31,6 +37,18 @@ export function createSupabaseAuthPostgresStore({ productStore, url, secretKey, 
   if (!productStore?.ensureAuthenticatedUser) throw new Error('PostgreSQL 存储缺少登录用户同步能力。')
   const supabase = authClient({ url, secretKey, client })
   const isBootstrapOwner = (email) => Boolean(bootstrapEmail && email && email.toLowerCase() === bootstrapEmail.toLowerCase())
+
+  async function readAuthUser(accessToken) {
+    let result
+    try { result = await supabase.auth.getUser(accessToken) } catch (error) { result = { error } }
+    const { data, error } = result
+    if (!error && data?.user) return data.user
+    if (error && (error.status === 401 || error.name === 'AuthSessionMissingError'
+      || ['bad_jwt', 'session_not_found', 'session_expired', 'user_not_found', 'user_banned'].includes(error.code))) return undefined
+    const limited = error?.status === 429
+    throw Object.assign(productError(limited ? '登录验证请求过多，请稍后重试。' : '登录验证暂时不可用，请稍后重试。',
+      limited ? 'RATE_LIMITED' : 'AUTH_UNAVAILABLE'), { statusCode: limited ? 429 : 503 })
+  }
 
   async function inviteUser(email, name, welcome = true) {
     const options = {
@@ -70,26 +88,25 @@ export function createSupabaseAuthPostgresStore({ productStore, url, secretKey, 
 
     async authenticate(accessToken) {
       if (!accessToken) return undefined
-      const { data, error } = await supabase.auth.getUser(accessToken)
-      if (error || !data?.user) {
+      const user = await readAuthUser(accessToken)
+      if (!user) {
         return allowLegacyTokens ? productStore.authenticate(accessToken) : undefined
       }
       // Supabase 只证明身份，不代表已获得 Botanic 工作区权限。
       // 除首位 Bootstrap Owner 外，新用户必须先由 Owner 邀请并写入成员表。
       return productStore.ensureAuthenticatedUser({
-        id: data.user.id,
-        email: data.user.email,
-        name: displayName(data.user),
-        roleHint: isBootstrapOwner(data.user.email) ? 'owner' : 'member',
+        id: user.id,
+        email: user.email,
+        name: displayName(user),
+        roleHint: isBootstrapOwner(user.email) ? 'owner' : 'member',
         statusHint: 'active',
-        createIfMissing: isBootstrapOwner(data.user.email),
+        createIfMissing: isBootstrapOwner(user.email),
       })
     },
 
     async authAssurance(accessToken) {
       if (!accessToken) return undefined
-      const { data, error } = await supabase.auth.getUser(accessToken)
-      if (error || !data?.user) return undefined
+      if (!await readAuthUser(accessToken)) return undefined
       return decodeAuthAssurance(accessToken)
     },
 
