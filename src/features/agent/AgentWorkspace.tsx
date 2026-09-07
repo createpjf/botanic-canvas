@@ -1,4 +1,5 @@
 import { type ClipboardEvent, type DragEvent, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
+import { agentConversationMessages } from '../../domain/agentMessageReadModel'
 import {
   botanicAgentComposerGroupRole,
   botanicAgentCanResumeManualRetry,
@@ -715,20 +716,7 @@ export default function AgentWorkspace({
     && (item.mediaKind ?? 'image') === 'image'
   ))
   const hasMessages = Boolean(session?.messages.length)
-  const conversationMessages = useMemo(() => {
-    const messages = session?.messages ?? []
-    const latestStatusMessageByRun = new Map<string, string>()
-    for (const message of messages) {
-      if (message.runId && (message.kind === 'run' || message.kind === 'notice')) {
-        latestStatusMessageByRun.set(message.runId, message.id)
-      }
-    }
-    return messages.filter((message) => (
-      !message.runId
-      || (message.kind !== 'run' && message.kind !== 'notice')
-      || latestStatusMessageByRun.get(message.runId) === message.id
-    ))
-  }, [session?.messages])
+  const conversationMessages = useMemo(() => agentConversationMessages(session?.messages ?? []), [session?.messages])
   const persistedFailedTurnRetry = useMemo(() => session ? resolveAgentPersistedFailedTurnRetry({ messages: session.messages, contextOptions, plannerModel, session }) : undefined, [contextOptions, plannerModel, session])
   const renderedConversationMessages = useMemo(() => {
     const base = (() => {

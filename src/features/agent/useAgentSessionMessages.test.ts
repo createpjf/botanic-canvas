@@ -1,8 +1,18 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { BotanicAgentMessage, BotanicAgentRun } from '../../domain/agent.ts'
-import { mergeAgentMessages } from '../../domain/agentMessageReadModel.ts'
+import { agentConversationMessages, mergeAgentMessages } from '../../domain/agentMessageReadModel.ts'
 import { botanicAgentBranchId, botanicAgentSubmissionKey } from '../../domain/agentRuntimeFeed.ts'
+
+test('Run 结果与评审文本只展示一次，保留其他任务、用户和确认消息', () => {
+  const status: BotanicAgentMessage = { id: 'status', role: 'assistant', kind: 'notice', runId: 'run-1', content: '已出图', createdAt: 1 }
+  const review: BotanicAgentMessage = { ...status, id: 'review', kind: 'text', content: '评审结果', createdAt: 2 }
+  const other = { ...status, id: 'other', runId: 'run-2' }
+  const user = { ...status, id: 'user', role: 'user' as const }
+  const plan = { ...status, id: 'plan', kind: 'plan' as const }
+  assert.deepEqual(agentConversationMessages([user, plan, status, other, review]).map(m => m.id), ['user', 'plan', 'other', 'review'])
+  assert.equal(status.runId, 'run-1')
+})
 
 test('计划回包丢失后按原提交身份关联Run，不复活失败确认或串到其他任务', () => {
   const message = { id: 'plan-original', role: 'assistant', kind: 'plan', status: 'failed', createdAt: 10,

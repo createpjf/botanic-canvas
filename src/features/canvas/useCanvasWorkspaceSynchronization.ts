@@ -390,6 +390,8 @@ export function useCanvasWorkspaceSynchronization({
       if (!remote || useCanvasStore.getState().document.id !== projectId) return false
       const opened = await openDocument(projectId)
       if (opened && useCanvasStore.getState().document.id === projectId) {
+        await refreshAgentEntitiesFromRemote()
+        if (useCanvasStore.getState().document.id !== projectId) return false
         useCanvasStore.setState({ persistenceStatus: 'saved', assistantMessage: copy.cloudVersionSelected })
       }
       return opened
@@ -399,7 +401,7 @@ export function useCanvasWorkspaceSynchronization({
         en: canvasSynchronizationCopy.en.remoteRefreshFailed,
       }))
     }
-  }, [copy.cloudVersionSelected, locale, openDocument])
+  }, [copy.cloudVersionSelected, locale, openDocument, refreshAgentEntitiesFromRemote])
 
   const recoverAgentRunResults = useCallback(async () => {
     if (agentRunRecoveryRef.current) return agentRunRecoveryRef.current
