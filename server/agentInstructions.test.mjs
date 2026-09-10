@@ -24,7 +24,10 @@ test('Agent 每种模式都加载通用人格与对应模式规则', async () =>
   const prompt = await readBotanicAgentInstructions('prompt')
   assert.match(prompt, /# Creative Brief 交互规则/)
   assert.match(prompt, /# Prompt 生成模式/)
-  assert.match(prompt, /# Prompt Refiner/)
+  assert.match(prompt, /# GPT-Image-prompt-refiner/)
+  assert.match(prompt, /# 图像提示优化规则/)
+  assert.match(prompt, /# 输出形态、参数与能力边界/)
+  assert.doesNotMatch(prompt, /# Prompt Refiner/)
   assert.doesNotMatch(prompt, /# Botanic Agent Planner/)
   // Prompt 模式也走对话链路的只读工具，必须点名，不能只说「先检索」。
   assert.match(prompt, /project_memory_search/)
@@ -43,6 +46,7 @@ test('Agent 每种模式都加载通用人格与对应模式规则', async () =>
   assert.match(generation, /# 生图规划模式/)
   assert.match(generation, /# Botanic Agent Planner/)
   assert.doesNotMatch(generation, /# Prompt Refiner/)
+  assert.doesNotMatch(generation, /# GPT-Image-prompt-refiner/)
 })
 
 test('指令层点名结构化字段的真实落点，避免规则与工具契约脱节', async () => {

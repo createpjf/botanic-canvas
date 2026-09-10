@@ -2,6 +2,24 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createGenerationModelCatalog, generationJobTimedOut, generationTimeoutForModel, providerForModel, timedOutGenerationJobPatch } from './generationModels.mjs'
 
+test('Image 2.5 速度与质量使用独立模型 ID，复用 OpenAI 尺寸与蒙版能力', () => {
+  const openAIModels = ['gpt-image-2', 'gpt-image-2.5-flare', 'gpt-image-2.5-sunburst']
+  const catalog = createGenerationModelCatalog({ openAIApiKey: 'test-key', openAIModels })
+  assert.deepEqual(catalog.map(({ id, label }) => [id, label]), [
+    ['gpt-image-2', 'GPT Image 2'],
+    ['gpt-image-2.5-flare', '速度'],
+    ['gpt-image-2.5-sunburst', '质量'],
+  ])
+  for (const model of catalog.slice(1)) {
+    assert.equal(providerForModel(catalog, model.id).provider, 'openai')
+    assert.equal(model.supportsMask, true)
+    assert.equal(model.supportsCustomSize, true)
+    assert.deepEqual(model.aspectRatios, catalog[0].aspectRatios)
+    assert.deepEqual(model.resolutions, ['1K', '2K'])
+  }
+  assert.deepEqual(createGenerationModelCatalog({ openAIModels }), [])
+})
+
 test('模型目录只公开已配置供应商，并声明每个模型的媒体能力', () => {
   const catalog = createGenerationModelCatalog({
     openAIApiKey: '',

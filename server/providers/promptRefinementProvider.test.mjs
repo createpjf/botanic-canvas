@@ -69,7 +69,7 @@ test('提示词润色输入在进入 Provider 前完成项目、模式、比例�
 })
 
 test('提示词润色通过一次 Flock 对话请求合并两个 Skill 且只发送结构化引用信息', async () => {
-  const promptRefiner = await readFile(new URL('../skills/prompt-refiner/SKILL.md', import.meta.url), 'utf8')
+  const promptRefiner = await readFile(new URL('../skills/gpt-image-prompt-refiner/SKILL.md', import.meta.url), 'utf8')
   const botanicFashion = await readFile(new URL('../skills/botanic-fashion-prompt/SKILL.md', import.meta.url), 'utf8')
   const requests = []
   const fetchImpl = async (url, init) => {
@@ -193,7 +193,10 @@ test('非服装请求只注入通用 Refiner，明确系列仅注入命中的单
     aspectRatio: '3:4',
     references: [{ name: 'Santal 01 香薰', role: '主商品', primary: true }],
   }, runtimeConfig, { fetchImpl })
-  assert.match(systemMessages[0], /## prompt-refiner/)
+  assert.match(systemMessages[0], /## gpt-image-prompt-refiner\/SKILL.md/)
+  assert.match(systemMessages[0], /# 图像提示优化规则/)
+  assert.match(systemMessages[0], /# 输出形态、参数与能力边界/)
+  assert.doesNotMatch(systemMessages[0], /# Prompt Refiner/)
   assert.doesNotMatch(systemMessages[0], /# Botanic Fashion Prompt/)
   assert.doesNotMatch(systemMessages[0], /## 一朵白云/)
 

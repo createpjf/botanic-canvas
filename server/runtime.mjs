@@ -62,7 +62,7 @@ export function runtimeConfig(rootDir = process.cwd()) {
   const authProvider = ['access-token', 'hybrid', 'supabase'].includes(requestedAuthProvider)
     ? requestedAuthProvider
     : 'supabase'
-  const openAIModels = [...new Set((process.env.OPENAI_IMAGE_MODELS ?? process.env.OPENAI_IMAGE_MODEL ?? 'gpt-image-2')
+  const openAIModels = [...new Set((process.env.OPENAI_IMAGE_MODELS ?? process.env.OPENAI_IMAGE_MODEL ?? 'gpt-image-2,gpt-image-2.5-flare,gpt-image-2.5-sunburst')
     .split(',').map((model) => model.trim()).filter(Boolean))]
   const miniMaxImageModels = [...new Set((process.env.MINIMAX_IMAGE_MODELS ?? 'image-01')
     .split(',').map((model) => model.trim()).filter(Boolean))]

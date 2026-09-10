@@ -1,0 +1,4 @@
+interface:
+  display_name: "GPT-Image-prompt-refiner"
+  short_description: "依据 OpenAI 图像指南优化生图与编辑提示，保留目标并明确画面约束"
+  default_prompt: "使用 $gpt-image-prompt-refiner，将我的需求改写成一份可直接使用的图像生成或编辑提示词。"

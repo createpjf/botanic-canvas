@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises'
+import { readPromptRefinementInstructions } from './providers/promptRefinementInstructions.mjs'
 
 const AGENT_GUIDE = new URL('./skills/botanic-agent/AGENT.md', import.meta.url)
 // 本体单独成文：它的字段必须跟 CanvasDocument 同步，独立文件才能被契约测试锁住。
@@ -12,7 +13,6 @@ const MODE_GUIDES = Object.freeze({
   generation: new URL('./skills/botanic-agent/modes/GENERATION.md', import.meta.url),
 })
 const PLANNER_SKILL = new URL('./skills/botanic-agent-planner/SKILL.md', import.meta.url)
-const PROMPT_REFINER_SKILL = new URL('./skills/prompt-refiner/SKILL.md', import.meta.url)
 const FASHION_SKILL = new URL('./skills/botanic-fashion-prompt/SKILL.md', import.meta.url)
 
 export class BotanicAgentInstructionsError extends Error {
@@ -46,9 +46,10 @@ export async function readBotanicAgentInstructions(mode = 'conversation', locale
   if (mode === 'generation' || mode === 'prompt') files.push(CREATIVE_BRIEF_GUIDE)
   if (MODE_GUIDES[mode]) files.push(MODE_GUIDES[mode])
   if (mode === 'generation') files.push(PLANNER_SKILL)
-  if (mode === 'prompt') files.push(PROMPT_REFINER_SKILL, FASHION_SKILL)
+  if (mode === 'prompt') files.push(FASHION_SKILL)
   try {
     const contents = await Promise.all(files.map((file) => readFile(file, 'utf8')))
+    if (mode === 'prompt') contents.push(await readPromptRefinementInstructions())
     return [...contents.map((content) => content.trim()).filter(Boolean), localeInstructions(normalizeBotanicAgentLocale(localeValue))].join('\n\n')
   } catch {
     throw new BotanicAgentInstructionsError()

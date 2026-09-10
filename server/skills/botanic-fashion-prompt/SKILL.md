@@ -11,7 +11,7 @@ description: >-
 # Botanic Fashion Prompt
 
 Improve a fashion image prompt without changing the requested product, message,
-or creative direction. Use this skill together with `prompt-refiner`; let the
+or creative direction. Use this skill together with `gpt-image-prompt-refiner`; let the
 general refiner protect intent and let this skill supply only verified domain
 details.
 

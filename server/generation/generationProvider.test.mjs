@@ -4,6 +4,38 @@ import { generateImages, GenerationError, persistedGenerationJob, publicGenerati
 
 const image = 'data:image/png;base64,iVBORw0KGgo='
 
+test('Image 2.5 两个型号在文生图与参考图编辑中原样传递 ID 并返回结果', async () => {
+  const originalFetch = globalThis.fetch
+  let request
+  globalThis.fetch = async (url, init) => {
+    request = { url, init }
+    return new Response(JSON.stringify({ data: [{ b64_json: 'iVBORw0KGgo=' }] }), { status: 200 })
+  }
+  try {
+    for (const model of ['gpt-image-2.5-flare', 'gpt-image-2.5-sunburst']) {
+      for (const editing of [false, true]) {
+        const result = await generateImages({
+          id: 'job-image25', kind: 'generation', batchCount: 1, prompt: '陶瓷花盆',
+          settings: { model, aspectRatio: '1:1', resolution: '1K' },
+          references: editing ? [{ name: '参考图', role: '商品', primary: true, mimeType: 'image/png', buffer: Buffer.from('reference') }] : [],
+        }, {
+          apiBaseUrl: 'https://example.test', apiKey: 'test-key', jobId: 'job-image25',
+          persistImage: async (value) => value.dataUrl,
+        })
+        assert.equal(request.url, `https://example.test/v1/images/${editing ? 'edits' : 'generations'}`)
+        const body = editing ? Object.fromEntries(request.init.body) : JSON.parse(request.init.body)
+        assert.equal(body.model, model)
+        assert.equal(body.size, '1024x1024')
+        assert.equal(body.output_format, 'png')
+        assert.equal(body.input_fidelity, undefined)
+        assert.equal(result.outputs.length, 1)
+      }
+    }
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 /**
  * 构造 PNG 文件头包含指定尺寸。用于测试像素校验。
  */

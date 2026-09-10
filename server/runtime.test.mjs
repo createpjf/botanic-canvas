@@ -5,6 +5,28 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { loadLocalEnv, runtimeConfig } from './runtime.mjs'
 
+test('默认目录增加 Image 2.5，显式模型配置仍限制可用目录', () => {
+  const keys = ['OPENAI_API_KEY', 'OPENAI_IMAGE_MODELS', 'OPENAI_IMAGE_MODEL']
+  const previous = new Map(keys.map((key) => [key, process.env[key]]))
+  try {
+    process.env.OPENAI_API_KEY = 'test-key'
+    delete process.env.OPENAI_IMAGE_MODELS
+    delete process.env.OPENAI_IMAGE_MODEL
+    const models = () => runtimeConfig('/tmp/botanic-runtime-test').modelOptions
+      .filter((model) => model.provider === 'openai').map((model) => model.id)
+    assert.deepEqual(models(), ['gpt-image-2', 'gpt-image-2.5-flare', 'gpt-image-2.5-sunburst'])
+    process.env.OPENAI_IMAGE_MODEL = 'gpt-image-2'
+    assert.deepEqual(models(), ['gpt-image-2'])
+    process.env.OPENAI_IMAGE_MODELS = 'gpt-image-2.5-flare,gpt-image-2.5-sunburst'
+    assert.deepEqual(models(), ['gpt-image-2.5-flare', 'gpt-image-2.5-sunburst'])
+  } finally {
+    for (const [key, value] of previous) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+  }
+})
+
 test('Model Context 策略按显式 JSON 解析，未配置时保持 legacy 目录', () => {
   const previous = process.env.AGENT_MODEL_CONTEXT_POLICIES_JSON
   try {
