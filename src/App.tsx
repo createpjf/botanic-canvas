@@ -1,6 +1,7 @@
 
 
-import { lazy, Suspense, type FormEvent, type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
+import { Suspense, type FormEvent, type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
+import { lazyWithRecovery as lazy } from './features/canvas/lazyWithRecovery'
 import { Analytics } from '@vercel/analytics/react'
 import { ProductLanding } from './components/ProductLanding'
 import { useDialogFocusTrap } from './components/useDialogFocusTrap'

@@ -367,11 +367,14 @@ export function useCanvasInteractionCoordinator({
   const renderedEdges = useMemo(() => document.edges.map((edge) => {
     const ends = displayEdgeEnds(edge, document.nodes, document.edges, hiddenNodeIds)
     const remappedTarget = ends.target !== edge.target
+    const remappedSource = ends.source !== edge.source
+    const sourceNode = remappedSource ? document.nodes.find((node) => node.id === ends.source) : undefined
     const targetNode = remappedTarget ? document.nodes.find((node) => node.id === ends.target) : undefined
     return {
       ...edge,
       source: ends.source,
       target: ends.target,
+      sourceHandle: remappedSource ? sourceNode?.type === 'asset' ? 'asset-output' : 'output' : edge.sourceHandle,
       // result 的 context 端口只在出图后渲染；生成中的 Agent 占位结果改挂恒在的
       // input 端口，参考连线在出图前也可见。
       targetHandle: remappedTarget && (targetNode?.type === 'asset' || targetNode?.type === 'result')

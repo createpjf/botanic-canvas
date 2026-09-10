@@ -45,6 +45,7 @@ import {
   cloneEdges,
   cloneNodes,
   hydrateAssetNodeImages,
+  retainCanvasInteraction,
   scrubAssetFromDocument,
   withoutReference,
 } from './canvasDocumentAssets'
@@ -156,7 +157,7 @@ function commit(
         const incoming = savedDocument ?? nextDocument
         set({
           document: {
-            ...incoming,
+            ...retainCanvasInteraction(current, incoming),
             agentSessions: reconcileAgentSessionsAfterDocumentSync(current.agentSessions, incoming.agentSessions),
           },
           persistenceStatus: 'saved',

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { scrubSentryBreadcrumb, scrubSentryEvent } from './sentry.ts'
+import { isModuleLoadError, scrubSentryBreadcrumb, scrubSentryEvent } from './sentry.ts'
 
 test('浏览器 Sentry 事件不携带身份、请求参数、额外数据或 console 面包屑', () => {
   const event = scrubSentryEvent({
@@ -39,4 +39,12 @@ test('浏览器中断与断网不上报 Sentry', () => {
   assert.equal(scrubSentryEvent({
     exception: { values: [{ type: 'TypeError', value: 'Failed to fetch' }] },
   }), null)
+})
+
+test('模块加载失败保留错误事件，不被普通断网过滤规则吞掉', () => {
+  const message = 'Failed to fetch dynamically imported module: https://example.com/assets/panel.js?secret=private'
+  assert.equal(isModuleLoadError(message), true)
+  assert.equal(isModuleLoadError('Cannot read properties of undefined'), false)
+  const event = scrubSentryEvent({ exception: { values: [{ type: 'TypeError', value: message }] } })
+  assert.equal(event?.exception?.values?.[0]?.value, 'Failed to fetch dynamically imported module: [redacted-url]')
 })

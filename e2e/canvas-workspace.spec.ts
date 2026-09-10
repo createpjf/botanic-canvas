@@ -50,6 +50,27 @@ async function injectAssistantMessage(page: Page, message: { id: string; content
   }, message)
 }
 
+test('模块失败不自动刷新，缓存失败后须确认才能刷新恢复', async ({ page }) => {
+  await stubReadOnlyRuntime(page)
+  let attempts = 0
+  await page.route('**/src/features/canvas/CanvasWorkspace.tsx*', route => {
+    attempts += 1
+    return attempts === 1 ? route.abort('failed') : route.continue()
+  })
+  await page.goto('/#/projects')
+  await expect(page.getByRole('button', { name: '面板加载失败 · 重试' })).toBeVisible()
+  const timeOrigin = await page.evaluate(() => performance.timeOrigin)
+  await page.getByRole('button', { name: '面板加载失败 · 重试' }).click()
+  await expect(page.getByRole('button', { name: '仍无法加载 · 刷新页面' })).toBeVisible()
+  expect(await page.evaluate(() => performance.timeOrigin)).toBe(timeOrigin)
+  page.once('dialog', dialog => dialog.dismiss())
+  await page.getByRole('button', { name: '仍无法加载 · 刷新页面' }).click()
+  expect(await page.evaluate(() => performance.timeOrigin)).toBe(timeOrigin)
+  page.once('dialog', dialog => dialog.accept())
+  await page.getByRole('button', { name: '仍无法加载 · 刷新页面' }).click()
+  await expect(page.getByRole('heading', { name: '创意项目', exact: true })).toBeVisible()
+})
+
 test('公开产品首页进入项目库，旧经营驾驶舱地址自动兼容', async ({ page }) => {
   await stubReadOnlyRuntime(page)
 

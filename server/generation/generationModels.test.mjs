@@ -7,8 +7,8 @@ test('Image 2.5 速度与质量使用独立模型 ID，复用 OpenAI 尺寸与�
   const catalog = createGenerationModelCatalog({ openAIApiKey: 'test-key', openAIModels })
   assert.deepEqual(catalog.map(({ id, label }) => [id, label]), [
     ['gpt-image-2', 'GPT Image 2'],
-    ['gpt-image-2.5-flare', '速度'],
-    ['gpt-image-2.5-sunburst', '质量'],
+    ['gpt-image-2.5-flare', 'Image 2.5 效率'],
+    ['gpt-image-2.5-sunburst', 'Image 2.5 质量'],
   ])
   for (const model of catalog.slice(1)) {
     assert.equal(providerForModel(catalog, model.id).provider, 'openai')

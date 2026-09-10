@@ -117,9 +117,15 @@ function agentGenerateOutputResultId(generateId: string, nodes: CanvasNode[], ed
   return edges.find((edge) => edge.source === generateId && resultIds.has(edge.target))?.target ?? null
 }
 
-/** 参考边画到归属媒体（Agent 工作流画到输出结果）；generate 自己的输出边仍隐藏。 */
+/** 隐藏生成节点的普通输出边改从归属媒体出发；Agent 使用参考边连接结果。 */
 export function displayEdgeEnds(edge: Edge, nodes: CanvasNode[], edges: Edge[], hiddenIds: ReadonlySet<string>) {
-  if (hiddenIds.has(edge.source)) return { source: edge.source, target: edge.target, hidden: true }
+  if (hiddenIds.has(edge.source)) {
+    const generate = nodes.find((node) => node.id === edge.source && node.type === 'generate')
+    const result = nodes.find((node) => node.id === edge.target && node.type === 'result')
+    const owner = generate && result && !(generate.data as GenerateNodeData).agentRun
+      ? displayGenerateOwnerId(generate.id, nodes, edges) : null
+    return { source: owner ?? edge.source, target: edge.target, hidden: !owner || owner === edge.target }
+  }
   if (!hiddenIds.has(edge.target)) return { source: edge.source, target: edge.target, hidden: false }
   const target = agentGenerateOutputResultId(edge.target, nodes, edges)
     ?? displayGenerateOwnerId(edge.target, nodes, edges)

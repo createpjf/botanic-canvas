@@ -45,9 +45,24 @@ function isBrowserNoiseError(event: ErrorEvent) {
   const value = event.exception?.values?.[0]
   const type = value?.type ?? ''
   const message = value?.value ?? ''
+  if (isModuleLoadError(message)) return false
   if (type === 'AbortError' || /signal is aborted/i.test(message) || message === 'aborted') return true
   if (type === 'TypeError' && /Failed to fetch|NetworkError|Load failed|network error/i.test(message)) return true
   return false
+}
+
+export function isModuleLoadError(message: string) {
+  return /Failed to fetch dynamically imported module|Importing a module script failed|Loading chunk .+ failed|Unable to preload CSS/i.test(message)
+}
+
+export function captureSentryModuleFailure(error: Error) {
+  const url = error.message.match(/https?:\/\/[^\s"'<>]+/)?.[0]
+  let assetPath: string | undefined
+  try {
+    const asset = new URL(url ?? '', window.location.href)
+    if (asset.origin === window.location.origin && /^\/assets\/[\w.-]+\.(?:js|css)$/.test(asset.pathname)) assetPath = asset.pathname
+  } catch { /* 不记录未知或外部资源地址。 */ }
+  Sentry.captureException(error, { tags: { component: 'lazy-module' }, contexts: { module: { assetPath } } })
 }
 
 export function scrubSentryEvent(event: ErrorEvent) {
@@ -99,7 +114,7 @@ export function captureSentryApiFailure(
   input: { path?: string; method?: string; aborted?: boolean } = {},
 ) {
   if (input.aborted) return
-  const source = error && typeof error === 'object' ? error as { status?: unknown; code?: unknown; requestId?: unknown } : {}
+  const source = error && typeof error === 'object' ? error as { status?: unknown; code?: unknown; requestId?: unknown; diagnostics?: Record<string, string | number> } : {}
   const status = Number(source.status)
   const code = typeof source.code === 'string' && source.code ? source.code : undefined
   const requestId = typeof source.requestId === 'string' && source.requestId ? source.requestId : undefined
@@ -114,7 +129,7 @@ export function captureSentryApiFailure(
       ...(code ? { error_code: safeTag(code) } : {}),
       ...(requestId ? { request_id: safeTag(requestId) } : {}),
     },
-    contexts: { request: { method: input.method ?? 'GET', path: safeApiPath(input.path), ...(requestId ? { id: safeTag(requestId) } : {}) } },
+    contexts: { request: { method: input.method ?? 'GET', path: safeApiPath(input.path), ...(requestId ? { id: safeTag(requestId) } : {}) }, ...(source.diagnostics ? { timing: source.diagnostics } : {}) },
   })
 }
 

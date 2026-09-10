@@ -47,6 +47,29 @@ export function cloneNodes(nodes: CanvasNode[]) {
   }) as CanvasNode[]
 }
 
+/** 保存回执更新持久化内容，不接管本机正在进行的选择与节点测量。 */
+export function retainCanvasInteraction(current: CanvasDocument, incoming: CanvasDocument): CanvasDocument {
+  if (current.id !== incoming.id) return incoming
+  const nodes = new Map(current.nodes.map(node => [node.id, node]))
+  const edges = new Map(current.edges.map(edge => [edge.id, edge]))
+  return {
+    ...incoming,
+    nodes: incoming.nodes.map(node => {
+      const local = nodes.get(node.id)
+      const selected = Boolean(local?.selected)
+      return {
+        ...node,
+        selected,
+        measured: local?.measured,
+        dragging: local?.dragging,
+        resizing: local?.resizing,
+        data: node.type === 'result' ? { ...node.data, selected } : node.data,
+      } as CanvasNode
+    }),
+    edges: incoming.edges.map(edge => ({ ...edge, selected: Boolean(edges.get(edge.id)?.selected) })),
+  }
+}
+
 export function cloneEdges(edges: Edge[]) {
   return edges.map((edge) => ({ ...edge, style: edge.style ? { ...edge.style } : undefined }))
 }

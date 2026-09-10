@@ -70,7 +70,9 @@ test('两张图的参考边画在媒体之间，不指向隐藏 generate', () =>
   assert.deepEqual(shown, { source: 'asset-2', target: 'asset-1', hidden: false })
   const self = displayEdgeEnds(linked[1], extra, linked, hidden)
   assert.equal(self.hidden, true)
-  assert.equal(displayEdgeEnds(edges[2], extra, linked, hidden).hidden, true)
+  assert.deepEqual(displayEdgeEnds(edges[2], extra, linked, hidden), {
+    source: 'asset-1', target: 'result-1', hidden: false,
+  })
 })
 
 test('Agent 工作流的参考边画到输出结果上，而不是折成自环被隐藏', () => {

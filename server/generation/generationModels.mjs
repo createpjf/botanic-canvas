@@ -11,8 +11,8 @@ function unique(values) {
 }
 
 function labelForModel(model) {
-  if (model === 'gpt-image-2.5-flare') return '速度'
-  if (model === 'gpt-image-2.5-sunburst') return '质量'
+  if (model === 'gpt-image-2.5-flare') return 'Image 2.5 效率'
+  if (model === 'gpt-image-2.5-sunburst') return 'Image 2.5 质量'
   if (model === 'gpt-image-2') return 'GPT Image 2'
   if (model === 'image-01') return 'MiniMax Image 01'
   if (model === 'image-01-live') return 'MiniMax Image 01 Live'

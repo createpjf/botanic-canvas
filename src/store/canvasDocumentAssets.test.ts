@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { CanvasDocument, GenerationRecipe } from '../domain/canvas.ts'
-import { hydrateAssetNodeImages, scrubAssetFromDocument, sharedWorkflowTemplateSnapshot, workflowTemplateSnapshot } from './canvasDocumentAssets.ts'
+import { hydrateAssetNodeImages, retainCanvasInteraction, scrubAssetFromDocument, sharedWorkflowTemplateSnapshot, workflowTemplateSnapshot } from './canvasDocumentAssets.ts'
 
 const recipe: GenerationRecipe = {
   prompt: '测试',
@@ -28,6 +28,27 @@ function document(): CanvasDocument {
     deliveries: [], generationJobs: [], batchVariationRuns: [], agentSessions: [], agentMemory: [], agentRuns: [], updatedAt: 1,
   }
 }
+
+test('自动保存回执保留当前选择和测量，不关闭输入面板，也不覆盖远端内容', () => {
+  const current = document()
+  current.nodes[0].selected = true
+  current.nodes[0].measured = { width: 320, height: 400 }
+  current.edges[0].selected = true
+  const incoming = document()
+  incoming.nodes[2].data = { ...incoming.nodes[2].data, image: '/new.webp', selected: true }
+  const merged = retainCanvasInteraction(current, incoming)
+  assert.equal(merged.nodes[0].selected, true)
+  assert.deepEqual(merged.nodes[0].measured, current.nodes[0].measured)
+  assert.equal(merged.nodes[2].data.selected, false)
+  assert.equal(merged.nodes[2].data.image, '/new.webp')
+  assert.equal(merged.edges[0].selected, true)
+  current.nodes[0].selected = false
+  current.edges[0].selected = false
+  assert.equal(retainCanvasInteraction(current, merged).nodes[0].selected, false)
+  assert.equal(retainCanvasInteraction(current, merged).edges[0].selected, false)
+  incoming.nodes = incoming.nodes.filter(node => node.id !== 'asset-node')
+  assert.equal(retainCanvasInteraction(current, incoming).nodes.some(node => node.id === 'asset-node'), false)
+})
 
 test('撤销素材会清理后续引用但保留历史条目和视觉结果', () => {
   const scrubbed = scrubAssetFromDocument(document(), 'asset-a')

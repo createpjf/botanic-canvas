@@ -27,6 +27,7 @@ export class ProductApiError extends Error {
   status: number
   code?: string
   requestId?: string
+  diagnostics?: Record<string, string | number>
 
   constructor(message: string, status: number, code?: string, requestId?: string) {
     super(message)
@@ -244,6 +245,8 @@ async function productRequestOnce<T>(path: string, init: ProductRequestInit = {}
     ? Math.min(120_000, Math.max(1_000, requestedTimeoutMs!))
     : productRequestTimeoutMs
   const controller = new AbortController()
+  const startedAt = performance.now()
+  const diagnostics: Record<string, string | number> = { phase: 'auth', timeoutMs: requestTimeoutMs }
   let requestId: string = globalThis.crypto.randomUUID()
   const abortFromCaller = () => controller.abort()
   if (requestInit.signal?.aborted) controller.abort()
@@ -259,6 +262,8 @@ async function productRequestOnce<T>(path: string, init: ProductRequestInit = {}
     headers.set('X-Request-ID', requestId)
     for (const [key, value] of Object.entries(await authorizationHeader(controller.signal))) headers.set(key, value)
     controller.signal.throwIfAborted()
+    diagnostics.authMs = Math.round(performance.now() - startedAt)
+    diagnostics.phase = 'headers'
     const response = await fetch(path, {
       ...requestInit,
       credentials: 'include',
@@ -266,6 +271,9 @@ async function productRequestOnce<T>(path: string, init: ProductRequestInit = {}
       signal: controller.signal,
     })
     requestId = response.headers.get('X-Request-ID') ?? requestId
+    diagnostics.headersMs = Math.round(performance.now() - startedAt)
+    diagnostics.responseStatus = response.status
+    diagnostics.phase = 'body'
     const contentType = response.headers.get('Content-Type') ?? ''
     const invalidResponseCode = response.status >= 500 ? 'WORKSPACE_UNAVAILABLE' : 'INVALID_API_RESPONSE'
     const invalidResponseMessage = invalidResponseCode === 'WORKSPACE_UNAVAILABLE'
@@ -284,6 +292,8 @@ async function productRequestOnce<T>(path: string, init: ProductRequestInit = {}
       }
     }
     controller.signal.throwIfAborted()
+    diagnostics.bodyMs = Math.round(performance.now() - startedAt - Number(diagnostics.headersMs))
+    diagnostics.phase = 'response'
     if (!response.ok) {
       const error = payload as ApiErrorPayload | null
       invalidateProductSessionIfRequired({ status: response.status, code: error?.error?.code })
@@ -299,11 +309,17 @@ async function productRequestOnce<T>(path: string, init: ProductRequestInit = {}
     return payload as T
   } catch (caught) {
     if (requestInit.signal?.aborted) throw new DOMException('The request was cancelled.', 'AbortError')
-    if (caught instanceof ProductApiError) throw caught
+    diagnostics.elapsedMs = Math.round(performance.now() - startedAt)
+    if (caught instanceof ProductApiError) {
+      caught.diagnostics = diagnostics
+      throw caught
+    }
     const message = controller.signal.aborted
       ? locale === 'en' ? 'The workspace service timed out. Try again.' : (timeoutMessage ?? '工作区服务响应超时，请稍后重试。')
       : locale === 'en' ? 'Unable to connect to the workspace service. Check your connection and try again.' : '无法连接工作区服务，请检查网络或稍后重试。'
-    throw new ProductApiError(message, 0, controller.signal.aborted ? 'REQUEST_TIMEOUT' : 'NETWORK_ERROR', requestId)
+    const error = new ProductApiError(message, 0, controller.signal.aborted ? 'REQUEST_TIMEOUT' : 'NETWORK_ERROR', requestId)
+    error.diagnostics = diagnostics
+    throw error
   } finally {
     window.clearTimeout(timeoutId)
     requestInit.signal?.removeEventListener('abort', abortFromCaller)

@@ -31,6 +31,10 @@ test('消息 API 已返回响应头但响应体挂起时，仍按请求截止时
   await pending
   assert.equal(result.code, 'REQUEST_TIMEOUT')
   assert.equal(result.requestId, 'body-timeout')
+  assert.equal(result.diagnostics.phase, 'body')
+  assert.equal(result.diagnostics.responseStatus, 200)
+  assert.ok(result.diagnostics.elapsedMs >= result.diagnostics.headersMs)
+  assert.ok(result.diagnostics.authMs >= 0)
 })
 
 test('取消响应体读取保持 AbortError，不重放请求', async (t) => {
@@ -62,6 +66,7 @@ test('成功响应的非法 JSON 不重试；真实网关故障沿用有限重�
   await assert.rejects(productRequest('/api/test/messages'), error => error.status === 502 && error.code === 'WORKSPACE_UNAVAILABLE')
   assert.equal(network.mock.callCount(), 4)
   network.mock.mockImplementation(async () => { throw new TypeError('Failed to fetch') })
-  await assert.rejects(productRequest('/api/test/write', { method: 'POST' }), error => error.code === 'NETWORK_ERROR')
+  await assert.rejects(productRequest('/api/test/write', { method: 'POST' }), error => error.code === 'NETWORK_ERROR'
+    && error.diagnostics.phase === 'headers' && error.diagnostics.responseStatus === undefined)
   assert.equal(network.mock.callCount(), 5, '未带幂等键的写请求不能自动重放')
 })
