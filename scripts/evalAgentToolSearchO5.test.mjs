@@ -58,11 +58,12 @@ test('复用严格概率协议，CLI 无默认出网，预留新文件，失败�
   const expected = toolScenarios.flatMap((s) => syntheticTools.map((t) => ({ body: toolRequest(s, t), label: toolOptions[toolLabels.indexOf(labelFor(s, t.name))] })))
   const run = (preload, args = []) => spawnSync(process.execPath,
     ['--import', 'data:text/javascript,' + encodeURIComponent(preload), runner, ...args],
-    { env: { ...process.env, FLOCK_O5_API_KEY: 'synthetic-test-secret' }, encoding: 'utf8', timeout: 15000 })
+    { env: { ...process.env, FLOCK_O5_API_KEY: 'synthetic-test-secret' }, input: JSON.stringify(expected), encoding: 'utf8', timeout: 15000 })
   const noNetwork = "globalThis.fetch=()=>{throw new Error('unexpected_network')}"
   const preload = `
     import assert from 'node:assert/strict';
-    const expected=${JSON.stringify(expected)}, options=${JSON.stringify(toolOptions)};let calls=0;
+    import {readFileSync} from 'node:fs';
+    const expected=JSON.parse(readFileSync(0,'utf8')), options=${JSON.stringify(toolOptions)};let calls=0;
     globalThis.fetch=async(url,init)=>{
       assert.equal(init.redirect,'error');
       if(url==='https://api.flock.io/model/info') return {ok:true,json:async()=>({data:[{model_name:'this-that-model-1.0',model_info:{input_cost_per_token:0}}]})};
@@ -81,7 +82,7 @@ test('复用严格概率协议，CLI 无默认出网，预留新文件，失败�
     assert.equal(preflight.metrics.holdout.classifierOnly.recall, null)
     const output = join(directory, 'success.json')
     const remote = run(preload, ['--remote', '--output', output])
-    assert.equal(remote.status, 0, remote.stderr)
+    assert.equal(remote.status, 0, remote.error?.message ?? remote.stderr)
     const report = JSON.parse(readFileSync(output, 'utf8'))
     assert.equal(report.rows.length, 192)
     assert.equal(report.metrics.holdout.classification.accuracy, 1)

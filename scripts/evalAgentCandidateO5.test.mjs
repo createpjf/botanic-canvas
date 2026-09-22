@@ -71,9 +71,9 @@ test('CLI 默认不出网，真实调用需新结果文件；模拟 90 次与故
   const directory = mkdtempSync(join(tmpdir(), 'botanic-o5-candidate-test-'))
   const runner = new URL('./evalAgentCandidateO5.mjs', import.meta.url).pathname
   const fixtureUrl = new URL('./fixtures/agentCandidateO5.mjs', import.meta.url).href
-  const run = (preload, args = []) => spawnSync(process.execPath,
+  const run = (preload, args = [], rows = []) => spawnSync(process.execPath,
     ['--import', 'data:text/javascript,' + encodeURIComponent(preload), runner, ...args],
-    { env: { ...process.env, FLOCK_O5_API_KEY: 'synthetic-test-secret' }, encoding: 'utf8', timeout: 15000 })
+    { env: { ...process.env, FLOCK_O5_API_KEY: 'synthetic-test-secret' }, input: JSON.stringify(rows), encoding: 'utf8', timeout: 15000 })
   const noNetwork = "globalThis.fetch = () => { throw new Error('unexpected_network') }"
   try {
     const offline = run(noNetwork)
@@ -86,8 +86,9 @@ test('CLI 默认不出网，真实调用需新结果文件；模拟 90 次与故
       .flatMap((s) => s.candidates.map((c) => ({ body: candidateRequest(s, c), gold: c.gold }))))
     const preload = `
       import assert from 'node:assert/strict';
+      import {readFileSync} from 'node:fs';
       import {candidateLabels,candidateOptions} from '${fixtureUrl}';
-      const ordered = ${JSON.stringify(ordered)};
+      const ordered = JSON.parse(readFileSync(0,'utf8'));
       let calls=0;
       globalThis.fetch = async (url, init) => {
         assert.equal(init.redirect,'error');
@@ -102,8 +103,9 @@ test('CLI 默认不出网，真实调用需新结果文件；模拟 90 次与故
       };
     `
     const output = join(directory, 'success.json')
-    const remote = run(preload, ['--remote', '--output', output])
-    assert.equal(remote.status, 0, remote.stderr)
+    // Send the fixture via stdin: Linux caps each argv entry at 128 KiB (E2BIG).
+    const remote = run(preload, ['--remote', '--output', output], ordered)
+    assert.equal(remote.status, 0, remote.error?.message ?? remote.stderr)
     const report = JSON.parse(readFileSync(output, 'utf8'))
     assert.equal(report.candidateRows.length, 90)
     assert.equal(report.metrics.holdout.completedPairs, 54)
@@ -122,7 +124,7 @@ test('CLI 默认不出网，真实调用需新结果文件；模拟 90 次与故
       const original=globalThis.fetch;let attempts=0;
       globalThis.fetch=(url,init)=>url.endsWith('/model/info')?original(url,init):
         (++attempts===1?{ok:false,status:503,headers:{get:()=>null}}:assert.fail('retry forbidden'));
-    `, ['--remote', '--output', failedOutput])
+    `, ['--remote', '--output', failedOutput], ordered)
     assert.equal(failure.status, 1, failure.stderr)
     const failed = JSON.parse(readFileSync(failedOutput, 'utf8'))
     assert.equal(failed.attemptedRequests, 1)
