@@ -2,6 +2,7 @@
 import { AgentToolRuntimeError, agentToolObject as toolObject, agentToolText as toolText } from './agentToolRuntime.mjs'
 import { projectPermissionDecision } from '../../auth/authorization.mjs'
 import { CANVAS_ACTION_SET_PARAMETERS, normalizeCanvasActionSet } from '../../canvas/canvasAgentActionSet.mjs'
+import { fitToolOutputPage } from './agentToolOutput.mjs'
 
 /**
  * 运维只读工具：让 Agent 用**真实实体状态**回答「任务为什么失败、上次结果在哪、
@@ -211,10 +212,10 @@ function deliverySummary(delivery) {
  * 构建只读运维工具。
  *
  * @param {{
- *   queryCanvas?: (input: any) => Promise<any>,
+ *   queryCanvas?: (input: any, context?: any) => Promise<any>,
  *   readRun?: (runId: string) => Promise<any>,
  *   readJob?: (jobId: string) => Promise<any>,
- *   searchArtifacts?: (input: { query: string, kind: string, limit: number }) => Promise<any[]>,
+ *   searchArtifacts?: (input: { query: string, kind: string, limit: number, before?: { createdAt: number, id: string } }) => Promise<{ artifacts: any[], page: any }>,
  *   readReviews?: (runId: string) => Promise<any[]>,
  *   readWorkflowRun?: (runId: string) => Promise<any>,
  *   readDeliveries?: () => Promise<any[]>,
@@ -226,7 +227,7 @@ export function createBotanicAgentOperationalToolDefinitions(operations = {}) {
     {
       name: 'canvas_query',
       label: '查询画布图谱',
-      description: '用同一入口查询当前项目画布：nodes 分页读取安全节点，aggregate 按类型/状态/阶段计数，keyword 检索安全文本；semantic/hybrid 使用默认关闭的可配置语义服务，禁用或失败会显式降级 keyword。结果不含媒体地址或完整 Generate Prompt；page.hasMore/searchTruncated 为 true 时不能声称已查全。',
+      description: '查询当前权威画布：nodes 分页读取安全节点，aggregate 计数，keyword 检索安全文本；semantic/hybrid 禁用或失败显式降级 keyword。不含媒体地址或完整 Generate Prompt。page.edgesTruncated 时保持同一节点页，用 edgeAfterId 续完连线，再用 afterId 读下一节点页；hasMore/searchTruncated 时不能声称已查全。page.blocked 时缩小 query/limit，不把预算不足当成空结果。',
       risk: 'read',
       parameters: {
         type: 'object', additionalProperties: false,
@@ -256,9 +257,17 @@ export function createBotanicAgentOperationalToolDefinitions(operations = {}) {
         },
       },
       validate: (raw) => toolObject(raw, '画布图谱查询'),
-      execute: async (input) => {
-        const result = await required(operations.queryCanvas)(input)
-        return result ?? { nodes: [], edges: [], page: { returned: 0, hasMore: false, edgesTruncated: false } }
+      execute: async (input, context) => {
+        const result = await required(operations.queryCanvas)(input, context)
+        if (!result) throw new AgentToolRuntimeError('CANVAS_QUERY_UNAVAILABLE', '当前项目画布不可读取。', 404)
+        const edges = result.edges ?? []
+        return fitToolOutputPage(edges.length, (returned) => ({
+          ...result, source: 'live_project', edges: edges.slice(0, returned),
+          page: {
+            ...result.page,
+            ...(returned < edges.length ? { edgesTruncated: true, edgeAfterId: edges[returned - 1]?.id, outputTruncated: true } : {}),
+          },
+        }))
       },
     },
     {
@@ -304,7 +313,7 @@ export function createBotanicAgentOperationalToolDefinitions(operations = {}) {
     {
       name: 'artifact_search',
       label: '检索历史结果',
-      description: '按关键词或类型检索本项目已产出的结果条目，返回标识与状态元数据；不返回图片地址。用户问「上次那张在哪」时用它。',
+      description: '按关键词或类型检索项目历史结果，不返回图片地址。total 仅是本页命中数；page.hasMore 为 true 时必须用相同 query/kind 和 page.before 继续，当前页零条也不代表历史没有匹配。只有 hasMore=false 才已查完。',
       risk: 'read',
       parameters: {
         type: 'object', additionalProperties: false,
@@ -312,20 +321,48 @@ export function createBotanicAgentOperationalToolDefinitions(operations = {}) {
           query: { type: 'string', maxLength: 120 },
           kind: { type: 'string', maxLength: 24 },
           limit: { type: 'number' },
+          before: {
+            type: 'object', additionalProperties: false, required: ['createdAt', 'id'],
+            properties: { createdAt: { type: 'number', minimum: 0, maximum: 8.64e15 }, id: { type: 'string', minLength: 1, maxLength: 240 } },
+          },
         },
       },
       validate: (raw) => {
         const value = toolObject(raw, '历史结果检索')
         const limit = Number(value.limit)
+        let before
+        if (value.before !== undefined) {
+          const cursor = toolObject(value.before, '历史结果游标')
+          if (!Number.isFinite(cursor.createdAt) || cursor.createdAt < 0 || cursor.createdAt > 8.64e15) {
+            throw new AgentToolRuntimeError('INVALID_TOOL_ARGUMENTS', '历史结果游标时间无效。')
+          }
+          before = { createdAt: cursor.createdAt, id: toolText(cursor.id, '历史结果游标标识', 240) }
+        }
         return {
           query: optionalText(value.query, '检索词', 120),
           kind: optionalText(value.kind, '结果类型', 24),
-          limit: Number.isFinite(limit) ? Math.max(1, Math.min(limit, 50)) : 20,
+          limit: Number.isFinite(limit) ? Math.max(1, Math.min(Math.floor(limit), 50)) : 20,
+          ...(before ? { before } : {}),
         }
       },
       execute: async (input) => {
-        const artifacts = (await required(operations.searchArtifacts)(input)) ?? []
-        return { total: artifacts.length, artifacts: artifacts.map(artifactSummary) }
+        const { artifacts, page } = await required(operations.searchArtifacts)(input)
+        const summaries = artifacts.map(artifactSummary)
+        return fitToolOutputPage(summaries.length, (returned) => {
+          const outputTruncated = returned < summaries.length
+          const last = summaries[returned - 1]
+          return {
+            total: returned, artifacts: summaries.slice(0, returned),
+            page: {
+              ...page, returned,
+              ...(outputTruncated ? {
+                hasMore: true, searchTruncated: true, outputTruncated: true,
+                // 扫描可越过无关记录，但续查不能越过被输出预算省略的匹配记录。
+                before: last ? { createdAt: last.createdAt, id: last.id } : input.before,
+              } : {}),
+            },
+          }
+        })
       },
     },
     {

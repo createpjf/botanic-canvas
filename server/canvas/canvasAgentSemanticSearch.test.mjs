@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { setTimeout as delay } from 'node:timers/promises'
 import { queryCanvasWithSemanticSearch } from './canvasAgentSemanticSearch.mjs'
 
 const document = { nodes: [
@@ -8,6 +9,41 @@ const document = { nodes: [
   { id: 'g', type: 'generate', position: { x: 2, y: 2 }, data: { label: '生成器', prompt: 'private secret prompt' } },
 ], edges: [] }
 const config = { enabled: true, apiBaseUrl: 'https://embedding.example/v1', apiKey: 'test-key', model: 'test-model' }
+
+test('语义检索只有一次总预算，父取消或 Turn deadline 不降级成关键词成功', async () => {
+  const large = { nodes: Array.from({ length: 150 }, (_, i) => ({ id: `budget-${i}`, type: 'text', data: { label: '植物' } })), edges: [] }
+  let requests = 0
+  const slowProvider = async (_url, init) => {
+    requests++
+    await delay(30, undefined, { signal: init.signal })
+    return { ok: true, json: async () => ({ data: JSON.parse(init.body).input.map(() => ({ embedding: [1, 0] })) }) }
+  }
+  const startedAt = performance.now()
+  const timed = await queryCanvasWithSemanticSearch(large, { mode: 'semantic', query: '植物' }, { ...config, model: 'budget', timeoutMs: 45 }, slowProvider)
+  assert.equal(timed.search.reason, 'SEMANTIC_SEARCH_TIMEOUT')
+  assert.ok(requests <= 2, '下一批不能重新获得一份完整超时预算')
+  assert.ok(performance.now() - startedAt < 300, '留出调度余量，避免毫秒级脆弱断言')
+
+  const controller = new AbortController()
+  requests = 0
+  await assert.rejects(queryCanvasWithSemanticSearch(large, { mode: 'semantic', query: '植物' }, { ...config, model: 'cancel' }, async (_url, init) => {
+    requests++
+    controller.abort()
+    await delay(5, undefined, { signal: init.signal })
+    throw new Error('不可到达')
+  }, { signal: controller.signal }), { code: 'REQUEST_CANCELLED' })
+  assert.equal(requests, 1)
+
+  requests = 0
+  await assert.rejects(queryCanvasWithSemanticSearch(large, { mode: 'semantic', query: '植物' }, { ...config, model: 'deadline' }, slowProvider, {
+    deadlineAt: Date.now() - 1,
+  }), { code: 'AGENT_TURN_DEADLINE_EXCEEDED' })
+  assert.equal(requests, 0)
+  await assert.rejects(queryCanvasWithSemanticSearch(large, { mode: 'semantic', query: '植物' }, { ...config, model: 'deadline-active' }, slowProvider, {
+    deadlineAt: Date.now() + 15,
+  }), { code: 'AGENT_TURN_DEADLINE_EXCEEDED' })
+  assert.equal(requests, 1)
+})
 
 test('混合检索只发送安全文本并融合关键词与语义稳定排序', async () => {
   let request

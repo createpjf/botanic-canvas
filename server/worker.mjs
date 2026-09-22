@@ -255,6 +255,7 @@ const sweepStaleAgentTurns = createAgentTurnSweep({
     mediaService: runtime.mediaService,
     turnRuntime: durableTurnRuntime,
     consumeWebResearchQuota,
+    securityControls,
     subagentRunner: resumeSubagentRunner,
     observeAgentContext,
     observe: (event) => console.log(JSON.stringify(event)),

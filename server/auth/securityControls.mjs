@@ -82,7 +82,7 @@ function redisCounter(redisUrl, fallback, onFallback) {
         windowMs,
       ))
       const ttl = Math.max(1, Number(await redis.pttl(key)))
-      return { value, expiresAt: Date.now() + ttl }
+      return { value, expiresAt: Date.now() + ttl, shared: true }
     } catch (error) {
       connected = false
       if (!warned) {
@@ -155,14 +155,14 @@ export function createSecurityControls({ redisUrl, now = () => Date.now(), onFal
   const counter = redisUrl ? redisCounter(redisUrl, fallback, onFallback) : fallback
 
   return {
-    async consume({ scope, subject, limit, windowMs, cost = 1 }) {
+    async consume({ scope, subject, limit, windowMs, cost = 1, requireShared = false }) {
       const normalizedCost = Math.max(1, Math.floor(cost))
       const timestamp = now()
       const windowId = Math.floor(timestamp / windowMs)
       const ttlMs = Math.max(1, windowMs - (timestamp % windowMs))
       const key = `botanic:security:${scope}:${subjectDigest(subject)}:${windowId}`
       const state = await counter.increment(key, ttlMs, normalizedCost)
-      const allowed = state.value <= limit
+      const allowed = (!requireShared || state.shared === true) && state.value <= limit
       return {
         allowed,
         remaining: Math.max(0, limit - state.value),

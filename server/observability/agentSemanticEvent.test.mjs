@@ -65,6 +65,7 @@ test('Canvas 生命周期只投影低基数状态和有界计数', () => {
   const event = createAgentSemanticEvent(AGENT_SEMANTIC_EVENT_NAMES.CANVAS_LIFECYCLE, {
     kind: 'proposal', outcome: 'completed', mode: 'nodes', completeness: 'truncated',
     durationMs: 12, returnedCount: 4, operationCount: 3, changeCount: 5, artifactCount: 1,
+    candidateCount: 500, embeddingRequests: 11, cacheHitCount: 0,
     projectId: 'project-secret', prompt: '私密提示词', mediaUrl: 'https://private.example/image.png',
   }, occurredAt)
   assert.deepEqual(event, {
@@ -72,6 +73,7 @@ test('Canvas 生命周期只投影低基数状态和有界计数', () => {
     event: AGENT_SEMANTIC_EVENT_NAMES.CANVAS_LIFECYCLE, occurredAt,
     kind: 'proposal', outcome: 'completed', mode: 'nodes', completeness: 'truncated',
     durationMs: 12, returnedCount: 4, operationCount: 3, changeCount: 5, artifactCount: 1,
+    candidateCount: 500, embeddingRequests: 11, cacheHitCount: 0,
   })
   assert.doesNotMatch(JSON.stringify(event), /secret|私密|private.example/u)
 })

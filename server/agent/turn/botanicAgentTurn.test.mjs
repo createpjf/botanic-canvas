@@ -290,6 +290,31 @@ test('没有生图目录时不暴露出图工具，处境简报按识图而不�
   assert.doesNotMatch(requests[0].messages[0].content, /新建画面/)
 })
 
+test('工具选择旁路收到实际目录与选择，挂起或失败不阻塞也不改变主模型链路', { timeout: 1000 }, async () => {
+  const requests = [], observations = []
+  const input = { projectId: 'project-turn', sessionId: 'session-1',
+    inputMessage: { id: 'message-shadow', content: '你好' }, contextNodeIds: [], hasTarget: false }
+  const options = { document, runtimeIdentity: { userId: 'u1', projectId: 'project-turn', turnId: 't1' },
+    modelProvider: { sample: async (request) => {
+      requests.push(request)
+      return { choices: [{ message: { content: '你好。' } }] }
+    } } }
+  const baseline = await resolveBotanicAgentTurn(input, runtime, options)
+  const observed = await resolveBotanicAgentTurn(input, runtime, { ...options,
+    observeToolChoice: (value) => { observations.push(value); return new Promise(() => {}) } })
+  const failed = await resolveBotanicAgentTurn(input, runtime, { ...options,
+    observeToolChoice: async () => { throw new Error('synthetic_shadow_failure') } })
+  assert.deepEqual(observed, baseline)
+  assert.deepEqual(failed, baseline)
+  assert.deepEqual(requests[1], requests[0])
+  assert.deepEqual(requests[2], requests[0])
+  assert.deepEqual(observations[0].toolNames, requests[0].tools.map((tool) => tool.function.name))
+  assert.deepEqual(observations[0].toolCalls, [])
+  assert.equal(observations[0].mainModel, requests[0].model)
+  assert.equal(observations[0].request.inputMessage.content, '你好')
+  assert.deepEqual(observations[0].identity, options.runtimeIdentity)
+})
+
 test('线程摘要以低权限用户上下文注入，不进入系统提示', async () => {
   const requests = []
   await resolveBotanicAgentTurn({

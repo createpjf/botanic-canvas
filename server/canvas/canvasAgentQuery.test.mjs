@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { CanvasAgentQueryError, queryCanvasForAgent } from './canvasAgentQuery.mjs'
+import { buildBotanicAgentOntology } from '../agent/semantic/botanicAgentOntology.mjs'
 
 const document = {
   nodes: [
@@ -18,6 +19,36 @@ const document = {
     { id: 'edge-output', source: 'generate-a', target: 'result-a', data: { system: true, role: 'output' } },
   ],
 }
+
+test('Ontology 快照与实时查询共享名称、状态、组织与关系语义，但概览不扩大正文权限', () => {
+  const input = structuredClone(document)
+  Object.assign(input.nodes[1].data, { name: '旧名称', taskStatus: 'running', frameId: 'frame-review' })
+  input.edges[0].sourceHandle = 'reference'
+  input.edges[0].targetHandle = 'input'
+  delete input.edges[0].data.role // 历史边从来源节点取角色。
+  const snapshot = buildBotanicAgentOntology(input)
+  const live = queryCanvasForAgent(input)
+  const generator = snapshot.nodes.find((node) => node.id === 'generate-a')
+  assert.equal(generator.label, '主图 A')
+  assert.equal(generator.status, 'running')
+  assert.equal(generator.frameId, 'frame-review')
+  for (const node of snapshot.nodes) {
+    const current = live.nodes.find((entry) => entry.id === node.id)
+    for (const key of ['id', 'type', 'label', 'status', 'frameId', 'stage', 'role', 'mediaKind']) {
+      assert.deepEqual(node[key], current[key], `${node.id}.${key}`)
+    }
+  }
+  for (const edge of live.edges) {
+    const stored = snapshot.edges.find((entry) => entry.id === edge.id)
+    for (const key of Object.keys(edge)) assert.deepEqual(stored[key], edge[key])
+  }
+  assert.equal(snapshot.edges[0].role, '商品')
+  assert.equal(snapshot.edges[1].system, true)
+  assert.equal(snapshot.nodes.find((node) => node.id === 'generate-d').status, 'idle')
+  assert.equal(snapshot.nodes.find((node) => node.id === 'frame-review').status, undefined, '阶段不是审批结论')
+  assert.ok(live.nodes.find((node) => node.id === 'prompt-a').content)
+  assert.doesNotMatch(JSON.stringify(snapshot), /private:\/\/|secret prompt|春日山茶花海报|"authority"|"position"/)
+})
 
 test('分页查询缺少指定参考的空闲 Generate 节点且不泄露媒体与 prompt', () => {
   const first = queryCanvasForAgent(document, {

@@ -155,6 +155,8 @@ export function runtimeConfig(rootDir = process.cwd()) {
     agentPlannerTimeoutMs: Number(process.env.AGENT_PLANNER_TIMEOUT_MS ?? 55000),
     // Turn 业务时限（H3A）：单次 Provider call 之外的整轮寿命；写入 Turn 顶层 deadlineAt。
     agentTurnLifetimeMs: boundedInteger(process.env.AGENT_TURN_LIFETIME_MS, 600_000, 60_000, 900_000),
+    agentToolChoiceShadowSamplePercent: boundedInteger(process.env.AGENT_TOOL_CHOICE_SHADOW_SAMPLE_PERCENT, 10, 0, 100),
+    agentToolChoiceShadowRequestsPerMinute: boundedInteger(process.env.AGENT_TOOL_CHOICE_SHADOW_REQUESTS_PER_MINUTE, 120, 1, 240),
     agentMcpTools: parseMcpToolConfigurations(process.env.BOTANIC_MCP_TOOLS_JSON),
     semanticSearch: {
       enabled: (process.env.CANVAS_SEMANTIC_SEARCH_ENABLED ?? '').trim().toLowerCase() === 'true',

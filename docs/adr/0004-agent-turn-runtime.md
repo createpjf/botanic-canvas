@@ -121,6 +121,8 @@ Worker 的恢复任务不使用 offset 或固定首页。Supabase 为 Turn、失
 仓库中的 Local/PG/Supabase 契约与 SQL 静态测试不等于生产数据库已迁移；发布前仍需在真实 PostgreSQL/Supabase 做并发 claim、
 旧实例排空与回滚演练。
 
+工具能力或恢复语义不兼容的代码发布使用 [Turn 排空与回退流程](../AGENT_TURN_RELEASE_RUNBOOK.md)：先封闭全部创建入口并由旧版本收口，再静止所有创建器并全局只读清点。不能用项目列表/失联列表的零结果证明排空，也不能改写 Checkpoint 的快照哈希来跳过兼容性检查。
+
 ## 后果
 
 - 浏览器刷新和 SSE 断线可以从服务端恢复。

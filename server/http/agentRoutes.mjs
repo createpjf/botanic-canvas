@@ -248,6 +248,7 @@ export function createAgentRouteHandler({
       enrichAgentContextCheckpoint,
       persistUsageAnchor: persistAgentContextUsageAnchor,
       consumeWebResearchQuota,
+      securityControls,
     })
     return agentTurnSubmissionModule
   }

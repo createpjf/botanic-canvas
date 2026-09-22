@@ -1,6 +1,4 @@
-const NODE_LIMIT = 240
-const EDGE_LIMIT = 400
-const GROUP_LIMIT = 80
+import { canvasAgentNodeMetadata, canvasAgentEdgeMetadata } from '../../canvas/canvasAgentReadSemantics.mjs'
 
 function text(value, maximumLength = 160) {
   return typeof value === 'string' && value.trim()
@@ -8,46 +6,30 @@ function text(value, maximumLength = 160) {
     : undefined
 }
 
-function nodeLabel(node) {
-  const data = node?.data
-  return text(data?.name) ?? text(data?.label) ?? text(data?.title) ?? node?.type ?? '未命名节点'
-}
-
 function nodeSummary(node) {
   if (!node || typeof node.id !== 'string' || !node.id.trim()) return undefined
-  const summary = {
-    id: node.id.trim().slice(0, 160),
-    type: text(node.type, 40) ?? 'unknown',
-    label: nodeLabel(node),
-  }
-  const role = text(node.data?.role, 40)
-  const mediaKind = text(node.data?.mediaKind, 40)
-  const status = text(node.data?.status, 40)
-  if (role) summary.role = role
-  if (mediaKind) summary.mediaKind = mediaKind
-  if (status) summary.status = status
-  return summary
+  return canvasAgentNodeMetadata(node)
 }
 
 export function buildBotanicAgentOntology(document, contextNodeIds = []) {
   const nodes = Array.isArray(document?.nodes) ? document.nodes : []
-  const nodeSummaries = nodes.map(nodeSummary).filter(Boolean).slice(0, NODE_LIMIT)
-  const nodeIds = new Set(nodeSummaries.map((node) => node.id))
+  // 完整安全集合留在进程内，工具输出再分页；不能把摘要窗口外的节点当成不存在。
+  const nodeSummaries = nodes.map(nodeSummary).filter(Boolean)
+  const nodeById = new Map(nodeSummaries.map((node) => [node.id, node]))
+  const sourceById = new Map(nodes.filter((node) => node?.id).map((node) => [node.id, node]))
   const context = [...new Set((Array.isArray(contextNodeIds) ? contextNodeIds : [])
-    .filter((id) => typeof id === 'string' && nodeIds.has(id.trim()))
+    .filter((id) => typeof id === 'string' && nodeById.has(id.trim()))
     .map((id) => id.trim()))].slice(0, 32)
+  const contextIds = new Set(context)
   const edges = (Array.isArray(document?.edges) ? document.edges : [])
     .filter((edge) => typeof edge?.source === 'string' && typeof edge?.target === 'string')
-    .filter((edge) => nodeIds.has(edge.source) && nodeIds.has(edge.target))
-    .slice(0, EDGE_LIMIT)
+    .filter((edge) => nodeById.has(edge.source) && nodeById.has(edge.target))
     .map((edge) => ({
-      source: edge.source,
-      target: edge.target,
-      relation: `${nodeSummaries.find((node) => node.id === edge.source)?.type ?? 'node'} -> ${nodeSummaries.find((node) => node.id === edge.target)?.type ?? 'node'}`,
+      ...canvasAgentEdgeMetadata(edge, sourceById),
+      relation: `${nodeById.get(edge.source).type} -> ${nodeById.get(edge.target).type}`,
     }))
   const assetGroups = (Array.isArray(document?.assetGroups) ? document.assetGroups : [])
     .filter((group) => typeof group?.id === 'string' && typeof group?.name === 'string')
-    .slice(0, GROUP_LIMIT)
     .map((group) => ({
       id: group.id.slice(0, 160),
       name: group.name.trim().slice(0, 160),
@@ -61,7 +43,7 @@ export function buildBotanicAgentOntology(document, contextNodeIds = []) {
       name: text(document?.name, 160) ?? '未命名项目',
     },
     contextNodeIds: context,
-    nodes: nodeSummaries,
+    nodes: [...context.map((id) => nodeById.get(id)), ...nodeSummaries.filter((node) => !contextIds.has(node.id))],
     edges,
     assetGroups,
   }
@@ -123,7 +105,7 @@ export function botanicAgentContextBriefing(ontology, {
 export function safeBotanicAgentMemory(document) {
   return (Array.isArray(document?.agentMemory) ? document.agentMemory : [])
     .filter((item) => item && typeof item.id === 'string' && typeof item.kind === 'string' && typeof item.content === 'string')
-    .slice(0, 30)
+    // 这里只做安全字段投影；激活/主体/冲突选择及条数预算归唯一 Memory 选择器。
     .map((item) => ({
       id: item.id.slice(0, 160),
       kind: item.kind.slice(0, 32),
@@ -132,6 +114,12 @@ export function safeBotanicAgentMemory(document) {
       scope: ['project', 'workspace', 'run'].includes(item.scope) ? item.scope : 'project',
       source: ['human', 'review', 'conversation', 'import'].includes(item.source) ? item.source : 'human',
       confidence: item.confidence === 'provisional' ? 'provisional' : 'confirmed',
+      ...(typeof item.status === 'string' ? { status: item.status.slice(0, 32) } : {}),
+      ...(typeof item.subject === 'string' ? { subject: item.subject.slice(0, 40) } : {}),
+      ...(typeof item.subjectValue === 'string' ? { subjectValue: item.subjectValue.slice(0, 160) } : {}),
+      ...(Array.isArray(item.conflictsWith) ? { conflictsWith: item.conflictsWith.filter((id) => typeof id === 'string').slice(0, 12).map((id) => id.slice(0, 160)) } : {}),
+      ...(Number.isFinite(item.confidenceScore) ? { confidenceScore: item.confidenceScore } : {}),
+      ...(Number.isFinite(item.updatedAt) ? { updatedAt: item.updatedAt } : {}),
       ...(Number.isInteger(item.version) ? { version: item.version } : { version: 1 }),
       ...(typeof item.contentHash === 'string' ? { contentHash: item.contentHash.slice(0, 200) } : {}),
     }))

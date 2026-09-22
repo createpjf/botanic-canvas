@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { AgentToolRuntimeError, createAgentToolRegistry, executeConfirmedAgentAction, freezeAgentStepSnapshot, runAgentToolLoop, toolEventPresentation } from './agentToolRuntime.mjs'
 import { estimateAgentContextTokens } from '../context/agentContextBudget.mjs'
+import { canonicalHash } from '../../canonicalHash.mjs'
 
 test('Tool Registry 以 OpenAI 兼容函数协议暴露受控工具并执行参数校验', async () => {
   const registry = createAgentToolRegistry([
@@ -892,10 +893,61 @@ test('多个工具输出共享累计预算，每个 assistant tool_call 仍有�
   assert.ok(toolMessages.some((entry) => JSON.parse(entry.content)._botanicTruncation.reason === 'cumulative_budget'))
 })
 
+test('超大分页元数据明确阻塞，绝不把预览中的游标当成完整交付', async () => {
+  const registry = createAgentToolRegistry([{
+    name: 'canvas_query', label: '查询', description: '读取', risk: 'read',
+    parameters: { type: 'object', properties: {} }, validate: (value) => value,
+    execute: async () => ({ nodes: [{ id: 'not-delivered', content: '长'.repeat(8000) }],
+      page: { hasMore: true, afterId: 'must-not-advance' } }),
+  }])
+  let call = 0
+  await runAgentToolLoop({ registry, messages: [], callModel: async ({ messages }) => {
+    if (call++ === 0) return { choices: [{ message: { tool_calls: [{ id: 'oversized', function: { name: 'canvas_query', arguments: '{}' } }] } }] }
+    const delivered = JSON.parse(messages.at(-1).content)
+    assert.equal(delivered.page.blocked, true)
+    assert.equal(delivered.page.returned, 0)
+    assert.equal(delivered.page.reason, 'per_output_budget')
+    assert.equal(delivered.page.afterId, undefined)
+    assert.equal(delivered.preview, undefined)
+    return { choices: [{ message: { content: '需缩小查询' } }] }
+  } })
+})
+
 const checkpointAttempt = Object.freeze({
   id: 'turn-attempt-1',
   model: 'planner-model',
   snapshotHash: 'snapshot-hash-1',
+})
+
+test('发布新增工具分页参数时，旧 prepared/completed Checkpoint 在模型、工具及落盘之前拒绝恢复', async () => {
+  const registryFor = (properties) => createAgentToolRegistry([{
+    name: 'artifact_search', label: '查询作品', description: '读取历史作品', risk: 'read',
+    parameters: { type: 'object', properties }, validate: (value) => value,
+    execute: async () => { throw new Error('不得重放旧工具') },
+  }])
+  const oldRegistry = registryFor({ query: { type: 'string' } })
+  const newRegistry = registryFor({ query: { type: 'string' }, before: { type: 'string' } })
+  const attemptFor = (registry) => ({
+    id: 'text', model: 'planner-model',
+    snapshotHash: canonicalHash(freezeAgentStepSnapshot({ registry, model: 'planner-model' })),
+  })
+  const oldAttempt = attemptFor(oldRegistry)
+  const attempt = attemptFor(newRegistry)
+  assert.notEqual(oldAttempt.snapshotHash, attempt.snapshotHash)
+  const step = { step: 0, calls: [{
+    id: 'call-release', name: 'artifact_search', risk: 'read', recovery: 'reexecute',
+    terminal: false, arguments: { query: '合成素材' },
+  }] }
+  for (const state of [{ completedSteps: [], pendingStep: step }, { completedSteps: [step] }]) {
+    const resumeCheckpoint = { version: 1, attempt: oldAttempt, ...state }
+    const unchanged = structuredClone(resumeCheckpoint)
+    await assert.rejects(runAgentToolLoop({
+      registry: newRegistry, messages: [], attempt, resumeCheckpoint,
+      callModel: async () => { throw new Error('不得重新请求模型') },
+      saveCheckpoint: async () => { throw new Error('不得重写旧快照') },
+    }), (error) => error.code === 'AGENT_TURN_CHECKPOINT_SNAPSHOT_MISMATCH' && error.statusCode === 409)
+    assert.deepEqual(resumeCheckpoint, unchanged)
+  }
 })
 
 test('Registry 按工具能力推导 recovery，并拒绝未知恢复模式', () => {

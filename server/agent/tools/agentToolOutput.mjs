@@ -13,6 +13,24 @@ export function serializedOutput(output) {
   return serialized === undefined ? 'null' : serialized
 }
 
+/** 由读工具拥有页与游标语义；预算只选择能完整交付的最大前缀。 */
+export function fitToolOutputPage(count, build) {
+  let low = 0, high = count, best = 0
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2)
+    if (estimateAgentContextTokens(serializedOutput(build(middle))) <= AGENT_TOOL_OUTPUT_TOKEN_BUDGET) {
+      best = middle
+      low = middle + 1
+    } else high = middle - 1
+  }
+  const result = build(best)
+  if (count > 0 && best === 0) {
+    // 没有交付任何项目时不得发出一个看似可前进的游标，也不能谎报无结果。
+    result.page = { returned: 0, hasMore: true, blocked: true, reason: 'item_exceeds_output_budget' }
+  }
+  return result
+}
+
 export function compactToolOutputEnvelope(entry, serialized, reason) {
   return JSON.stringify({
     _botanicTruncation: {
@@ -76,7 +94,13 @@ export function boundedToolOutput(entry, output, maximumTokens, reason) {
   if (originalTokens <= maximumTokens) {
     return { content: serialized, tokens: originalTokens, compact: false, serialized }
   }
-  const content = detailedToolOutputEnvelope(entry, output, serialized, maximumTokens, reason)
+  const pagedRead = ['ontology_read', 'asset_group_search', 'artifact_search', 'canvas_query'].includes(entry.trace.name)
+    && output?.page && typeof output.page.hasMore === 'boolean'
+  // 不能对有游标的结果做头尾预览：预览里的下一游标可能越过未交付的中间项目。
+  const content = pagedRead ? JSON.stringify({
+    _botanicTruncation: JSON.parse(compactToolOutputEnvelope(entry, serialized, reason))._botanicTruncation,
+    page: { returned: 0, hasMore: true, blocked: true, reason, retry: 'narrow_query_or_reduce_limit' },
+  }) : detailedToolOutputEnvelope(entry, output, serialized, maximumTokens, reason)
   return {
     content,
     tokens: estimateAgentContextTokens(content),
@@ -108,7 +132,8 @@ export function createToolOutputBudget(conversation) {
     const serialized = serializedOutput(output)
     const compactContent = compactToolOutputEnvelope(entry, serialized, 'cumulative_budget')
     const compactTokens = estimateAgentContextTokens(compactContent)
-    while (totalTokens + compactTokens > AGENT_TOOL_OUTPUT_TOTAL_TOKEN_BUDGET) {
+    const desiredTokens = Math.min(estimateAgentContextTokens(serialized), AGENT_TOOL_OUTPUT_TOKEN_BUDGET)
+    while (totalTokens + desiredTokens > AGENT_TOOL_OUTPUT_TOTAL_TOKEN_BUDGET) {
       const candidate = records.find((record) => !record.compact && record.tokens > compactTokens)
       if (!candidate || !compactRecord(candidate)) break
     }
@@ -441,4 +466,3 @@ export function toolEventPresentation(name, output) {
   }
   return undefined
 }
-

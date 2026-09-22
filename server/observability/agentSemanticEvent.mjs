@@ -283,7 +283,7 @@ function canvasLifecycleEvent(target, source) {
     if (typeof source.reason !== 'string' || !SAFE_ERROR_CODE.test(source.reason) || source.reason.length > ERROR_CODE_LIMIT) invalid('Agent semantic canvas reason')
     target.reason = source.reason
   }
-  for (const name of ['durationMs', 'returnedCount', 'operationCount', 'changeCount', 'artifactCount']) {
+  for (const name of ['durationMs', 'returnedCount', 'operationCount', 'changeCount', 'artifactCount', 'candidateCount', 'embeddingRequests', 'cacheHitCount']) {
     addOptionalInteger(target, source, name, name === 'durationMs' ? MAX_DURATION_MS : MAX_COUNT)
   }
 }

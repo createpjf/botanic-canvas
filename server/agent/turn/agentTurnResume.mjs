@@ -9,6 +9,7 @@ import {
 } from '../context/agentContextSummarizer.mjs'
 import { projectPermissionDecision } from '../../auth/authorization.mjs'
 import { assertAgentTargetBinding } from '../../agentTargetBinding.mjs'
+import { createAgentToolChoiceShadow } from '../tools/agentToolChoiceShadow.mjs'
 
 const RECEIPT_TEXT_KEYS = new Set(['message', 'status', 'kind', 'type', 'label', 'name'])
 const RECEIPT_BOOLEAN_KEYS = new Set(['ok', 'reused', 'created', 'updated', 'deleted', 'cancelled'])
@@ -135,6 +136,7 @@ export class AgentTurnResumeError extends Error {
  *   observe?: (event: any) => void,
  *   observeAgentContext?: (event: any) => void,
  *   consumeWebResearchQuota?: (userId: string, projectId: string, capability?: string) => Promise<any>,
+ *   securityControls?: any,
  *   subagentRunner?: ((input: any) => Promise<any>),
  * }} deps
  */
@@ -146,10 +148,12 @@ export function createAgentTurnResumer({
   observe,
   observeAgentContext,
   consumeWebResearchQuota,
+  securityControls,
   subagentRunner,
 }) {
   if (!productStore) throw new TypeError('Turn 恢复缺少 ProductStore。')
   if (!turnRuntime?.execute) throw new TypeError('Turn 恢复缺少 Turn Runtime。')
+  const observeToolChoice = createAgentToolChoiceShadow({ productStore, config, securityControls })
   let contextCoordinator
   const durableContextCoordinator = () => {
     contextCoordinator ??= createAgentContextCoordinator({
@@ -329,6 +333,7 @@ export function createAgentTurnResumer({
       allowTakeover: true,
       resolve: (resolveOptions) => resolveBotanicAgentRuntimeRequest(turn.request, config, resolveOptions),
       resolveOptions: {
+        observeToolChoice,
         // Worker 恢复与 API 正常执行必须命中同一 Durable Subagent seam。显式传入
         // undefined 也有意义：配置不完整时 Planner 不得退回进程内旧执行器。
         subagentRunner,

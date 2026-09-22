@@ -1,0 +1,3263 @@
+{
+  "date": "2026-09-22T02:04:33.034Z",
+  "model": "this-that-model-1.0",
+  "modelRevision": null,
+  "responseModels": [
+    "this-that-model-1.0"
+  ],
+  "scope": "synthetic-offline-only",
+  "source": "agent-authored synthetic gold; no human adjudication or production distribution validation",
+  "firstRequestMs": 446.5034579999992,
+  "serverColdStart": "unobservable",
+  "pricing": {
+    "inputCostPerToken": 0,
+    "outputCostPerToken": 0,
+    "source": "https://api.flock.io/model/info",
+    "billedCost": null
+  },
+  "reportedCostHeaders": {
+    "count": 0,
+    "total": 0
+  },
+  "stopped": null,
+  "planner": "not_run: authorization covers synthetic data only; do not transmit private system prompts or project context",
+  "jev": "not_run: separate provider not authorized",
+  "status": "synthetic_evaluated_not_production_ready",
+  "taxonomyVersion": "retrieval-source-v1",
+  "datasetSha256": "d5e23029186846f041d63e344d43899a02aa6e1c13a9601c8607835d431bb681",
+  "requestSha256ByVariant": {
+    "described-json": "f951892e7d79d8a80f332fff27dae5d42b52394a18236936d100ccb6fdebb8c4",
+    "bare-json": "1c7fdef8172612d4c3f202f853ac71beefaa5fb2ab997f744a19b463a381958c",
+    "described-prose": "766e53d479e79f7c3f5bdbcebc0e9c956e00d1766fb3ded2ab55ecfb836bc301",
+    "no-state-json": "61f641e6244163e3d9a38f02b2efbb3eb495c31eac8d4d27dae3e5e152872e83"
+  },
+  "sampleCount": 48,
+  "devSamples": 24,
+  "holdoutSamples": 24,
+  "plannedRequests": 120,
+  "dev": {
+    "described-json": {
+      "raw": {
+        "n": 24,
+        "accuracy": 0.6666666666666666,
+        "macroF1": 0.5476190476190476,
+        "perClass": {
+          "canvas": {
+            "support": 8,
+            "predicted": 6,
+            "f1": 0.8571428571428571
+          },
+          "artifacts": {
+            "support": 6,
+            "predicted": 12,
+            "f1": 0.6666666666666666
+          },
+          "rules": {
+            "support": 6,
+            "predicted": 6,
+            "f1": 0.6666666666666666
+          },
+          "defer": {
+            "support": 4,
+            "predicted": 0,
+            "f1": 0
+          }
+        },
+        "coverage": 1,
+        "selectiveAccuracy": 0.6666666666666666,
+        "routeOutcomeAccuracy": null,
+        "fallbackReasons": {
+          "model_defer": 0,
+          "unavailable_source": 0,
+          "missing_score": 0,
+          "low_confidence": 0,
+          "invalid_label": 0
+        },
+        "wrongSourceSuggestions": 8,
+        "unavailableSuggestions": 2,
+        "stateSensitivePairs": {
+          "n": 4,
+          "bothCorrect": 2
+        },
+        "stateInvariantPairs": {
+          "n": 8,
+          "bothCorrect": 5
+        },
+        "p50Ms": 248.18966600000022,
+        "p95Ms": 336.8368750000009
+      },
+      "selective": {
+        "n": 24,
+        "accuracy": 0.5833333333333334,
+        "macroF1": 0.5571428571428572,
+        "perClass": {
+          "canvas": {
+            "support": 8,
+            "predicted": 6,
+            "f1": 0.8571428571428571
+          },
+          "artifacts": {
+            "support": 6,
+            "predicted": 8,
+            "f1": 0.5714285714285714
+          },
+          "rules": {
+            "support": 6,
+            "predicted": 4,
+            "f1": 0.8
+          },
+          "defer": {
+            "support": 4,
+            "predicted": 0,
+            "f1": 0
+          }
+        },
+        "coverage": 0.75,
+        "selectiveAccuracy": 0.7777777777777778,
+        "routeOutcomeAccuracy": 0.6666666666666666,
+        "fallbackReasons": {
+          "model_defer": 0,
+          "unavailable_source": 2,
+          "missing_score": 0,
+          "low_confidence": 4,
+          "invalid_label": 0
+        },
+        "wrongSourceSuggestions": 4,
+        "unavailableSuggestions": 2,
+        "stateSensitivePairs": {
+          "n": 4,
+          "bothCorrect": 2
+        },
+        "stateInvariantPairs": {
+          "n": 8,
+          "bothCorrect": 3
+        },
+        "p50Ms": 248.18966600000022,
+        "p95Ms": 336.8368750000009
+      },
+      "threshold": 0.92
+    },
+    "bare-json": {
+      "raw": {
+        "n": 24,
+        "accuracy": 0.625,
+        "macroF1": 0.619642857142857,
+        "perClass": {
+          "canvas": {
+            "support": 8,
+            "predicted": 8,
+            "f1": 0.75
+          },
+          "artifacts": {
+            "support": 6,
+            "predicted": 2,
+            "f1": 0.5
+          },
+          "rules": {
+            "support": 6,
+            "predicted": 4,
+            "f1": 0.8
+          },
+          "defer": {
+            "support": 4,
+            "predicted": 10,
+            "f1": 0.42857142857142855
+          }
+        },
+        "coverage": 0.5833333333333334,
+        "selectiveAccuracy": 0.8571428571428571,
+        "routeOutcomeAccuracy": null,
+        "fallbackReasons": {
+          "model_defer": 10,
+          "unavailable_source": 0,
+          "missing_score": 0,
+          "low_confidence": 0,
+          "invalid_label": 0
+        },
+        "wrongSourceSuggestions": 2,
+        "unavailableSuggestions": 0,
+        "stateSensitivePairs": {
+          "n": 4,
+          "bothCorrect": 0
+        },
+        "stateInvariantPairs": {
+          "n": 8,
+          "bothCorrect": 4
+        },
+        "p50Ms": 246.2387920000001,
+        "p95Ms": 264.33479200000147
+      },
+      "selective": {
+        "n": 24,
+        "accuracy": 0.625,
+        "macroF1": 0.6321428571428571,
+        "perClass": {
+          "canvas": {
+            "support": 8,
+            "predicted": 7,
+            "f1": 0.8
+          },
+          "artifacts": {
+            "support": 6,
+            "predicted": 2,
+            "f1": 0.5
+          },
+          "rules": {
+            "support": 6,
+            "predicted": 4,
+            "f1": 0.8
+          },
+          "defer": {
+            "support": 4,
+            "predicted": 10,
+            "f1": 0.42857142857142855
+          }
+        },
+        "coverage": 0.5416666666666666,
+        "selectiveAccuracy": 0.9230769230769231,
+        "routeOutcomeAccuracy": 0.625,
+        "fallbackReasons": {
+          "model_defer": 10,
+          "unavailable_source": 0,
+          "missing_score": 0,
+          "low_confidence": 1,
+          "invalid_label": 0
+        },
+        "wrongSourceSuggestions": 1,
+        "unavailableSuggestions": 0,
+        "stateSensitivePairs": {
+          "n": 4,
+          "bothCorrect": 0
+        },
+        "stateInvariantPairs": {
+          "n": 8,
+          "bothCorrect": 4
+        },
+        "p50Ms": 246.2387920000001,
+        "p95Ms": 264.33479200000147
+      },
+      "threshold": 0.44
+    },
+    "described-prose": {
+      "raw": {
+        "n": 24,
+        "accuracy": 0.625,
+        "macroF1": 0.503030303030303,
+        "perClass": {
+          "canvas": {
+            "support": 8,
+            "predicted": 7,
+            "f1": 0.8
+          },
+          "artifacts": {
+            "support": 6,
+            "predicted": 12,
+            "f1": 0.6666666666666666
+          },
+          "rules": {
+            "support": 6,
+            "predicted": 5,
+            "f1": 0.5454545454545454
+          },
+          "defer": {
+            "support": 4,
+            "predicted": 0,
+            "f1": 0
+          }
+        },
+        "coverage": 1,
+        "selectiveAccuracy": 0.625,
+        "routeOutcomeAccuracy": null,
+        "fallbackReasons": {
+          "model_defer": 0,
+          "unavailable_source": 0,
+          "missing_score": 0,
+          "low_confidence": 0,
+          "invalid_label": 0
+        },
+        "wrongSourceSuggestions": 9,
+        "unavailableSuggestions": 2,
+        "stateSensitivePairs": {
+          "n": 4,
+          "bothCorrect": 2
+        },
+        "stateInvariantPairs": {
+          "n": 8,
+          "bothCorrect": 4
+        },
+        "p50Ms": 246.16899999999805,
+        "p95Ms": 257.23795900000187
+      },
+      "selective": {
+        "n": 24,
+        "accuracy": 0.5416666666666666,
+        "macroF1": 0.5142857142857142,
+        "perClass": {
+          "canvas": {
+            "support": 8,
+            "predicted": 6,
+            "f1": 0.8571428571428571
+          },
+          "artifacts": {
+            "support": 6,
+            "predicted": 9,
+            "f1": 0.5333333333333333
+          },
+          "rules": {
+            "support": 6,
+            "predicted": 3,
+            "f1": 0.6666666666666666
+          },
+          "defer": {
+            "support": 4,
+            "predicted": 0,
+            "f1": 0
+          }
+        },
+        "coverage": 0.75,
+        "selectiveAccuracy": 0.7222222222222222,
+        "routeOutcomeAccuracy": 0.625,
+        "fallbackReasons": {
+          "model_defer": 0,
+          "unavailable_source": 2,
+          "missing_score": 0,
+          "low_confidence": 4,
+          "invalid_label": 0
+        },
+        "wrongSourceSuggestions": 5,
+        "unavailableSuggestions": 2,
+        "stateSensitivePairs": {
+          "n": 4,
+          "bothCorrect": 2
+        },
+        "stateInvariantPairs": {
+          "n": 8,
+          "bothCorrect": 2
+        },
+        "p50Ms": 246.16899999999805,
+        "p95Ms": 257.23795900000187
+      },
+      "threshold": 0.96
+    },
+    "no-state-json": {
+      "raw": {
+        "n": 24,
+        "accuracy": 0.4166666666666667,
+        "macroF1": 0.3973214285714286,
+        "perClass": {
+          "canvas": {
+            "support": 8,
+            "predicted": 6,
+            "f1": 0.7142857142857143
+          },
+          "artifacts": {
+            "support": 6,
+            "predicted": 10,
+            "f1": 0.375
+          },
+          "rules": {
+            "support": 6,
+            "predicted": 2,
+            "f1": 0.5
+          },
+          "defer": {
+            "support": 4,
+            "predicted": 6,
+            "f1": 0
+          }
+        },
+        "coverage": 0.75,
+        "selectiveAccuracy": 0.5555555555555556,
+        "routeOutcomeAccuracy": null,
+        "fallbackReasons": {
+          "model_defer": 6,
+          "unavailable_source": 0,
+          "missing_score": 0,
+          "low_confidence": 0,
+          "invalid_label": 0
+        },
+        "wrongSourceSuggestions": 8,
+        "unavailableSuggestions": 1,
+        "stateSensitivePairs": {
+          "n": 4,
+          "bothCorrect": 0
+        },
+        "stateInvariantPairs": {
+          "n": 8,
+          "bothCorrect": 4
+        },
+        "p50Ms": 248.50875000000087,
+        "p95Ms": 259.4851250000029
+      },
+      "selective": {
+        "n": 24,
+        "accuracy": 0.375,
+        "macroF1": 0.37023809523809526,
+        "perClass": {
+          "canvas": {
+            "support": 8,
+            "predicted": 6,
+            "f1": 0.7142857142857143
+          },
+          "artifacts": {
+            "support": 6,
+            "predicted": 9,
+            "f1": 0.26666666666666666
+          },
+          "rules": {
+            "support": 6,
+            "predicted": 2,
+            "f1": 0.5
+          },
+          "defer": {
+            "support": 4,
+            "predicted": 6,
+            "f1": 0
+          }
+        },
+        "coverage": 0.7083333333333334,
+        "selectiveAccuracy": 0.5294117647058824,
+        "routeOutcomeAccuracy": 0.4166666666666667,
+        "fallbackReasons": {
+          "model_defer": 6,
+          "unavailable_source": 1,
+          "missing_score": 0,
+          "low_confidence": 0,
+          "invalid_label": 0
+        },
+        "wrongSourceSuggestions": 8,
+        "unavailableSuggestions": 1,
+        "stateSensitivePairs": {
+          "n": 4,
+          "bothCorrect": 0
+        },
+        "stateInvariantPairs": {
+          "n": 8,
+          "bothCorrect": 3
+        },
+        "p50Ms": 248.50875000000087,
+        "p95Ms": 259.4851250000029
+      },
+      "threshold": 0
+    }
+  },
+  "selection": {
+    "variant": "bare-json",
+    "threshold": 0.44,
+    "macroF1": 0.6321428571428571
+  },
+  "holdout": {
+    "raw": {
+      "n": 24,
+      "accuracy": 0.4583333333333333,
+      "macroF1": 0.3839285714285714,
+      "perClass": {
+        "canvas": {
+          "support": 6,
+          "predicted": 2,
+          "f1": 0
+        },
+        "artifacts": {
+          "support": 6,
+          "predicted": 1,
+          "f1": 0.2857142857142857
+        },
+        "rules": {
+          "support": 4,
+          "predicted": 5,
+          "f1": 0.6666666666666666
+        },
+        "defer": {
+          "support": 8,
+          "predicted": 16,
+          "f1": 0.5833333333333334
+        }
+      },
+      "coverage": 0.3333333333333333,
+      "selectiveAccuracy": 0.5,
+      "routeOutcomeAccuracy": null,
+      "fallbackReasons": {
+        "model_defer": 16,
+        "unavailable_source": 0,
+        "missing_score": 0,
+        "low_confidence": 0,
+        "invalid_label": 0
+      },
+      "wrongSourceSuggestions": 4,
+      "unavailableSuggestions": 1,
+      "stateSensitivePairs": {
+        "n": 2,
+        "bothCorrect": 0
+      },
+      "stateInvariantPairs": {
+        "n": 10,
+        "bothCorrect": 4
+      },
+      "p50Ms": 246.93187499999476,
+      "p95Ms": 294.6539170000033
+    },
+    "selective": {
+      "n": 24,
+      "accuracy": 0.4166666666666667,
+      "macroF1": 0.34226190476190477,
+      "perClass": {
+        "canvas": {
+          "support": 6,
+          "predicted": 1,
+          "f1": 0
+        },
+        "artifacts": {
+          "support": 6,
+          "predicted": 1,
+          "f1": 0.2857142857142857
+        },
+        "rules": {
+          "support": 4,
+          "predicted": 4,
+          "f1": 0.5
+        },
+        "defer": {
+          "support": 8,
+          "predicted": 16,
+          "f1": 0.5833333333333334
+        }
+      },
+      "coverage": 0.25,
+      "selectiveAccuracy": 0.5,
+      "routeOutcomeAccuracy": 0.4583333333333333,
+      "fallbackReasons": {
+        "model_defer": 16,
+        "unavailable_source": 1,
+        "missing_score": 0,
+        "low_confidence": 1,
+        "invalid_label": 0
+      },
+      "wrongSourceSuggestions": 3,
+      "unavailableSuggestions": 1,
+      "stateSensitivePairs": {
+        "n": 2,
+        "bothCorrect": 0
+      },
+      "stateInvariantPairs": {
+        "n": 10,
+        "bothCorrect": 3
+      },
+      "p50Ms": 246.93187499999476,
+      "p95Ms": 294.6539170000033
+    },
+    "byLanguage": {
+      "zh": {
+        "raw": {
+          "n": 12,
+          "accuracy": 0.4166666666666667,
+          "macroF1": 0.303030303030303,
+          "perClass": {
+            "canvas": {
+              "support": 3,
+              "predicted": 1,
+              "f1": 0
+            },
+            "artifacts": {
+              "support": 3,
+              "predicted": 0,
+              "f1": 0
+            },
+            "rules": {
+              "support": 2,
+              "predicted": 4,
+              "f1": 0.6666666666666666
+            },
+            "defer": {
+              "support": 4,
+              "predicted": 7,
+              "f1": 0.5454545454545454
+            }
+          },
+          "coverage": 0.4166666666666667,
+          "selectiveAccuracy": 0.4,
+          "routeOutcomeAccuracy": null,
+          "fallbackReasons": {
+            "model_defer": 7,
+            "unavailable_source": 0,
+            "missing_score": 0,
+            "low_confidence": 0,
+            "invalid_label": 0
+          },
+          "wrongSourceSuggestions": 3,
+          "unavailableSuggestions": 1,
+          "stateSensitivePairs": {
+            "n": 1,
+            "bothCorrect": 0
+          },
+          "stateInvariantPairs": {
+            "n": 5,
+            "bothCorrect": 2
+          },
+          "p50Ms": 248.84741699999722,
+          "p95Ms": 298.21374999999534
+        },
+        "selective": {
+          "n": 12,
+          "accuracy": 0.3333333333333333,
+          "macroF1": 0.23636363636363636,
+          "perClass": {
+            "canvas": {
+              "support": 3,
+              "predicted": 0,
+              "f1": 0
+            },
+            "artifacts": {
+              "support": 3,
+              "predicted": 0,
+              "f1": 0
+            },
+            "rules": {
+              "support": 2,
+              "predicted": 3,
+              "f1": 0.4
+            },
+            "defer": {
+              "support": 4,
+              "predicted": 7,
+              "f1": 0.5454545454545454
+            }
+          },
+          "coverage": 0.25,
+          "selectiveAccuracy": 0.3333333333333333,
+          "routeOutcomeAccuracy": 0.4166666666666667,
+          "fallbackReasons": {
+            "model_defer": 7,
+            "unavailable_source": 1,
+            "missing_score": 0,
+            "low_confidence": 1,
+            "invalid_label": 0
+          },
+          "wrongSourceSuggestions": 2,
+          "unavailableSuggestions": 1,
+          "stateSensitivePairs": {
+            "n": 1,
+            "bothCorrect": 0
+          },
+          "stateInvariantPairs": {
+            "n": 5,
+            "bothCorrect": 1
+          },
+          "p50Ms": 248.84741699999722,
+          "p95Ms": 298.21374999999534
+        }
+      },
+      "en": {
+        "raw": {
+          "n": 12,
+          "accuracy": 0.5,
+          "macroF1": 0.4455128205128205,
+          "perClass": {
+            "canvas": {
+              "support": 3,
+              "predicted": 1,
+              "f1": 0
+            },
+            "artifacts": {
+              "support": 3,
+              "predicted": 1,
+              "f1": 0.5
+            },
+            "rules": {
+              "support": 2,
+              "predicted": 1,
+              "f1": 0.6666666666666666
+            },
+            "defer": {
+              "support": 4,
+              "predicted": 9,
+              "f1": 0.6153846153846154
+            }
+          },
+          "coverage": 0.25,
+          "selectiveAccuracy": 0.6666666666666666,
+          "routeOutcomeAccuracy": null,
+          "fallbackReasons": {
+            "model_defer": 9,
+            "unavailable_source": 0,
+            "missing_score": 0,
+            "low_confidence": 0,
+            "invalid_label": 0
+          },
+          "wrongSourceSuggestions": 1,
+          "unavailableSuggestions": 0,
+          "stateSensitivePairs": {
+            "n": 1,
+            "bothCorrect": 0
+          },
+          "stateInvariantPairs": {
+            "n": 5,
+            "bothCorrect": 2
+          },
+          "p50Ms": 246.88729199999943,
+          "p95Ms": 254.68641699999716
+        },
+        "selective": {
+          "n": 12,
+          "accuracy": 0.5,
+          "macroF1": 0.4455128205128205,
+          "perClass": {
+            "canvas": {
+              "support": 3,
+              "predicted": 1,
+              "f1": 0
+            },
+            "artifacts": {
+              "support": 3,
+              "predicted": 1,
+              "f1": 0.5
+            },
+            "rules": {
+              "support": 2,
+              "predicted": 1,
+              "f1": 0.6666666666666666
+            },
+            "defer": {
+              "support": 4,
+              "predicted": 9,
+              "f1": 0.6153846153846154
+            }
+          },
+          "coverage": 0.25,
+          "selectiveAccuracy": 0.6666666666666666,
+          "routeOutcomeAccuracy": 0.5,
+          "fallbackReasons": {
+            "model_defer": 9,
+            "unavailable_source": 0,
+            "missing_score": 0,
+            "low_confidence": 0,
+            "invalid_label": 0
+          },
+          "wrongSourceSuggestions": 1,
+          "unavailableSuggestions": 0,
+          "stateSensitivePairs": {
+            "n": 1,
+            "bothCorrect": 0
+          },
+          "stateInvariantPairs": {
+            "n": 5,
+            "bothCorrect": 2
+          },
+          "p50Ms": 246.88729199999943,
+          "p95Ms": 254.68641699999716
+        }
+      }
+    }
+  },
+  "candidateRows": [
+    {
+      "task": "retrieval",
+      "id": "color-reference-0-0",
+      "family": "color-reference",
+      "split": "dev",
+      "category": "reference_switch",
+      "pairId": "color-reference-0",
+      "language": "zh",
+      "label": "canvas",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "described-json",
+      "prediction": "rules",
+      "score": 0.7100779337687942,
+      "ms": 446.5034579999992,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "color-reference-0-1",
+      "family": "color-reference",
+      "split": "dev",
+      "category": "reference_switch",
+      "pairId": "color-reference-0",
+      "language": "zh",
+      "label": "rules",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "described-json",
+      "prediction": "rules",
+      "score": 0.9991272112926591,
+      "ms": 273.5846249999995,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "color-reference-1-0",
+      "family": "color-reference",
+      "split": "dev",
+      "category": "reference_switch",
+      "pairId": "color-reference-1",
+      "language": "en",
+      "label": "canvas",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "described-json",
+      "prediction": "rules",
+      "score": 0.6461139549680068,
+      "ms": 254.10254200000054,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "color-reference-1-1",
+      "family": "color-reference",
+      "split": "dev",
+      "category": "reference_switch",
+      "pairId": "color-reference-1",
+      "language": "en",
+      "label": "rules",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "described-json",
+      "prediction": "rules",
+      "score": 0.999976567153811,
+      "ms": 249.14324999999917,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "yesterday-logo-0-0",
+      "family": "yesterday-logo",
+      "split": "dev",
+      "category": "availability",
+      "pairId": "yesterday-logo-0",
+      "language": "zh",
+      "label": "artifacts",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "described-json",
+      "prediction": "artifacts",
+      "score": 0.9999904072203459,
+      "ms": 252.64437499999985,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "yesterday-logo-0-1",
+      "family": "yesterday-logo",
+      "split": "dev",
+      "category": "availability",
+      "pairId": "yesterday-logo-0",
+      "language": "zh",
+      "label": "artifacts",
+      "semanticIntent": "research",
+      "prerequisite": "source_unavailable",
+      "variant": "described-json",
+      "prediction": "artifacts",
+      "score": 0.9999677347970587,
+      "ms": 245.1179579999989,
+      "availableSources": [
+        "canvas",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "yesterday-logo-1-0",
+      "family": "yesterday-logo",
+      "split": "dev",
+      "category": "availability",
+      "pairId": "yesterday-logo-1",
+      "language": "en",
+      "label": "artifacts",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "described-json",
+      "prediction": "artifacts",
+      "score": 0.9998072760353158,
+      "ms": 246.20141700000022,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "yesterday-logo-1-1",
+      "family": "yesterday-logo",
+      "split": "dev",
+      "category": "availability",
+      "pairId": "yesterday-logo-1",
+      "language": "en",
+      "label": "artifacts",
+      "semanticIntent": "research",
+      "prerequisite": "source_unavailable",
+      "variant": "described-json",
+      "prediction": "artifacts",
+      "score": 0.9988459503444247,
+      "ms": 243.7223750000012,
+      "availableSources": [
+        "canvas",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "layout-reference-0-0",
+      "family": "layout-reference",
+      "split": "dev",
+      "category": "reference_switch",
+      "pairId": "layout-reference-0",
+      "language": "zh",
+      "label": "canvas",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "described-json",
+      "prediction": "canvas",
+      "score": 0.953062779813601,
+      "ms": 248.0014999999985,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "layout-reference-0-1",
+      "family": "layout-reference",
+      "split": "dev",
+      "category": "reference_switch",
+      "pairId": "layout-reference-0",
+      "language": "zh",
+      "label": "artifacts",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "described-json",
+      "prediction": "artifacts",
+      "score": 0.9997283970656211,
+      "ms": 244.20708399999967,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "layout-reference-1-0",
+      "family": "layout-reference",
+      "split": "dev",
+      "category": "reference_switch",
+      "pairId": "layout-reference-1",
+      "language": "en",
+      "label": "canvas",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "described-json",
+      "prediction": "canvas",
+      "score": 0.9969334618516391,
+      "ms": 248.31412499999897,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "layout-reference-1-1",
+      "family": "layout-reference",
+      "split": "dev",
+      "category": "reference_switch",
+      "pairId": "layout-reference-1",
+      "language": "en",
+      "label": "artifacts",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "described-json",
+      "prediction": "artifacts",
+      "score": 0.9999769337936961,
+      "ms": 243.29841699999997,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "print-rules-0-0",
+      "family": "print-rules",
+      "split": "dev",
+      "category": "negation",
+      "pairId": "print-rules-0",
+      "language": "zh",
+      "label": "rules",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "described-json",
+      "prediction": "artifacts",
+      "score": 0.9868690044982588,
+      "ms": 249.8805420000008,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "print-rules-0-1",
+      "family": "print-rules",
+      "split": "dev",
+      "category": "negation",
+      "pairId": "print-rules-0",
+      "language": "zh",
+      "label": "rules",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "described-json",
+      "prediction": "artifacts",
+      "score": 0.9183445352063024,
+      "ms": 248.27537499999926,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "print-rules-1-0",
+      "family": "print-rules",
+      "split": "dev",
+      "category": "negation",
+      "pairId": "print-rules-1",
+      "language": "en",
+      "label": "rules",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "described-json",
+      "prediction": "rules",
+      "score": 0.9364820420473197,
+      "ms": 248.18966600000022,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "print-rules-1-1",
+      "family": "print-rules",
+      "split": "dev",
+      "category": "negation",
+      "pairId": "print-rules-1",
+      "language": "en",
+      "label": "rules",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "described-json",
+      "prediction": "rules",
+      "score": 0.9978351899480579,
+      "ms": 245.7730419999989,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "compare-two-sources-0-0",
+      "family": "compare-two-sources",
+      "split": "dev",
+      "category": "multi_source",
+      "pairId": "compare-two-sources-0",
+      "language": "zh",
+      "label": "defer",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "described-json",
+      "prediction": "artifacts",
+      "score": 0.9966734414632656,
+      "ms": 242.6583329999994,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "compare-two-sources-0-1",
+      "family": "compare-two-sources",
+      "split": "dev",
+      "category": "multi_source",
+      "pairId": "compare-two-sources-0",
+      "language": "zh",
+      "label": "defer",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "described-json",
+      "prediction": "artifacts",
+      "score": 0.842643658407448,
+      "ms": 246.6588329999995,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "compare-two-sources-1-0",
+      "family": "compare-two-sources",
+      "split": "dev",
+      "category": "multi_source",
+      "pairId": "compare-two-sources-1",
+      "language": "en",
+      "label": "defer",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "described-json",
+      "prediction": "artifacts",
+      "score": 0.9999455898849452,
+      "ms": 258.12933299999895,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "compare-two-sources-1-1",
+      "family": "compare-two-sources",
+      "split": "dev",
+      "category": "multi_source",
+      "pairId": "compare-two-sources-1",
+      "language": "en",
+      "label": "defer",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "described-json",
+      "prediction": "artifacts",
+      "score": 0.9710052567732576,
+      "ms": 244.41370800000004,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "untrusted-note-0-0",
+      "family": "untrusted-note",
+      "split": "dev",
+      "category": "adversarial",
+      "pairId": "untrusted-note-0",
+      "language": "zh",
+      "label": "canvas",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "described-json",
+      "prediction": "canvas",
+      "score": 0.9999702148093638,
+      "ms": 336.8368750000009,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "untrusted-note-0-1",
+      "family": "untrusted-note",
+      "split": "dev",
+      "category": "adversarial",
+      "pairId": "untrusted-note-0",
+      "language": "zh",
+      "label": "canvas",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "described-json",
+      "prediction": "canvas",
+      "score": 0.9999824462911021,
+      "ms": 290.4517909999995,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "untrusted-note-1-0",
+      "family": "untrusted-note",
+      "split": "dev",
+      "category": "adversarial",
+      "pairId": "untrusted-note-1",
+      "language": "en",
+      "label": "canvas",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "described-json",
+      "prediction": "canvas",
+      "score": 0.9999640695652249,
+      "ms": 245.34820899999977,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "untrusted-note-1-1",
+      "family": "untrusted-note",
+      "split": "dev",
+      "category": "adversarial",
+      "pairId": "untrusted-note-1",
+      "language": "en",
+      "label": "canvas",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "described-json",
+      "prediction": "canvas",
+      "score": 0.9999522360250617,
+      "ms": 250.26766700000007,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "color-reference-0-0",
+      "family": "color-reference",
+      "split": "dev",
+      "category": "reference_switch",
+      "pairId": "color-reference-0",
+      "language": "zh",
+      "label": "canvas",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "bare-json",
+      "prediction": "defer",
+      "score": 0.9839117389056325,
+      "ms": 243.7536250000012,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "color-reference-0-1",
+      "family": "color-reference",
+      "split": "dev",
+      "category": "reference_switch",
+      "pairId": "color-reference-0",
+      "language": "zh",
+      "label": "rules",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "bare-json",
+      "prediction": "rules",
+      "score": 0.530126330623646,
+      "ms": 244.15249999999833,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "color-reference-1-0",
+      "family": "color-reference",
+      "split": "dev",
+      "category": "reference_switch",
+      "pairId": "color-reference-1",
+      "language": "en",
+      "label": "canvas",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "bare-json",
+      "prediction": "defer",
+      "score": 0.8207999766108761,
+      "ms": 255.51491700000042,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "color-reference-1-1",
+      "family": "color-reference",
+      "split": "dev",
+      "category": "reference_switch",
+      "pairId": "color-reference-1",
+      "language": "en",
+      "label": "rules",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "bare-json",
+      "prediction": "rules",
+      "score": 0.9758605641363322,
+      "ms": 243.45316600000115,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "yesterday-logo-0-0",
+      "family": "yesterday-logo",
+      "split": "dev",
+      "category": "availability",
+      "pairId": "yesterday-logo-0",
+      "language": "zh",
+      "label": "artifacts",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "bare-json",
+      "prediction": "artifacts",
+      "score": 0.9551322385738482,
+      "ms": 247.22012499999983,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "yesterday-logo-0-1",
+      "family": "yesterday-logo",
+      "split": "dev",
+      "category": "availability",
+      "pairId": "yesterday-logo-0",
+      "language": "zh",
+      "label": "artifacts",
+      "semanticIntent": "research",
+      "prerequisite": "source_unavailable",
+      "variant": "bare-json",
+      "prediction": "defer",
+      "score": 0.9740925668792617,
+      "ms": 245.49925000000076,
+      "availableSources": [
+        "canvas",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "yesterday-logo-1-0",
+      "family": "yesterday-logo",
+      "split": "dev",
+      "category": "availability",
+      "pairId": "yesterday-logo-1",
+      "language": "en",
+      "label": "artifacts",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "bare-json",
+      "prediction": "artifacts",
+      "score": 0.5627398863570976,
+      "ms": 264.33479200000147,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "yesterday-logo-1-1",
+      "family": "yesterday-logo",
+      "split": "dev",
+      "category": "availability",
+      "pairId": "yesterday-logo-1",
+      "language": "en",
+      "label": "artifacts",
+      "semanticIntent": "research",
+      "prerequisite": "source_unavailable",
+      "variant": "bare-json",
+      "prediction": "defer",
+      "score": 0.9832239989431709,
+      "ms": 255.56083299999955,
+      "availableSources": [
+        "canvas",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "layout-reference-0-0",
+      "family": "layout-reference",
+      "split": "dev",
+      "category": "reference_switch",
+      "pairId": "layout-reference-0",
+      "language": "zh",
+      "label": "canvas",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "bare-json",
+      "prediction": "canvas",
+      "score": 0.7104970409915118,
+      "ms": 246.2387920000001,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "layout-reference-0-1",
+      "family": "layout-reference",
+      "split": "dev",
+      "category": "reference_switch",
+      "pairId": "layout-reference-0",
+      "language": "zh",
+      "label": "artifacts",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "bare-json",
+      "prediction": "canvas",
+      "score": 0.5888447871007387,
+      "ms": 248.24895900000047,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "layout-reference-1-0",
+      "family": "layout-reference",
+      "split": "dev",
+      "category": "reference_switch",
+      "pairId": "layout-reference-1",
+      "language": "en",
+      "label": "canvas",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "bare-json",
+      "prediction": "canvas",
+      "score": 0.9094577815396607,
+      "ms": 293.8520830000016,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "layout-reference-1-1",
+      "family": "layout-reference",
+      "split": "dev",
+      "category": "reference_switch",
+      "pairId": "layout-reference-1",
+      "language": "en",
+      "label": "artifacts",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "bare-json",
+      "prediction": "defer",
+      "score": 0.48476577233689416,
+      "ms": 246.41487499999857,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "print-rules-0-0",
+      "family": "print-rules",
+      "split": "dev",
+      "category": "negation",
+      "pairId": "print-rules-0",
+      "language": "zh",
+      "label": "rules",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "bare-json",
+      "prediction": "defer",
+      "score": 0.745358621225874,
+      "ms": 245.74375000000146,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "print-rules-0-1",
+      "family": "print-rules",
+      "split": "dev",
+      "category": "negation",
+      "pairId": "print-rules-0",
+      "language": "zh",
+      "label": "rules",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "bare-json",
+      "prediction": "defer",
+      "score": 0.895607328951775,
+      "ms": 250.45141599999988,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "print-rules-1-0",
+      "family": "print-rules",
+      "split": "dev",
+      "category": "negation",
+      "pairId": "print-rules-1",
+      "language": "en",
+      "label": "rules",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "bare-json",
+      "prediction": "rules",
+      "score": 0.5686163304122338,
+      "ms": 253.25125000000116,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "print-rules-1-1",
+      "family": "print-rules",
+      "split": "dev",
+      "category": "negation",
+      "pairId": "print-rules-1",
+      "language": "en",
+      "label": "rules",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "bare-json",
+      "prediction": "rules",
+      "score": 0.7866174411869715,
+      "ms": 243.4567079999979,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "compare-two-sources-0-0",
+      "family": "compare-two-sources",
+      "split": "dev",
+      "category": "multi_source",
+      "pairId": "compare-two-sources-0",
+      "language": "zh",
+      "label": "defer",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "bare-json",
+      "prediction": "defer",
+      "score": 0.8536816656234889,
+      "ms": 242.55549999999857,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "compare-two-sources-0-1",
+      "family": "compare-two-sources",
+      "split": "dev",
+      "category": "multi_source",
+      "pairId": "compare-two-sources-0",
+      "language": "zh",
+      "label": "defer",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "bare-json",
+      "prediction": "defer",
+      "score": 0.9848131375511193,
+      "ms": 247.35608400000274,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "compare-two-sources-1-0",
+      "family": "compare-two-sources",
+      "split": "dev",
+      "category": "multi_source",
+      "pairId": "compare-two-sources-1",
+      "language": "en",
+      "label": "defer",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "bare-json",
+      "prediction": "canvas",
+      "score": 0.4315496756217289,
+      "ms": 243.79750000000058,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "compare-two-sources-1-1",
+      "family": "compare-two-sources",
+      "split": "dev",
+      "category": "multi_source",
+      "pairId": "compare-two-sources-1",
+      "language": "en",
+      "label": "defer",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "bare-json",
+      "prediction": "defer",
+      "score": 0.996945350955778,
+      "ms": 243.8770829999994,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "untrusted-note-0-0",
+      "family": "untrusted-note",
+      "split": "dev",
+      "category": "adversarial",
+      "pairId": "untrusted-note-0",
+      "language": "zh",
+      "label": "canvas",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "bare-json",
+      "prediction": "canvas",
+      "score": 0.9982717468560958,
+      "ms": 249.44687499999782,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "untrusted-note-0-1",
+      "family": "untrusted-note",
+      "split": "dev",
+      "category": "adversarial",
+      "pairId": "untrusted-note-0",
+      "language": "zh",
+      "label": "canvas",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "bare-json",
+      "prediction": "canvas",
+      "score": 0.9981204417107947,
+      "ms": 243.94750000000204,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "untrusted-note-1-0",
+      "family": "untrusted-note",
+      "split": "dev",
+      "category": "adversarial",
+      "pairId": "untrusted-note-1",
+      "language": "en",
+      "label": "canvas",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "bare-json",
+      "prediction": "canvas",
+      "score": 0.9966846040074301,
+      "ms": 248.2695840000015,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "untrusted-note-1-1",
+      "family": "untrusted-note",
+      "split": "dev",
+      "category": "adversarial",
+      "pairId": "untrusted-note-1",
+      "language": "en",
+      "label": "canvas",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "bare-json",
+      "prediction": "canvas",
+      "score": 0.9969610437432176,
+      "ms": 245.73462500000096,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "color-reference-0-0",
+      "family": "color-reference",
+      "split": "dev",
+      "category": "reference_switch",
+      "pairId": "color-reference-0",
+      "language": "zh",
+      "label": "canvas",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "described-prose",
+      "prediction": "rules",
+      "score": 0.6588989618480419,
+      "ms": 244.57970900000146,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "color-reference-0-1",
+      "family": "color-reference",
+      "split": "dev",
+      "category": "reference_switch",
+      "pairId": "color-reference-0",
+      "language": "zh",
+      "label": "rules",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "described-prose",
+      "prediction": "rules",
+      "score": 0.9998155978843266,
+      "ms": 251.70750000000044,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "color-reference-1-0",
+      "family": "color-reference",
+      "split": "dev",
+      "category": "reference_switch",
+      "pairId": "color-reference-1",
+      "language": "en",
+      "label": "canvas",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "described-prose",
+      "prediction": "rules",
+      "score": 0.9145189652861583,
+      "ms": 248.72712500000125,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "color-reference-1-1",
+      "family": "color-reference",
+      "split": "dev",
+      "category": "reference_switch",
+      "pairId": "color-reference-1",
+      "language": "en",
+      "label": "rules",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "described-prose",
+      "prediction": "rules",
+      "score": 0.999965063776707,
+      "ms": 243.3033749999995,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "yesterday-logo-0-0",
+      "family": "yesterday-logo",
+      "split": "dev",
+      "category": "availability",
+      "pairId": "yesterday-logo-0",
+      "language": "zh",
+      "label": "artifacts",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "described-prose",
+      "prediction": "artifacts",
+      "score": 0.9999930075770623,
+      "ms": 245.90841699999874,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "yesterday-logo-0-1",
+      "family": "yesterday-logo",
+      "split": "dev",
+      "category": "availability",
+      "pairId": "yesterday-logo-0",
+      "language": "zh",
+      "label": "artifacts",
+      "semanticIntent": "research",
+      "prerequisite": "source_unavailable",
+      "variant": "described-prose",
+      "prediction": "artifacts",
+      "score": 0.9999898712554524,
+      "ms": 248.10220800000025,
+      "availableSources": [
+        "canvas",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "yesterday-logo-1-0",
+      "family": "yesterday-logo",
+      "split": "dev",
+      "category": "availability",
+      "pairId": "yesterday-logo-1",
+      "language": "en",
+      "label": "artifacts",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "described-prose",
+      "prediction": "artifacts",
+      "score": 0.9999836345010964,
+      "ms": 247.6704580000005,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "yesterday-logo-1-1",
+      "family": "yesterday-logo",
+      "split": "dev",
+      "category": "availability",
+      "pairId": "yesterday-logo-1",
+      "language": "en",
+      "label": "artifacts",
+      "semanticIntent": "research",
+      "prerequisite": "source_unavailable",
+      "variant": "described-prose",
+      "prediction": "artifacts",
+      "score": 0.9999236033176127,
+      "ms": 247.25379100000282,
+      "availableSources": [
+        "canvas",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "layout-reference-0-0",
+      "family": "layout-reference",
+      "split": "dev",
+      "category": "reference_switch",
+      "pairId": "layout-reference-0",
+      "language": "zh",
+      "label": "canvas",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "described-prose",
+      "prediction": "canvas",
+      "score": 0.9996067791662456,
+      "ms": 245.46037499999875,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "layout-reference-0-1",
+      "family": "layout-reference",
+      "split": "dev",
+      "category": "reference_switch",
+      "pairId": "layout-reference-0",
+      "language": "zh",
+      "label": "artifacts",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "described-prose",
+      "prediction": "artifacts",
+      "score": 0.9999374131566617,
+      "ms": 249.43408400000044,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "layout-reference-1-0",
+      "family": "layout-reference",
+      "split": "dev",
+      "category": "reference_switch",
+      "pairId": "layout-reference-1",
+      "language": "en",
+      "label": "canvas",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "described-prose",
+      "prediction": "canvas",
+      "score": 0.9998730604845769,
+      "ms": 243.3571660000016,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "layout-reference-1-1",
+      "family": "layout-reference",
+      "split": "dev",
+      "category": "reference_switch",
+      "pairId": "layout-reference-1",
+      "language": "en",
+      "label": "artifacts",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "described-prose",
+      "prediction": "artifacts",
+      "score": 0.9999842132891195,
+      "ms": 243.75287500000195,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "print-rules-0-0",
+      "family": "print-rules",
+      "split": "dev",
+      "category": "negation",
+      "pairId": "print-rules-0",
+      "language": "zh",
+      "label": "rules",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "described-prose",
+      "prediction": "artifacts",
+      "score": 0.9966499907369395,
+      "ms": 256.9213750000017,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "print-rules-0-1",
+      "family": "print-rules",
+      "split": "dev",
+      "category": "negation",
+      "pairId": "print-rules-0",
+      "language": "zh",
+      "label": "rules",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "described-prose",
+      "prediction": "artifacts",
+      "score": 0.998354199308713,
+      "ms": 257.24537500000224,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "print-rules-1-0",
+      "family": "print-rules",
+      "split": "dev",
+      "category": "negation",
+      "pairId": "print-rules-1",
+      "language": "en",
+      "label": "rules",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "described-prose",
+      "prediction": "artifacts",
+      "score": 0.9439726153184473,
+      "ms": 245.80875000000015,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "print-rules-1-1",
+      "family": "print-rules",
+      "split": "dev",
+      "category": "negation",
+      "pairId": "print-rules-1",
+      "language": "en",
+      "label": "rules",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "described-prose",
+      "prediction": "rules",
+      "score": 0.9951486122716217,
+      "ms": 250.4873329999973,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "compare-two-sources-0-0",
+      "family": "compare-two-sources",
+      "split": "dev",
+      "category": "multi_source",
+      "pairId": "compare-two-sources-0",
+      "language": "zh",
+      "label": "defer",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "described-prose",
+      "prediction": "artifacts",
+      "score": 0.9971446693918931,
+      "ms": 246.16899999999805,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "compare-two-sources-0-1",
+      "family": "compare-two-sources",
+      "split": "dev",
+      "category": "multi_source",
+      "pairId": "compare-two-sources-0",
+      "language": "zh",
+      "label": "defer",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "described-prose",
+      "prediction": "canvas",
+      "score": 0.952410121675399,
+      "ms": 244.93420900000274,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "compare-two-sources-1-0",
+      "family": "compare-two-sources",
+      "split": "dev",
+      "category": "multi_source",
+      "pairId": "compare-two-sources-1",
+      "language": "en",
+      "label": "defer",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "described-prose",
+      "prediction": "artifacts",
+      "score": 0.9998063347786987,
+      "ms": 248.1006669999988,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "compare-two-sources-1-1",
+      "family": "compare-two-sources",
+      "split": "dev",
+      "category": "multi_source",
+      "pairId": "compare-two-sources-1",
+      "language": "en",
+      "label": "defer",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "described-prose",
+      "prediction": "artifacts",
+      "score": 0.9954261527345787,
+      "ms": 244.72370800000135,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "untrusted-note-0-0",
+      "family": "untrusted-note",
+      "split": "dev",
+      "category": "adversarial",
+      "pairId": "untrusted-note-0",
+      "language": "zh",
+      "label": "canvas",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "described-prose",
+      "prediction": "canvas",
+      "score": 0.9999834267209925,
+      "ms": 246.04462499999863,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "untrusted-note-0-1",
+      "family": "untrusted-note",
+      "split": "dev",
+      "category": "adversarial",
+      "pairId": "untrusted-note-0",
+      "language": "zh",
+      "label": "canvas",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "described-prose",
+      "prediction": "canvas",
+      "score": 0.999994000045505,
+      "ms": 252.2746670000015,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "untrusted-note-1-0",
+      "family": "untrusted-note",
+      "split": "dev",
+      "category": "adversarial",
+      "pairId": "untrusted-note-1",
+      "language": "en",
+      "label": "canvas",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "described-prose",
+      "prediction": "canvas",
+      "score": 0.9999745604859748,
+      "ms": 257.23795900000187,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "untrusted-note-1-1",
+      "family": "untrusted-note",
+      "split": "dev",
+      "category": "adversarial",
+      "pairId": "untrusted-note-1",
+      "language": "en",
+      "label": "canvas",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "described-prose",
+      "prediction": "canvas",
+      "score": 0.99996778554295,
+      "ms": 245.6679170000025,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "color-reference-0-0",
+      "family": "color-reference",
+      "split": "dev",
+      "category": "reference_switch",
+      "pairId": "color-reference-0",
+      "language": "zh",
+      "label": "canvas",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "no-state-json",
+      "prediction": "defer",
+      "score": 0.9999703488353207,
+      "ms": 246.79462500000227,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "color-reference-0-1",
+      "family": "color-reference",
+      "split": "dev",
+      "category": "reference_switch",
+      "pairId": "color-reference-0",
+      "language": "zh",
+      "label": "rules",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "no-state-json",
+      "prediction": "defer",
+      "score": 0.9999703488353207,
+      "ms": 256.8557080000028,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "color-reference-1-0",
+      "family": "color-reference",
+      "split": "dev",
+      "category": "reference_switch",
+      "pairId": "color-reference-1",
+      "language": "en",
+      "label": "canvas",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "no-state-json",
+      "prediction": "defer",
+      "score": 0.9999671631606162,
+      "ms": 243.6187089999985,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "color-reference-1-1",
+      "family": "color-reference",
+      "split": "dev",
+      "category": "reference_switch",
+      "pairId": "color-reference-1",
+      "language": "en",
+      "label": "rules",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "no-state-json",
+      "prediction": "defer",
+      "score": 0.9999671631606162,
+      "ms": 242.0242500000022,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "yesterday-logo-0-0",
+      "family": "yesterday-logo",
+      "split": "dev",
+      "category": "availability",
+      "pairId": "yesterday-logo-0",
+      "language": "zh",
+      "label": "artifacts",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "no-state-json",
+      "prediction": "artifacts",
+      "score": 0.9999226310122152,
+      "ms": 249.89849999999933,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "yesterday-logo-0-1",
+      "family": "yesterday-logo",
+      "split": "dev",
+      "category": "availability",
+      "pairId": "yesterday-logo-0",
+      "language": "zh",
+      "label": "artifacts",
+      "semanticIntent": "research",
+      "prerequisite": "source_unavailable",
+      "variant": "no-state-json",
+      "prediction": "artifacts",
+      "score": 0.9999226310122152,
+      "ms": 254.96904200000063,
+      "availableSources": [
+        "canvas",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "yesterday-logo-1-0",
+      "family": "yesterday-logo",
+      "split": "dev",
+      "category": "availability",
+      "pairId": "yesterday-logo-1",
+      "language": "en",
+      "label": "artifacts",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "no-state-json",
+      "prediction": "defer",
+      "score": 0.6156135142965159,
+      "ms": 259.4851250000029,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "yesterday-logo-1-1",
+      "family": "yesterday-logo",
+      "split": "dev",
+      "category": "availability",
+      "pairId": "yesterday-logo-1",
+      "language": "en",
+      "label": "artifacts",
+      "semanticIntent": "research",
+      "prerequisite": "source_unavailable",
+      "variant": "no-state-json",
+      "prediction": "defer",
+      "score": 0.6156135142965159,
+      "ms": 250.12670799999978,
+      "availableSources": [
+        "canvas",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "layout-reference-0-0",
+      "family": "layout-reference",
+      "split": "dev",
+      "category": "reference_switch",
+      "pairId": "layout-reference-0",
+      "language": "zh",
+      "label": "canvas",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "no-state-json",
+      "prediction": "artifacts",
+      "score": 0.9120671761605119,
+      "ms": 251.01712500000212,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "layout-reference-0-1",
+      "family": "layout-reference",
+      "split": "dev",
+      "category": "reference_switch",
+      "pairId": "layout-reference-0",
+      "language": "zh",
+      "label": "artifacts",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "no-state-json",
+      "prediction": "artifacts",
+      "score": 0.9120671761605119,
+      "ms": 248.50875000000087,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "layout-reference-1-0",
+      "family": "layout-reference",
+      "split": "dev",
+      "category": "reference_switch",
+      "pairId": "layout-reference-1",
+      "language": "en",
+      "label": "canvas",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "no-state-json",
+      "prediction": "canvas",
+      "score": 0.7377188360568439,
+      "ms": 260.63087500000256,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "layout-reference-1-1",
+      "family": "layout-reference",
+      "split": "dev",
+      "category": "reference_switch",
+      "pairId": "layout-reference-1",
+      "language": "en",
+      "label": "artifacts",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "no-state-json",
+      "prediction": "canvas",
+      "score": 0.7377188360568439,
+      "ms": 246.90675000000192,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "print-rules-0-0",
+      "family": "print-rules",
+      "split": "dev",
+      "category": "negation",
+      "pairId": "print-rules-0",
+      "language": "zh",
+      "label": "rules",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "no-state-json",
+      "prediction": "artifacts",
+      "score": 0.9784426386323815,
+      "ms": 243.61183399999936,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "print-rules-0-1",
+      "family": "print-rules",
+      "split": "dev",
+      "category": "negation",
+      "pairId": "print-rules-0",
+      "language": "zh",
+      "label": "rules",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "no-state-json",
+      "prediction": "artifacts",
+      "score": 0.9784426386323815,
+      "ms": 251.2379170000022,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "print-rules-1-0",
+      "family": "print-rules",
+      "split": "dev",
+      "category": "negation",
+      "pairId": "print-rules-1",
+      "language": "en",
+      "label": "rules",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "no-state-json",
+      "prediction": "rules",
+      "score": 0.9562306745985293,
+      "ms": 248.9555419999997,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "print-rules-1-1",
+      "family": "print-rules",
+      "split": "dev",
+      "category": "negation",
+      "pairId": "print-rules-1",
+      "language": "en",
+      "label": "rules",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "no-state-json",
+      "prediction": "rules",
+      "score": 0.9562306745985293,
+      "ms": 248.14037499999904,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "compare-two-sources-0-0",
+      "family": "compare-two-sources",
+      "split": "dev",
+      "category": "multi_source",
+      "pairId": "compare-two-sources-0",
+      "language": "zh",
+      "label": "defer",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "no-state-json",
+      "prediction": "artifacts",
+      "score": 0.9826879144409719,
+      "ms": 253.30554199999824,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "compare-two-sources-0-1",
+      "family": "compare-two-sources",
+      "split": "dev",
+      "category": "multi_source",
+      "pairId": "compare-two-sources-0",
+      "language": "zh",
+      "label": "defer",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "no-state-json",
+      "prediction": "artifacts",
+      "score": 0.9826879144409719,
+      "ms": 254.74929199999679,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "compare-two-sources-1-0",
+      "family": "compare-two-sources",
+      "split": "dev",
+      "category": "multi_source",
+      "pairId": "compare-two-sources-1",
+      "language": "en",
+      "label": "defer",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "no-state-json",
+      "prediction": "artifacts",
+      "score": 0.9998773410565547,
+      "ms": 248.11112499999945,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "compare-two-sources-1-1",
+      "family": "compare-two-sources",
+      "split": "dev",
+      "category": "multi_source",
+      "pairId": "compare-two-sources-1",
+      "language": "en",
+      "label": "defer",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "no-state-json",
+      "prediction": "artifacts",
+      "score": 0.9998773410565547,
+      "ms": 257.44837499999994,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "untrusted-note-0-0",
+      "family": "untrusted-note",
+      "split": "dev",
+      "category": "adversarial",
+      "pairId": "untrusted-note-0",
+      "language": "zh",
+      "label": "canvas",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "no-state-json",
+      "prediction": "canvas",
+      "score": 0.9986320082498673,
+      "ms": 245.4515829999982,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "untrusted-note-0-1",
+      "family": "untrusted-note",
+      "split": "dev",
+      "category": "adversarial",
+      "pairId": "untrusted-note-0",
+      "language": "zh",
+      "label": "canvas",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "no-state-json",
+      "prediction": "canvas",
+      "score": 0.9986320082498673,
+      "ms": 246.27495799999815,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "untrusted-note-1-0",
+      "family": "untrusted-note",
+      "split": "dev",
+      "category": "adversarial",
+      "pairId": "untrusted-note-1",
+      "language": "en",
+      "label": "canvas",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "no-state-json",
+      "prediction": "canvas",
+      "score": 0.9994937261088378,
+      "ms": 245.93583400000352,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "untrusted-note-1-1",
+      "family": "untrusted-note",
+      "split": "dev",
+      "category": "adversarial",
+      "pairId": "untrusted-note-1",
+      "language": "en",
+      "label": "canvas",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "no-state-json",
+      "prediction": "canvas",
+      "score": 0.9994937261088378,
+      "ms": 248.0231249999997,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "origin-reference-0-0",
+      "family": "origin-reference",
+      "split": "holdout",
+      "category": "reference_switch",
+      "pairId": "origin-reference-0",
+      "language": "zh",
+      "label": "artifacts",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "bare-json",
+      "prediction": "defer",
+      "score": 0.7972449225057201,
+      "ms": 294.6539170000033,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "origin-reference-0-1",
+      "family": "origin-reference",
+      "split": "holdout",
+      "category": "reference_switch",
+      "pairId": "origin-reference-0",
+      "language": "zh",
+      "label": "canvas",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "bare-json",
+      "prediction": "defer",
+      "score": 0.6851236919196235,
+      "ms": 245.424500000001,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "origin-reference-1-0",
+      "family": "origin-reference",
+      "split": "holdout",
+      "category": "reference_switch",
+      "pairId": "origin-reference-1",
+      "language": "en",
+      "label": "artifacts",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "bare-json",
+      "prediction": "defer",
+      "score": 0.8218922761035585,
+      "ms": 251.2817920000016,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "origin-reference-1-1",
+      "family": "origin-reference",
+      "split": "holdout",
+      "category": "reference_switch",
+      "pairId": "origin-reference-1",
+      "language": "en",
+      "label": "canvas",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "bare-json",
+      "prediction": "defer",
+      "score": 0.9728003552108493,
+      "ms": 246.6894170000014,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "selected-nodes-0-0",
+      "family": "selected-nodes",
+      "split": "holdout",
+      "category": "availability",
+      "pairId": "selected-nodes-0",
+      "language": "zh",
+      "label": "canvas",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "bare-json",
+      "prediction": "defer",
+      "score": 0.8846061620975162,
+      "ms": 245.55691600000137,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "selected-nodes-0-1",
+      "family": "selected-nodes",
+      "split": "holdout",
+      "category": "availability",
+      "pairId": "selected-nodes-0",
+      "language": "zh",
+      "label": "canvas",
+      "semanticIntent": "research",
+      "prerequisite": "source_unavailable",
+      "variant": "bare-json",
+      "prediction": "defer",
+      "score": 0.8005268248958403,
+      "ms": 251.8799169999984,
+      "availableSources": [
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "selected-nodes-1-0",
+      "family": "selected-nodes",
+      "split": "holdout",
+      "category": "availability",
+      "pairId": "selected-nodes-1",
+      "language": "en",
+      "label": "canvas",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "bare-json",
+      "prediction": "defer",
+      "score": 0.6266660442415352,
+      "ms": 245.98858300000575,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "selected-nodes-1-1",
+      "family": "selected-nodes",
+      "split": "holdout",
+      "category": "availability",
+      "pairId": "selected-nodes-1",
+      "language": "en",
+      "label": "canvas",
+      "semanticIntent": "research",
+      "prerequisite": "source_unavailable",
+      "variant": "bare-json",
+      "prediction": "defer",
+      "score": 0.9595282994958386,
+      "ms": 246.93187499999476,
+      "availableSources": [
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "font-rules-0-0",
+      "family": "font-rules",
+      "split": "holdout",
+      "category": "availability",
+      "pairId": "font-rules-0",
+      "language": "zh",
+      "label": "rules",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "bare-json",
+      "prediction": "rules",
+      "score": 0.9804083125569586,
+      "ms": 249.91895800000202,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "font-rules-0-1",
+      "family": "font-rules",
+      "split": "holdout",
+      "category": "availability",
+      "pairId": "font-rules-0",
+      "language": "zh",
+      "label": "rules",
+      "semanticIntent": "research",
+      "prerequisite": "source_unavailable",
+      "variant": "bare-json",
+      "prediction": "rules",
+      "score": 0.7828319661869902,
+      "ms": 245.84241699999984,
+      "availableSources": [
+        "canvas",
+        "artifacts"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "font-rules-1-0",
+      "family": "font-rules",
+      "split": "holdout",
+      "category": "availability",
+      "pairId": "font-rules-1",
+      "language": "en",
+      "label": "rules",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "bare-json",
+      "prediction": "rules",
+      "score": 0.9950872474345425,
+      "ms": 245.3310829999973,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "font-rules-1-1",
+      "family": "font-rules",
+      "split": "holdout",
+      "category": "availability",
+      "pairId": "font-rules-1",
+      "language": "en",
+      "label": "rules",
+      "semanticIntent": "research",
+      "prerequisite": "source_unavailable",
+      "variant": "bare-json",
+      "prediction": "defer",
+      "score": 0.7731874056232462,
+      "ms": 246.88729199999943,
+      "availableSources": [
+        "canvas",
+        "artifacts"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "not-current-0-0",
+      "family": "not-current",
+      "split": "holdout",
+      "category": "negation",
+      "pairId": "not-current-0",
+      "language": "zh",
+      "label": "artifacts",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "bare-json",
+      "prediction": "canvas",
+      "score": 0.29002463297821773,
+      "ms": 298.21374999999534,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "not-current-0-1",
+      "family": "not-current",
+      "split": "holdout",
+      "category": "negation",
+      "pairId": "not-current-0",
+      "language": "zh",
+      "label": "artifacts",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "bare-json",
+      "prediction": "rules",
+      "score": 0.8388773023593733,
+      "ms": 250.01699999999983,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "not-current-1-0",
+      "family": "not-current",
+      "split": "holdout",
+      "category": "negation",
+      "pairId": "not-current-1",
+      "language": "en",
+      "label": "artifacts",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "bare-json",
+      "prediction": "canvas",
+      "score": 0.5206016493558538,
+      "ms": 254.60270799999853,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "not-current-1-1",
+      "family": "not-current",
+      "split": "holdout",
+      "category": "negation",
+      "pairId": "not-current-1",
+      "language": "en",
+      "label": "artifacts",
+      "semanticIntent": "research",
+      "prerequisite": "not_evaluated",
+      "variant": "bare-json",
+      "prediction": "artifacts",
+      "score": 0.8551185167453033,
+      "ms": 254.68641699999716,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "edit-not-lookup-0-0",
+      "family": "edit-not-lookup",
+      "split": "holdout",
+      "category": "non_lookup",
+      "pairId": "edit-not-lookup-0",
+      "language": "zh",
+      "label": "defer",
+      "semanticIntent": "generation",
+      "prerequisite": "none",
+      "variant": "bare-json",
+      "prediction": "defer",
+      "score": 0.769071942017424,
+      "ms": 248.84741699999722,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "edit-not-lookup-0-1",
+      "family": "edit-not-lookup",
+      "split": "holdout",
+      "category": "non_lookup",
+      "pairId": "edit-not-lookup-0",
+      "language": "zh",
+      "label": "defer",
+      "semanticIntent": "generation",
+      "prerequisite": "missing_target",
+      "variant": "bare-json",
+      "prediction": "defer",
+      "score": 0.9921528733532106,
+      "ms": 244.2596659999981,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "edit-not-lookup-1-0",
+      "family": "edit-not-lookup",
+      "split": "holdout",
+      "category": "non_lookup",
+      "pairId": "edit-not-lookup-1",
+      "language": "en",
+      "label": "defer",
+      "semanticIntent": "generation",
+      "prerequisite": "none",
+      "variant": "bare-json",
+      "prediction": "defer",
+      "score": 0.9644607974925098,
+      "ms": 248.0388329999987,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "edit-not-lookup-1-1",
+      "family": "edit-not-lookup",
+      "split": "holdout",
+      "category": "non_lookup",
+      "pairId": "edit-not-lookup-1",
+      "language": "en",
+      "label": "defer",
+      "semanticIntent": "generation",
+      "prerequisite": "missing_target",
+      "variant": "bare-json",
+      "prediction": "defer",
+      "score": 0.9943262991875932,
+      "ms": 246.20783400000073,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "confirm-not-lookup-0-0",
+      "family": "confirm-not-lookup",
+      "split": "holdout",
+      "category": "confirmation",
+      "pairId": "confirm-not-lookup-0",
+      "language": "zh",
+      "label": "defer",
+      "semanticIntent": "confirmation",
+      "prerequisite": "check_bound_plan",
+      "variant": "bare-json",
+      "prediction": "rules",
+      "score": 0.53525515311275,
+      "ms": 255.202833000003,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "confirm-not-lookup-0-1",
+      "family": "confirm-not-lookup",
+      "split": "holdout",
+      "category": "confirmation",
+      "pairId": "confirm-not-lookup-0",
+      "language": "zh",
+      "label": "defer",
+      "semanticIntent": "confirmation",
+      "prerequisite": "missing_plan",
+      "variant": "bare-json",
+      "prediction": "defer",
+      "score": 0.94531410500206,
+      "ms": 246.2763330000016,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "confirm-not-lookup-1-0",
+      "family": "confirm-not-lookup",
+      "split": "holdout",
+      "category": "confirmation",
+      "pairId": "confirm-not-lookup-1",
+      "language": "en",
+      "label": "defer",
+      "semanticIntent": "confirmation",
+      "prerequisite": "check_bound_plan",
+      "variant": "bare-json",
+      "prediction": "defer",
+      "score": 0.6431005335399841,
+      "ms": 248.8349589999998,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    },
+    {
+      "task": "retrieval",
+      "id": "confirm-not-lookup-1-1",
+      "family": "confirm-not-lookup",
+      "split": "holdout",
+      "category": "confirmation",
+      "pairId": "confirm-not-lookup-1",
+      "language": "en",
+      "label": "defer",
+      "semanticIntent": "confirmation",
+      "prerequisite": "missing_plan",
+      "variant": "bare-json",
+      "prediction": "defer",
+      "score": 0.9280205472484865,
+      "ms": 246.8218329999945,
+      "availableSources": [
+        "canvas",
+        "artifacts",
+        "rules"
+      ]
+    }
+  ],
+  "local": "not_comparable: coarse intent heuristic does not select retrieval sources",
+  "productionAdmission": false
+}

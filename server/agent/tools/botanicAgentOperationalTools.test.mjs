@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { createAgentToolRegistry, runAgentToolLoop } from './agentToolRuntime.mjs'
+import { queryCanvasForAgent } from '../../canvas/canvasAgentQuery.mjs'
 import {
   OPERATIONAL_ACTION_TOOLS,
   OPERATIONAL_READ_TOOLS,
@@ -54,7 +56,7 @@ function tools(overrides = {}) {
     queryCanvas: async () => ({ nodes: [], edges: [], page: { returned: 0, hasMore: false, edgesTruncated: false } }),
     readRun: async () => run,
     readJob: async () => job,
-    searchArtifacts: async () => [artifact],
+    searchArtifacts: async () => ({ artifacts: [artifact], page: { hasMore: false, searchTruncated: false, scannedCount: 1 } }),
     readReviews: async () => [reviewTask],
     readWorkflowRun: async () => ({
       id: 'wf-run-1', workflowId: 'wf-1', workflowVersion: 2, status: 'partially_failed',
@@ -98,6 +100,39 @@ test('找不到实体时明确返回 found: false，不编造状态', async () =
   assert.deepEqual(await registry.get('agent_run_read').execute({ runId: 'run-x' }), { found: false, runId: 'run-x' })
   assert.deepEqual(await registry.get('generation_job_read').execute({ jobId: 'job-x' }), { found: false, jobId: 'job-x' })
   assert.deepEqual(await registry.get('workflow_run_read').execute({ runId: 'wf-x' }), { found: false, runId: 'wf-x' })
+})
+
+test('权威画布不可读取与合法空画布不同，不把访问失败伪装成零命中', async () => {
+  await assert.rejects(tools({ queryCanvas: async () => undefined }).get('canvas_query').execute({}), { code: 'CANVAS_QUERY_UNAVAILABLE' })
+  const empty = await tools().get('canvas_query').execute({})
+  assert.deepEqual(empty.nodes, [])
+  assert.equal(empty.page.hasMore, false)
+})
+
+test('模型在同一节点窗口续读预算裁剪的边，不提前跳到下一节点页', async () => {
+  const document = { nodes: [{ id: 'a', type: 'asset', data: { name: '商品' } }, { id: 'g', type: 'generate', data: {} }],
+    edges: Array.from({ length: 100 }, (_, i) => ({ id: `e${String(i).padStart(3, '0')}`, source: 'a', target: 'g', data: { role: '商品参考' } })),
+  }
+  const definitions = createBotanicAgentOperationalToolDefinitions({ queryCanvas: async (input) => queryCanvasForAgent(document, input) })
+  const ids = []
+  let calls = 0
+  await runAgentToolLoop({ registry: createAgentToolRegistry(definitions), messages: [], maximumSteps: 20,
+    callModel: async ({ messages }) => {
+      const previous = messages.findLast((message) => message.role === 'tool')
+      let edgeAfterId
+      if (previous) {
+        const page = JSON.parse(previous.content)
+        assert.equal(page.page.blocked, undefined)
+        assert.deepEqual(page.nodes.map((node) => node.id), ['a', 'g'])
+        ids.push(...page.edges.map((edge) => edge.id))
+        if (!page.page.edgesTruncated) return { choices: [{ message: { content: '完成' } }] }
+        edgeAfterId = page.page.edgeAfterId
+        assert.equal(edgeAfterId, ids.at(-1))
+      }
+      return { choices: [{ message: { tool_calls: [{ id: `edges-${++calls}`, function: { name: 'canvas_query', arguments: JSON.stringify({ edgeAfterId }) } }] } }] }
+    },
+  })
+  assert.deepEqual(ids, document.edges.map((edge) => edge.id))
 })
 
 test('任务失败原因给错误码与 Provider 尝试，不给原始回包或 Prompt', async () => {

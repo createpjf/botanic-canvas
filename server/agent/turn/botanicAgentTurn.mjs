@@ -544,9 +544,9 @@ function askClarificationTool() {
   }
 }
 
-function turnToolRegistry(input, { ontology, memory, skills, webResearch, operations, targetVision }) {
+function turnToolRegistry(input, { ontology, memory, skills, memoryContext, webResearch, operations, targetVision }) {
   const mounted = new Set(input.mountedSkillIds ?? [])
-  const readTools = createBotanicAgentReadToolDefinitions({ ontology, memory, skills }).map((tool) => {
+  const readTools = createBotanicAgentReadToolDefinitions({ ontology, memory, skills, memoryContext }).map((tool) => {
     if (tool.name !== 'skill_search') return tool
     const searchSkills = tool.execute
     return {
@@ -819,6 +819,9 @@ async function executeTurnAttempt({ config, model, system, messages, registry, o
         }
       },
     })
+    void Promise.resolve().then(() => options.observeToolChoice?.({ identity: options.runtimeIdentity,
+      request: options.toolChoiceShadowInput, toolNames: registry.openAITools().map((tool) => tool.function.name),
+      toolCalls: result.toolCalls, mainModel: model, signal: options.signal, deadlineAt: options.deadlineAt })).catch(() => {})
     if (result.output && typeof result.output === 'object' && result.output.__turnKind === 'generation') {
       return withTurnReasoning({
         kind: 'generation',
@@ -966,6 +969,7 @@ export async function resolveBotanicAgentTurn(input, runtimeConfig, options = {}
   const references = createAgentReferenceUsage(options.document, contextNodeIds)
   const ontology = buildBotanicAgentOntology(options.document, contextNodeIds)
   const memory = safeBotanicAgentMemory(options.document)
+  const memoryContext = { brandId: options.document?.brandId, userId: options.runtimeIdentity?.userId }
   const skills = botanicAgentSearchableSkills(effectiveProjectSkills, { builtIn: frozenBuiltInSkills })
   // 与对话/规划链路同一套 Tavily 配置；没 Key 时 createBotanicAgentWebResearchTools 不会暴露 web_search。
   const webResearch = options.allowWebResearch === false ? undefined : {
@@ -978,7 +982,7 @@ export async function resolveBotanicAgentTurn(input, runtimeConfig, options = {}
   }
   const targetVision = { ready: !input.hasTarget || options.requireTargetVision !== true }
   const registry = turnToolRegistry(input, {
-    ontology, memory, skills, webResearch, operations: options.operations, targetVision,
+    ontology, memory, skills, memoryContext, webResearch, operations: options.operations, targetVision,
   })
   const searchGuidance = turnSearchGuidance(registry)
   // 这一次执行的能力快照：模型、工具集、Skill/Memory 绑定与角色在进入循环前定格
@@ -987,15 +991,15 @@ export async function resolveBotanicAgentTurn(input, runtimeConfig, options = {}
     registry,
     model,
     skillBindings: mountedSkills.map((skill) => ({ id: skill.id, version: skill.version, contentHash: skill.contentHash })),
+    // 这是可检索目录的版本绑定，不表示规则已使用；按查询选中的规则由工具结果记录。
+    // 不能用空查询的选择结果代替目录，否则其他查询可命中的规则漂移会逃过恢复校验。
     memoryBindings: (memory ?? []).map((item) => ({ id: item.id, version: item.version, contentHash: item.contentHash })),
     contextPolicyHash: contextBinding.contextPolicyHash,
     role: options.role,
   })
-  const optionsForContext = (contextBinding) => (
-    contextBinding.modelContext === options.modelContext
-      ? options
-      : { ...options, modelContext: contextBinding.modelContext }
-  )
+  const optionsForContext = (contextBinding) => ({
+    ...options, modelContext: contextBinding.modelContext, toolChoiceShadowInput: input,
+  })
 
   // 原生多模态只跟 Composer 所选走；不能看图的规划模型走 caption，不劫持整轮。
   const nativeVisionModel = nativeAgentVisionModel(config.model)

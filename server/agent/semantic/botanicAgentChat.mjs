@@ -113,9 +113,9 @@ export function validateBotanicAgentChatInput(raw) {
   }
 }
 
-function chatToolRegistry({ ontology, memory, skills, mountedSkillIds = [], webResearch } = {}) {
+function chatToolRegistry({ ontology, memory, skills, memoryContext, mountedSkillIds = [], webResearch } = {}) {
   const mounted = new Set(mountedSkillIds)
-  const tools = createBotanicAgentReadToolDefinitions({ ontology, memory, skills }).map((tool) => {
+  const tools = createBotanicAgentReadToolDefinitions({ ontology, memory, skills, memoryContext }).map((tool) => {
     if (tool.name !== 'skill_search') return tool
     const searchSkills = tool.execute
     return {
@@ -327,7 +327,9 @@ export async function chatWithBotanicAgent(input, runtimeConfig, options = {}) {
     allowLocal: Boolean(runtimeConfig?.webSearch?.allowLocal),
     consumeQuota: options.consumeWebResearchQuota,
   }
-  const registry = chatToolRegistry({ ontology, memory, skills, mountedSkillIds: input.mountedSkillIds, webResearch })
+  const registry = chatToolRegistry({ ontology, memory, skills, mountedSkillIds: input.mountedSkillIds, webResearch,
+    memoryContext: { brandId: options.document?.brandId, userId: options.runtimeIdentity?.userId },
+  })
   const resumeAttemptId = options.resumeCheckpoint?.attempt?.id
   if (resumeAttemptId && !['chat_vision', 'chat_text'].includes(resumeAttemptId)) {
     throw new BotanicAgentChatError(409, 'AGENT_TURN_CHECKPOINT_SNAPSHOT_MISMATCH', 'Agent 对话恢复检查点与当前执行阶段不匹配。')

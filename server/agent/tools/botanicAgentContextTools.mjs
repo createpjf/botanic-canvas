@@ -1,5 +1,6 @@
-import { agentToolObject as toolObject, agentToolText as toolText } from './agentToolRuntime.mjs'
+import { AgentToolRuntimeError, agentToolObject as toolObject, agentToolText as toolText } from './agentToolRuntime.mjs'
 import { selectBotanicAgentMemory } from '../semantic/botanicAgentMemory.mjs'
+import { fitToolOutputPage } from './agentToolOutput.mjs'
 
 // 只读上下文工具是 Agent 对话与回合规划共享的深模块：把项目本体、记忆、素材组与
 // 已审核 Skill 的受控读取集中在一处，任何调用方都拿到同一套安全语义（不返回图片字节、
@@ -12,6 +13,23 @@ function searchText(value) {
 function matchesQuery(item, query, fields) {
   if (!query) return true
   return fields.some((field) => searchText(item?.[field]).includes(query))
+}
+
+const cursorSchema = { type: 'integer', minimum: 0, maximum: Number.MAX_SAFE_INTEGER }
+function readCursor(value = 0) {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new AgentToolRuntimeError('INVALID_TOOL_ARGUMENTS', '检索游标无效。')
+  }
+  return value
+}
+
+function pageInfo(cursor, returned, total) {
+  const hasMore = cursor + returned < total
+  return { returned, hasMore, ...(hasMore ? { nextCursor: cursor + returned } : {}) }
+}
+
+function checkCursor(cursor, total) {
+  if (cursor > total) throw new AgentToolRuntimeError('INVALID_TOOL_ARGUMENTS', '检索游标不属于当前结果集。')
 }
 
 /** Skill 摘要:正文首个非空非标题行,兜底标题行;单行截断,不展开全文。 */
@@ -32,35 +50,41 @@ export function botanicAgentContextToolSourceLabels(toolCalls) {
   return [...new Set((toolCalls ?? []).map((call) => SOURCE_LABELS.get(call.name)).filter(Boolean))]
 }
 
-export function createBotanicAgentReadToolDefinitions({ ontology, memory, skills }) {
+export function createBotanicAgentReadToolDefinitions({ ontology, memory, skills, memoryContext = {} }) {
   return [
     {
       name: 'ontology_read',
       label: '读取项目本体',
-      description: '读取当前项目、画布节点关系和上下文节点的安全元数据；不返回图片、媒体地址或文件字节。项目相关问题优先调用。',
+      description: '按输出预算分页读取本轮项目快照的安全节点、关系与素材组元数据，不返回图片或媒体地址。counts 是完整计数，matchedCounts 是匹配计数。page.hasMore 时用相同 query 和 nextCursor 作为 cursor 继续，不能把当前页说成全量；page.blocked 时停止翻页并缩小查询。实时图谱优先用 canvas_query。',
       risk: 'read',
       parameters: {
         type: 'object', additionalProperties: false,
-        properties: { query: { type: 'string', maxLength: 120 } },
+        properties: { query: { type: 'string', maxLength: 120 }, cursor: cursorSchema },
       },
       validate: (raw) => {
         const value = toolObject(raw, '本体读取')
-        return { query: value.query === undefined ? '' : toolText(value.query, '本体检索词', 120) }
+        return { query: value.query === undefined ? '' : toolText(value.query, '本体检索词', 120), cursor: readCursor(value.cursor) }
       },
-      execute: async ({ query }) => {
+      execute: async ({ query, cursor = 0 }) => {
         const normalizedQuery = searchText(query)
         const nodes = ontology.nodes.filter((node) => !normalizedQuery || matchesQuery(node, normalizedQuery, ['id', 'type', 'label', 'role']))
         const nodeIds = new Set(nodes.map((node) => node.id))
         const edges = ontology.edges.filter((edge) => !normalizedQuery || (nodeIds.has(edge.source) && nodeIds.has(edge.target)))
         const groups = ontology.assetGroups.filter((group) => !normalizedQuery || matchesQuery(group, normalizedQuery, ['id', 'name', 'role']))
-        return {
+        const total = nodes.length + edges.length + groups.length
+        checkCursor(cursor, total)
+        // 固定遍历顺序，按已交付记录偏移续读；页大小随 token 变化也不会漏项。
+        return fitToolOutputPage(total - cursor, (returned) => ({
+          source: 'turn_snapshot',
           project: ontology.project,
           counts: { nodes: ontology.nodes.length, edges: ontology.edges.length, assetGroups: ontology.assetGroups.length },
+          matchedCounts: { nodes: nodes.length, edges: edges.length, assetGroups: groups.length },
           contextNodeIds: ontology.contextNodeIds,
-          nodes: normalizedQuery ? nodes.slice(0, 80) : ontology.nodes.slice(0, 160),
-          edges: edges.slice(0, 200),
-          assetGroups: groups.slice(0, 80),
-        }
+          nodes: nodes.slice(cursor, cursor + returned),
+          edges: edges.slice(Math.max(0, cursor - nodes.length), Math.max(0, cursor + returned - nodes.length)),
+          assetGroups: groups.slice(Math.max(0, cursor - nodes.length - edges.length), Math.max(0, cursor + returned - nodes.length - edges.length)),
+          page: pageInfo(cursor, returned, total),
+        }))
       },
     },
     {
@@ -78,7 +102,9 @@ export function createBotanicAgentReadToolDefinitions({ ontology, memory, skills
       },
       execute: async ({ query }) => {
         const normalizedQuery = searchText(query)
-        const selected = selectBotanicAgentMemory(memory, { query: normalizedQuery, limit: 30 })
+        const selected = selectBotanicAgentMemory(memory, {
+          query: normalizedQuery, limit: 30, context: memoryContext, contextNodeIds: ontology.contextNodeIds,
+        })
         // 不回传 selections：里面是同一批记忆的重复副本，只会把工具结果撑大。
         return {
           total: selected.total,
@@ -87,31 +113,36 @@ export function createBotanicAgentReadToolDefinitions({ ontology, memory, skills
           matchedQuery: selected.matchedQuery,
           // 冲突落选必须可见：静默丢弃会让「这条规则为什么没生效」无从解释。
           ...(selected.conflicts.length ? { conflicts: selected.conflicts } : {}),
+          ...(selected.filtered.length ? { filtered: selected.filtered.slice(0, 30), filteredCount: selected.filtered.length } : {}),
         }
       },
     },
     {
       name: 'asset_group_search',
       label: '检索素材组',
-      description: '按名称、角色或素材组 ID 检索当前项目素材组的安全元数据，不读取图片内容。',
+      description: '按名称、角色或素材组 ID 检索本轮项目快照的全部素材组，不读取图片内容。page.hasMore 时用相同 query、role 和 nextCursor 作为 cursor 继续，不把当前页当成全量；page.blocked 时停止翻页并缩小查询。',
       risk: 'read',
       parameters: {
         type: 'object', additionalProperties: false,
-        properties: { query: { type: 'string', maxLength: 120 }, role: { type: 'string', maxLength: 40 } },
+        properties: { query: { type: 'string', maxLength: 120 }, role: { type: 'string', maxLength: 40 }, cursor: cursorSchema },
       },
       validate: (raw) => {
         const value = toolObject(raw, '素材组检索')
         return {
           query: value.query === undefined ? '' : toolText(value.query, '素材组检索词', 120),
           role: value.role === undefined ? '' : toolText(value.role, '素材组角色', 40),
+          cursor: readCursor(value.cursor),
         }
       },
-      execute: async ({ query, role }) => {
+      execute: async ({ query, role, cursor = 0 }) => {
         const normalizedQuery = searchText(query)
         const normalizedRole = searchText(role)
         const groups = ontology.assetGroups.filter((group) => (!normalizedRole || searchText(group.role) === normalizedRole)
           && (!normalizedQuery || matchesQuery(group, normalizedQuery, ['id', 'name', 'role'])))
-        return { total: groups.length, groups: groups.slice(0, 80) }
+        checkCursor(cursor, groups.length)
+        return fitToolOutputPage(groups.length - cursor, (returned) => ({
+          total: groups.length, groups: groups.slice(cursor, cursor + returned), page: pageInfo(cursor, returned, groups.length),
+        }))
       },
     },
     {

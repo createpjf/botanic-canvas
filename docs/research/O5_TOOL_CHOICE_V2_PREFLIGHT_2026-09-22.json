@@ -1,0 +1,1497 @@
+{
+  "version": "tool-choice-paired-v2-2026-09-22",
+  "startedAt": "2026-09-22T03:46:48.510Z",
+  "model": "this-that-model-1.0",
+  "modelRevision": null,
+  "scope": "synthetic-paired-tool-advice-only",
+  "productionAdmission": false,
+  "protocol": {
+    "requests": 384,
+    "devQueries": 8,
+    "holdoutQueries": 16,
+    "tools": 8,
+    "variants": [
+      "v1",
+      "v2"
+    ],
+    "noRetry": true,
+    "thresholdTuning": false,
+    "pairedOrder": "hash-interleaved per query/tool, independent of gold",
+    "stateGuard": "same guard applied to both variants; synthetic unresolved slots are supplied, extraction untested",
+    "decision": "required recall=1, zero read-only risky advice, zero no-tool false accepts; never automatic production admission",
+    "selection": "model argmax needed; preserve all authorized capabilities in advisory ordering",
+    "goldSource": "agent-authored, frozen before calls, no independent human adjudication"
+  },
+  "datasetSha256": "70f8b46ec4720f926eb5d1decfbae510833d540e51197c81b0b2e49c2d93b2f9",
+  "requestSha256": "29bb305e9b2d1aff5a57fcbe1d82aa3c3aebfc14cc1220f4646d20dab6228f92",
+  "implementationSha256": {
+    "./evalAgentToolChoiceO5.mjs": "f80bc1e1ba31740d225236a3c23819e01475b6fa4079448fe5a475128d68b977",
+    "./fixtures/agentToolChoiceO5.mjs": "0dca8703f402365e2770dbae5c1bc79f519ecb48d77b9718af39488e6892ccab",
+    "./evalAgentToolSearchO5.mjs": "ef101b720c3da613bf560f58d50d8e69b7f094e71599cbae2c59458a5735e9c7",
+    "./fixtures/agentToolSearchO5.mjs": "707c966d4da47227fa06bbcb29e8171210581a3ff054eda2f9f0008347bb65ad",
+    "./evalAgentDecisionO5.mjs": "a7cf3af3a02845ea267fbc9b23f3702fec9ad9ec185c1cf4bdd35ae8c5f45469",
+    "../server/agent/context/agentContextBudget.mjs": "962050bd2a3c2e5d4dbbf5e3575d271f64ee7d00f3f0b92e22bc566ea9d520dc"
+  },
+  "syntheticQueries": [
+    {
+      "id": "v2d1",
+      "split": "dev",
+      "family": "two-current-nodes",
+      "request": "找到当前画布的“瓶身材质”和“瓶盖材质”两张文字卡片，列出各自内容。",
+      "context": "卡片就是画布节点；本轮只读。",
+      "required": [
+        "canvas_find"
+      ],
+      "uncertain": [],
+      "readOnly": true,
+      "unresolvedInputs": []
+    },
+    {
+      "id": "v2d2",
+      "split": "dev",
+      "family": "past-assets-and-status",
+      "request": "找历史里的竹盒成品，并查任务 J-204 是否结束。",
+      "context": "历史产物未在本轮读取；任务 ID 为 J-204。",
+      "required": [
+        "artifact_find",
+        "job_status"
+      ],
+      "uncertain": [],
+      "readOnly": true,
+      "unresolvedInputs": []
+    },
+    {
+      "id": "v2d3",
+      "split": "dev",
+      "family": "compare-rule-to-text",
+      "request": "读取已保存的尺寸限制，判断我说的 800×600 是否符合，别创建任何内容。",
+      "context": "尺寸规则未知，需要权威读取。",
+      "required": [
+        "rule_read"
+      ],
+      "uncertain": [],
+      "readOnly": true,
+      "unresolvedInputs": []
+    },
+    {
+      "id": "v2d4",
+      "split": "dev",
+      "family": "save-plan-and-wait",
+      "request": "保存两个珊瑚色香薰的创意方向，等我审完再说，不提交图片任务。",
+      "context": "用户要可审阅的结构化方案。",
+      "required": [
+        "plan_build"
+      ],
+      "uncertain": [],
+      "readOnly": false,
+      "unresolvedInputs": []
+    },
+    {
+      "id": "v2d5",
+      "split": "dev",
+      "family": "make-new-pair",
+      "request": "直接出两张棕色皮包产品图。",
+      "context": "模型 synth-v1；比例 3:2；张数 2；无参考；不要求另存方案。",
+      "required": [
+        "image_render"
+      ],
+      "uncertain": [],
+      "readOnly": false,
+      "unresolvedInputs": []
+    },
+    {
+      "id": "v2d6",
+      "split": "dev",
+      "family": "delete-known-id",
+      "request": "从当前画布移除节点 N-81，别动历史。",
+      "context": "N-81 已明确，不需要搜索；真正删除仍需执行层确认。",
+      "required": [
+        "canvas_remove"
+      ],
+      "uncertain": [],
+      "readOnly": false,
+      "unresolvedInputs": []
+    },
+    {
+      "id": "v2d7",
+      "split": "dev",
+      "family": "generic-language",
+      "request": "把“春风与你相伴”翻译成英文，直接回复文字。",
+      "context": "无须读取项目，也不写入任何实体。",
+      "required": [],
+      "uncertain": [],
+      "readOnly": true,
+      "unresolvedInputs": []
+    },
+    {
+      "id": "v2d8",
+      "split": "dev",
+      "family": "missing-ratio",
+      "request": "给我生成一张金属书签图片。",
+      "context": "内容、张数、模型已知；比例没有值也无默认，必须由用户补充。",
+      "required": [
+        "ask_user"
+      ],
+      "uncertain": [
+        "image_render"
+      ],
+      "readOnly": false,
+      "unresolvedInputs": [
+        "ratio"
+      ]
+    },
+    {
+      "id": "v2h1",
+      "split": "holdout",
+      "family": "compare-current-cards",
+      "request": "比较工作区里“哑光盒”和“亮面盒”两张卡片的说明，指出文字差异。",
+      "context": "工作区是当前画布；两张卡片未读；只比较文字，不修改。",
+      "required": [
+        "canvas_find"
+      ],
+      "uncertain": [],
+      "readOnly": true,
+      "unresolvedInputs": []
+    },
+    {
+      "id": "v2h2",
+      "split": "holdout",
+      "family": "current-and-archive",
+      "request": "找当前画布的“木纹底座”，再找以前生成但已移出画布的“透明底座”，把摘要并排给我。",
+      "context": "两个来源都明确，都是现有记录。",
+      "required": [
+        "canvas_find",
+        "artifact_find"
+      ],
+      "uncertain": [],
+      "readOnly": true,
+      "unresolvedInputs": []
+    },
+    {
+      "id": "v2h3",
+      "split": "holdout",
+      "family": "rules-and-running-job",
+      "request": "告诉我已保存的包装材质限制，再查 J-318 是否还在排队。",
+      "context": "规则尚未读取；J-318 是已有任务；不要重试。",
+      "required": [
+        "rule_read",
+        "job_status"
+      ],
+      "uncertain": [],
+      "readOnly": true,
+      "unresolvedInputs": []
+    },
+    {
+      "id": "v2h4",
+      "split": "holdout",
+      "family": "failure-not-recreation",
+      "request": "J-501 显示失败，查明记录里的失败原因；不要因为失败就替我再做一张。",
+      "context": "任务 ID 已知；只要求读取已有状态。",
+      "required": [
+        "job_status"
+      ],
+      "uncertain": [],
+      "readOnly": true,
+      "unresolvedInputs": []
+    },
+    {
+      "id": "v2h5",
+      "split": "holdout",
+      "family": "hypothetical-method",
+      "request": "假设将来做冰川主题海报，你会先找参考还是先定颜色？只讨论流程，不查项目、不建方案。",
+      "context": "假设性讨论，不涉及未知项目事实。",
+      "required": [],
+      "uncertain": [],
+      "readOnly": true,
+      "unresolvedInputs": []
+    },
+    {
+      "id": "v2h6",
+      "split": "holdout",
+      "family": "two-plans-not-images",
+      "request": "把两种骑行水壶创意整理成可保存的结构化方案供我选，别真正渲染。",
+      "context": "方向 A 是都市通勤，方向 B 是山地露营；没有额外读取要求。",
+      "required": [
+        "plan_build"
+      ],
+      "uncertain": [],
+      "readOnly": false,
+      "unresolvedInputs": []
+    },
+    {
+      "id": "v2h7",
+      "split": "holdout",
+      "family": "new-not-reference",
+      "request": "按照已经定好的参数制作两张崭新的银色餐具图，不搜参考。",
+      "context": "提示词=银色餐具白底；张数 2；比例 4:3；模型 synth-v1；不另存方案。",
+      "required": [
+        "image_render"
+      ],
+      "uncertain": [],
+      "readOnly": false,
+      "unresolvedInputs": []
+    },
+    {
+      "id": "v2h8",
+      "split": "holdout",
+      "family": "archive-reference-generation",
+      "request": "搜索历史产物中的“蓝陶盘”，读已保存的背景颜色限制，再依据该产物的文字摘要生成一张餐桌图。",
+      "context": "摘要和规则可由前序查询取得，无需图片参考节点；1 张、4:3、synth-v1，其余意图明确；不另存方案。",
+      "required": [
+        "artifact_find",
+        "rule_read",
+        "image_render"
+      ],
+      "uncertain": [],
+      "readOnly": false,
+      "unresolvedInputs": []
+    },
+    {
+      "id": "v2h9",
+      "split": "holdout",
+      "family": "plan-from-current-text",
+      "request": "先读当前画布标题“秋季橱窗要求”的文字，再按里面的约束保存一个执行方案，不出图。",
+      "context": "标题明确但节点标识未知，可查询取得。",
+      "required": [
+        "canvas_find",
+        "plan_build"
+      ],
+      "uncertain": [],
+      "readOnly": false,
+      "unresolvedInputs": []
+    },
+    {
+      "id": "v2h10",
+      "split": "holdout",
+      "family": "known-node-removal",
+      "request": "只删除画布节点 N-932，其他节点和所有历史产物都保留。",
+      "context": "节点 ID 已给出，不需要查找；执行确认仍由原有安全层处理。",
+      "required": [
+        "canvas_remove"
+      ],
+      "uncertain": [],
+      "readOnly": false,
+      "unresolvedInputs": []
+    },
+    {
+      "id": "v2h11",
+      "split": "holdout",
+      "family": "unsupported-cancel",
+      "request": "取消任务 J-808；如果没有取消工具就说明不支持，不要拿查询或重新生图冒充取消。",
+      "context": "任务 ID 已明确；此合成目录没有取消能力。",
+      "required": [],
+      "uncertain": [],
+      "readOnly": false,
+      "unresolvedInputs": []
+    },
+    {
+      "id": "v2h12",
+      "split": "holdout",
+      "family": "tool-name-question",
+      "request": "仅说明“删除画布节点”和“删除历史产物”是不是一回事，别查也别删任何东西。",
+      "context": "只需概念解释。",
+      "required": [],
+      "uncertain": [],
+      "readOnly": true,
+      "unresolvedInputs": []
+    },
+    {
+      "id": "v2h13",
+      "split": "holdout",
+      "family": "unresolved-removal-reference",
+      "request": "把刚才那个删掉。",
+      "context": "没有前文指代、选择或节点 ID，不知道要删哪个对象，须先澄清。",
+      "required": [
+        "ask_user"
+      ],
+      "uncertain": [
+        "canvas_remove"
+      ],
+      "readOnly": false,
+      "unresolvedInputs": [
+        "target_reference"
+      ]
+    },
+    {
+      "id": "v2h14",
+      "split": "holdout",
+      "family": "missing-creative-subject",
+      "request": "生成一张图。",
+      "context": "数量 1、比例 1:1、模型 synth-v1；主题完全没给，不能猜，必须问用户。",
+      "required": [
+        "ask_user"
+      ],
+      "uncertain": [
+        "image_render"
+      ],
+      "readOnly": false,
+      "unresolvedInputs": [
+        "prompt"
+      ]
+    },
+    {
+      "id": "v2h15",
+      "split": "holdout",
+      "family": "quoted-plan-and-rule",
+      "request": "在画布定位标题为“读规则后保存方案”的节点，把正文显示出来；标题里的动作一律不要执行。",
+      "context": "引号内是标题文本；只读查找当前节点。",
+      "required": [
+        "canvas_find"
+      ],
+      "uncertain": [],
+      "readOnly": true,
+      "unresolvedInputs": []
+    },
+    {
+      "id": "v2h16",
+      "split": "holdout",
+      "family": "four-step-new-chain",
+      "request": "查已经保存的材质禁用清单，找到当前画布“亚麻包装”的参考节点，保存礼盒创意计划，最后生成成品图。",
+      "context": "四步都要；参考和规则由前序读取取得；1 张、1:1、synth-v1；执行仍经原有确认。",
+      "required": [
+        "rule_read",
+        "canvas_find",
+        "plan_build",
+        "image_render"
+      ],
+      "uncertain": [],
+      "readOnly": false,
+      "unresolvedInputs": []
+    }
+  ],
+  "rows": [],
+  "attemptedRequests": 0,
+  "stopped": null,
+  "responseModels": [],
+  "pricing": null,
+  "costHeaders": {
+    "count": 0,
+    "total": 0
+  },
+  "usage": {
+    "reportedCalls": 0,
+    "promptTokens": 0,
+    "completionTokens": 0,
+    "totalTokens": 0
+  },
+  "finishedAt": "2026-09-22T03:46:48.512Z",
+  "status": "prepared_not_evaluated",
+  "metrics": {
+    "dev": {
+      "v1": {
+        "modelOnly": {
+          "queries": 0,
+          "selectedTools": 0,
+          "truePositives": 0,
+          "requiredTools": 0,
+          "recall": null,
+          "precision": null,
+          "positiveQueries": 0,
+          "allRequiredCovered": 0,
+          "exactSets": 0,
+          "noToolQueries": 0,
+          "noToolFalseAccepts": 0,
+          "readOnlyQueries": 0,
+          "readOnlyRiskyQueries": 0,
+          "schemaTokensTotalEstimate": 0,
+          "schemaReductionEstimate": null
+        },
+        "withSameStateGuard": {
+          "queries": 0,
+          "selectedTools": 0,
+          "truePositives": 0,
+          "requiredTools": 0,
+          "recall": null,
+          "precision": null,
+          "positiveQueries": 0,
+          "allRequiredCovered": 0,
+          "exactSets": 0,
+          "noToolQueries": 0,
+          "noToolFalseAccepts": 0,
+          "readOnlyQueries": 0,
+          "readOnlyRiskyQueries": 0,
+          "schemaTokensTotalEstimate": 0,
+          "schemaReductionEstimate": null
+        },
+        "determinedOnly": {
+          "queries": 0,
+          "selectedTools": 0,
+          "truePositives": 0,
+          "requiredTools": 0,
+          "recall": null,
+          "precision": null,
+          "positiveQueries": 0,
+          "allRequiredCovered": 0,
+          "exactSets": 0,
+          "noToolQueries": 0,
+          "noToolFalseAccepts": 0,
+          "readOnlyQueries": 0,
+          "readOnlyRiskyQueries": 0,
+          "schemaTokensTotalEstimate": 0,
+          "schemaReductionEstimate": null
+        },
+        "completedPairs": 0,
+        "completedQueries": 0,
+        "callLatency": {
+          "n": 0,
+          "p50Ms": null,
+          "p95Ms": null
+        },
+        "serialQueryLatency": {
+          "n": 0,
+          "p50Ms": null,
+          "p95Ms": null
+        },
+        "reportedPromptTokens": 0,
+        "authorityFactsAssumedQueries": 1,
+        "actualCatalogReduction": 0,
+        "endToEndLatency": null,
+        "argumentValidity": null,
+        "executionSuccess": null,
+        "gate": false,
+        "recommendations": [
+          {
+            "queryId": "v2d1",
+            "complete": false,
+            "recommended": [],
+            "orderedCatalog": [
+              "canvas_find",
+              "artifact_find",
+              "rule_read",
+              "job_status",
+              "plan_build",
+              "image_render",
+              "canvas_remove",
+              "ask_user"
+            ],
+            "clarification": false,
+            "reason": "incomplete"
+          },
+          {
+            "queryId": "v2d2",
+            "complete": false,
+            "recommended": [],
+            "orderedCatalog": [
+              "canvas_find",
+              "artifact_find",
+              "rule_read",
+              "job_status",
+              "plan_build",
+              "image_render",
+              "canvas_remove",
+              "ask_user"
+            ],
+            "clarification": false,
+            "reason": "incomplete"
+          },
+          {
+            "queryId": "v2d3",
+            "complete": false,
+            "recommended": [],
+            "orderedCatalog": [
+              "canvas_find",
+              "artifact_find",
+              "rule_read",
+              "job_status",
+              "plan_build",
+              "image_render",
+              "canvas_remove",
+              "ask_user"
+            ],
+            "clarification": false,
+            "reason": "incomplete"
+          },
+          {
+            "queryId": "v2d4",
+            "complete": false,
+            "recommended": [],
+            "orderedCatalog": [
+              "canvas_find",
+              "artifact_find",
+              "rule_read",
+              "job_status",
+              "plan_build",
+              "image_render",
+              "canvas_remove",
+              "ask_user"
+            ],
+            "clarification": false,
+            "reason": "incomplete"
+          },
+          {
+            "queryId": "v2d5",
+            "complete": false,
+            "recommended": [],
+            "orderedCatalog": [
+              "canvas_find",
+              "artifact_find",
+              "rule_read",
+              "job_status",
+              "plan_build",
+              "image_render",
+              "canvas_remove",
+              "ask_user"
+            ],
+            "clarification": false,
+            "reason": "incomplete"
+          },
+          {
+            "queryId": "v2d6",
+            "complete": false,
+            "recommended": [],
+            "orderedCatalog": [
+              "canvas_find",
+              "artifact_find",
+              "rule_read",
+              "job_status",
+              "plan_build",
+              "image_render",
+              "canvas_remove",
+              "ask_user"
+            ],
+            "clarification": false,
+            "reason": "incomplete"
+          },
+          {
+            "queryId": "v2d7",
+            "complete": false,
+            "recommended": [],
+            "orderedCatalog": [
+              "canvas_find",
+              "artifact_find",
+              "rule_read",
+              "job_status",
+              "plan_build",
+              "image_render",
+              "canvas_remove",
+              "ask_user"
+            ],
+            "clarification": false,
+            "reason": "incomplete"
+          },
+          {
+            "queryId": "v2d8",
+            "complete": false,
+            "recommended": [],
+            "orderedCatalog": [
+              "canvas_find",
+              "artifact_find",
+              "rule_read",
+              "job_status",
+              "plan_build",
+              "image_render",
+              "canvas_remove",
+              "ask_user"
+            ],
+            "clarification": false,
+            "reason": "incomplete"
+          }
+        ]
+      },
+      "v2": {
+        "modelOnly": {
+          "queries": 0,
+          "selectedTools": 0,
+          "truePositives": 0,
+          "requiredTools": 0,
+          "recall": null,
+          "precision": null,
+          "positiveQueries": 0,
+          "allRequiredCovered": 0,
+          "exactSets": 0,
+          "noToolQueries": 0,
+          "noToolFalseAccepts": 0,
+          "readOnlyQueries": 0,
+          "readOnlyRiskyQueries": 0,
+          "schemaTokensTotalEstimate": 0,
+          "schemaReductionEstimate": null
+        },
+        "withSameStateGuard": {
+          "queries": 0,
+          "selectedTools": 0,
+          "truePositives": 0,
+          "requiredTools": 0,
+          "recall": null,
+          "precision": null,
+          "positiveQueries": 0,
+          "allRequiredCovered": 0,
+          "exactSets": 0,
+          "noToolQueries": 0,
+          "noToolFalseAccepts": 0,
+          "readOnlyQueries": 0,
+          "readOnlyRiskyQueries": 0,
+          "schemaTokensTotalEstimate": 0,
+          "schemaReductionEstimate": null
+        },
+        "determinedOnly": {
+          "queries": 0,
+          "selectedTools": 0,
+          "truePositives": 0,
+          "requiredTools": 0,
+          "recall": null,
+          "precision": null,
+          "positiveQueries": 0,
+          "allRequiredCovered": 0,
+          "exactSets": 0,
+          "noToolQueries": 0,
+          "noToolFalseAccepts": 0,
+          "readOnlyQueries": 0,
+          "readOnlyRiskyQueries": 0,
+          "schemaTokensTotalEstimate": 0,
+          "schemaReductionEstimate": null
+        },
+        "completedPairs": 0,
+        "completedQueries": 0,
+        "callLatency": {
+          "n": 0,
+          "p50Ms": null,
+          "p95Ms": null
+        },
+        "serialQueryLatency": {
+          "n": 0,
+          "p50Ms": null,
+          "p95Ms": null
+        },
+        "reportedPromptTokens": 0,
+        "authorityFactsAssumedQueries": 1,
+        "actualCatalogReduction": 0,
+        "endToEndLatency": null,
+        "argumentValidity": null,
+        "executionSuccess": null,
+        "gate": false,
+        "recommendations": [
+          {
+            "queryId": "v2d1",
+            "complete": false,
+            "recommended": [],
+            "orderedCatalog": [
+              "canvas_find",
+              "artifact_find",
+              "rule_read",
+              "job_status",
+              "plan_build",
+              "image_render",
+              "canvas_remove",
+              "ask_user"
+            ],
+            "clarification": false,
+            "reason": "incomplete"
+          },
+          {
+            "queryId": "v2d2",
+            "complete": false,
+            "recommended": [],
+            "orderedCatalog": [
+              "canvas_find",
+              "artifact_find",
+              "rule_read",
+              "job_status",
+              "plan_build",
+              "image_render",
+              "canvas_remove",
+              "ask_user"
+            ],
+            "clarification": false,
+            "reason": "incomplete"
+          },
+          {
+            "queryId": "v2d3",
+            "complete": false,
+            "recommended": [],
+            "orderedCatalog": [
+              "canvas_find",
+              "artifact_find",
+              "rule_read",
+              "job_status",
+              "plan_build",
+              "image_render",
+              "canvas_remove",
+              "ask_user"
+            ],
+            "clarification": false,
+            "reason": "incomplete"
+          },
+          {
+            "queryId": "v2d4",
+            "complete": false,
+            "recommended": [],
+            "orderedCatalog": [
+              "canvas_find",
+              "artifact_find",
+              "rule_read",
+              "job_status",
+              "plan_build",
+              "image_render",
+              "canvas_remove",
+              "ask_user"
+            ],
+            "clarification": false,
+            "reason": "incomplete"
+          },
+          {
+            "queryId": "v2d5",
+            "complete": false,
+            "recommended": [],
+            "orderedCatalog": [
+              "canvas_find",
+              "artifact_find",
+              "rule_read",
+              "job_status",
+              "plan_build",
+              "image_render",
+              "canvas_remove",
+              "ask_user"
+            ],
+            "clarification": false,
+            "reason": "incomplete"
+          },
+          {
+            "queryId": "v2d6",
+            "complete": false,
+            "recommended": [],
+            "orderedCatalog": [
+              "canvas_find",
+              "artifact_find",
+              "rule_read",
+              "job_status",
+              "plan_build",
+              "image_render",
+              "canvas_remove",
+              "ask_user"
+            ],
+            "clarification": false,
+            "reason": "incomplete"
+          },
+          {
+            "queryId": "v2d7",
+            "complete": false,
+            "recommended": [],
+            "orderedCatalog": [
+              "canvas_find",
+              "artifact_find",
+              "rule_read",
+              "job_status",
+              "plan_build",
+              "image_render",
+              "canvas_remove",
+              "ask_user"
+            ],
+            "clarification": false,
+            "reason": "incomplete"
+          },
+          {
+            "queryId": "v2d8",
+            "complete": false,
+            "recommended": [],
+            "orderedCatalog": [
+              "canvas_find",
+              "artifact_find",
+              "rule_read",
+              "job_status",
+              "plan_build",
+              "image_render",
+              "canvas_remove",
+              "ask_user"
+            ],
+            "clarification": false,
+            "reason": "incomplete"
+          }
+        ]
+      }
+    },
+    "holdout": {
+      "v1": {
+        "modelOnly": {
+          "queries": 0,
+          "selectedTools": 0,
+          "truePositives": 0,
+          "requiredTools": 0,
+          "recall": null,
+          "precision": null,
+          "positiveQueries": 0,
+          "allRequiredCovered": 0,
+          "exactSets": 0,
+          "noToolQueries": 0,
+          "noToolFalseAccepts": 0,
+          "readOnlyQueries": 0,
+          "readOnlyRiskyQueries": 0,
+          "schemaTokensTotalEstimate": 0,
+          "schemaReductionEstimate": null
+        },
+        "withSameStateGuard": {
+          "queries": 0,
+          "selectedTools": 0,
+          "truePositives": 0,
+          "requiredTools": 0,
+          "recall": null,
+          "precision": null,
+          "positiveQueries": 0,
+          "allRequiredCovered": 0,
+          "exactSets": 0,
+          "noToolQueries": 0,
+          "noToolFalseAccepts": 0,
+          "readOnlyQueries": 0,
+          "readOnlyRiskyQueries": 0,
+          "schemaTokensTotalEstimate": 0,
+          "schemaReductionEstimate": null
+        },
+        "determinedOnly": {
+          "queries": 0,
+          "selectedTools": 0,
+          "truePositives": 0,
+          "requiredTools": 0,
+          "recall": null,
+          "precision": null,
+          "positiveQueries": 0,
+          "allRequiredCovered": 0,
+          "exactSets": 0,
+          "noToolQueries": 0,
+          "noToolFalseAccepts": 0,
+          "readOnlyQueries": 0,
+          "readOnlyRiskyQueries": 0,
+          "schemaTokensTotalEstimate": 0,
+          "schemaReductionEstimate": null
+        },
+        "completedPairs": 0,
+        "completedQueries": 0,
+        "callLatency": {
+          "n": 0,
+          "p50Ms": null,
+          "p95Ms": null
+        },
+        "serialQueryLatency": {
+          "n": 0,
+          "p50Ms": null,
+          "p95Ms": null
+        },
+        "reportedPromptTokens": 0,
+        "authorityFactsAssumedQueries": 2,
+        "actualCatalogReduction": 0,
+        "endToEndLatency": null,
+        "argumentValidity": null,
+        "executionSuccess": null,
+        "gate": false,
+        "recommendations": [
+          {
+            "queryId": "v2h1",
+            "complete": false,
+            "recommended": [],
+            "orderedCatalog": [
+              "canvas_find",
+              "artifact_find",
+              "rule_read",
+              "job_status",
+              "plan_build",
+              "image_render",
+              "canvas_remove",
+              "ask_user"
+            ],
+            "clarification": false,
+            "reason": "incomplete"
+          },
+          {
+            "queryId": "v2h2",
+            "complete": false,
+            "recommended": [],
+            "orderedCatalog": [
+              "canvas_find",
+              "artifact_find",
+              "rule_read",
+              "job_status",
+              "plan_build",
+              "image_render",
+              "canvas_remove",
+              "ask_user"
+            ],
+            "clarification": false,
+            "reason": "incomplete"
+          },
+          {
+            "queryId": "v2h3",
+            "complete": false,
+            "recommended": [],
+            "orderedCatalog": [
+              "canvas_find",
+              "artifact_find",
+              "rule_read",
+              "job_status",
+              "plan_build",
+              "image_render",
+              "canvas_remove",
+              "ask_user"
+            ],
+            "clarification": false,
+            "reason": "incomplete"
+          },
+          {
+            "queryId": "v2h4",
+            "complete": false,
+            "recommended": [],
+            "orderedCatalog": [
+              "canvas_find",
+              "artifact_find",
+              "rule_read",
+              "job_status",
+              "plan_build",
+              "image_render",
+              "canvas_remove",
+              "ask_user"
+            ],
+            "clarification": false,
+            "reason": "incomplete"
+          },
+          {
+            "queryId": "v2h5",
+            "complete": false,
+            "recommended": [],
+            "orderedCatalog": [
+              "canvas_find",
+              "artifact_find",
+              "rule_read",
+              "job_status",
+              "plan_build",
+              "image_render",
+              "canvas_remove",
+              "ask_user"
+            ],
+            "clarification": false,
+            "reason": "incomplete"
+          },
+          {
+            "queryId": "v2h6",
+            "complete": false,
+            "recommended": [],
+            "orderedCatalog": [
+              "canvas_find",
+              "artifact_find",
+              "rule_read",
+              "job_status",
+              "plan_build",
+              "image_render",
+              "canvas_remove",
+              "ask_user"
+            ],
+            "clarification": false,
+            "reason": "incomplete"
+          },
+          {
+            "queryId": "v2h7",
+            "complete": false,
+            "recommended": [],
+            "orderedCatalog": [
+              "canvas_find",
+              "artifact_find",
+              "rule_read",
+              "job_status",
+              "plan_build",
+              "image_render",
+              "canvas_remove",
+              "ask_user"
+            ],
+            "clarification": false,
+            "reason": "incomplete"
+          },
+          {
+            "queryId": "v2h8",
+            "complete": false,
+            "recommended": [],
+            "orderedCatalog": [
+              "canvas_find",
+              "artifact_find",
+              "rule_read",
+              "job_status",
+              "plan_build",
+              "image_render",
+              "canvas_remove",
+              "ask_user"
+            ],
+            "clarification": false,
+            "reason": "incomplete"
+          },
+          {
+            "queryId": "v2h9",
+            "complete": false,
+            "recommended": [],
+            "orderedCatalog": [
+              "canvas_find",
+              "artifact_find",
+              "rule_read",
+              "job_status",
+              "plan_build",
+              "image_render",
+              "canvas_remove",
+              "ask_user"
+            ],
+            "clarification": false,
+            "reason": "incomplete"
+          },
+          {
+            "queryId": "v2h10",
+            "complete": false,
+            "recommended": [],
+            "orderedCatalog": [
+              "canvas_find",
+              "artifact_find",
+              "rule_read",
+              "job_status",
+              "plan_build",
+              "image_render",
+              "canvas_remove",
+              "ask_user"
+            ],
+            "clarification": false,
+            "reason": "incomplete"
+          },
+          {
+            "queryId": "v2h11",
+            "complete": false,
+            "recommended": [],
+            "orderedCatalog": [
+              "canvas_find",
+              "artifact_find",
+              "rule_read",
+              "job_status",
+              "plan_build",
+              "image_render",
+              "canvas_remove",
+              "ask_user"
+            ],
+            "clarification": false,
+            "reason": "incomplete"
+          },
+          {
+            "queryId": "v2h12",
+            "complete": false,
+            "recommended": [],
+            "orderedCatalog": [
+              "canvas_find",
+              "artifact_find",
+              "rule_read",
+              "job_status",
+              "plan_build",
+              "image_render",
+              "canvas_remove",
+              "ask_user"
+            ],
+            "clarification": false,
+            "reason": "incomplete"
+          },
+          {
+            "queryId": "v2h13",
+            "complete": false,
+            "recommended": [],
+            "orderedCatalog": [
+              "canvas_find",
+              "artifact_find",
+              "rule_read",
+              "job_status",
+              "plan_build",
+              "image_render",
+              "canvas_remove",
+              "ask_user"
+            ],
+            "clarification": false,
+            "reason": "incomplete"
+          },
+          {
+            "queryId": "v2h14",
+            "complete": false,
+            "recommended": [],
+            "orderedCatalog": [
+              "canvas_find",
+              "artifact_find",
+              "rule_read",
+              "job_status",
+              "plan_build",
+              "image_render",
+              "canvas_remove",
+              "ask_user"
+            ],
+            "clarification": false,
+            "reason": "incomplete"
+          },
+          {
+            "queryId": "v2h15",
+            "complete": false,
+            "recommended": [],
+            "orderedCatalog": [
+              "canvas_find",
+              "artifact_find",
+              "rule_read",
+              "job_status",
+              "plan_build",
+              "image_render",
+              "canvas_remove",
+              "ask_user"
+            ],
+            "clarification": false,
+            "reason": "incomplete"
+          },
+          {
+            "queryId": "v2h16",
+            "complete": false,
+            "recommended": [],
+            "orderedCatalog": [
+              "canvas_find",
+              "artifact_find",
+              "rule_read",
+              "job_status",
+              "plan_build",
+              "image_render",
+              "canvas_remove",
+              "ask_user"
+            ],
+            "clarification": false,
+            "reason": "incomplete"
+          }
+        ]
+      },
+      "v2": {
+        "modelOnly": {
+          "queries": 0,
+          "selectedTools": 0,
+          "truePositives": 0,
+          "requiredTools": 0,
+          "recall": null,
+          "precision": null,
+          "positiveQueries": 0,
+          "allRequiredCovered": 0,
+          "exactSets": 0,
+          "noToolQueries": 0,
+          "noToolFalseAccepts": 0,
+          "readOnlyQueries": 0,
+          "readOnlyRiskyQueries": 0,
+          "schemaTokensTotalEstimate": 0,
+          "schemaReductionEstimate": null
+        },
+        "withSameStateGuard": {
+          "queries": 0,
+          "selectedTools": 0,
+          "truePositives": 0,
+          "requiredTools": 0,
+          "recall": null,
+          "precision": null,
+          "positiveQueries": 0,
+          "allRequiredCovered": 0,
+          "exactSets": 0,
+          "noToolQueries": 0,
+          "noToolFalseAccepts": 0,
+          "readOnlyQueries": 0,
+          "readOnlyRiskyQueries": 0,
+          "schemaTokensTotalEstimate": 0,
+          "schemaReductionEstimate": null
+        },
+        "determinedOnly": {
+          "queries": 0,
+          "selectedTools": 0,
+          "truePositives": 0,
+          "requiredTools": 0,
+          "recall": null,
+          "precision": null,
+          "positiveQueries": 0,
+          "allRequiredCovered": 0,
+          "exactSets": 0,
+          "noToolQueries": 0,
+          "noToolFalseAccepts": 0,
+          "readOnlyQueries": 0,
+          "readOnlyRiskyQueries": 0,
+          "schemaTokensTotalEstimate": 0,
+          "schemaReductionEstimate": null
+        },
+        "completedPairs": 0,
+        "completedQueries": 0,
+        "callLatency": {
+          "n": 0,
+          "p50Ms": null,
+          "p95Ms": null
+        },
+        "serialQueryLatency": {
+          "n": 0,
+          "p50Ms": null,
+          "p95Ms": null
+        },
+        "reportedPromptTokens": 0,
+        "authorityFactsAssumedQueries": 2,
+        "actualCatalogReduction": 0,
+        "endToEndLatency": null,
+        "argumentValidity": null,
+        "executionSuccess": null,
+        "gate": false,
+        "recommendations": [
+          {
+            "queryId": "v2h1",
+            "complete": false,
+            "recommended": [],
+            "orderedCatalog": [
+              "canvas_find",
+              "artifact_find",
+              "rule_read",
+              "job_status",
+              "plan_build",
+              "image_render",
+              "canvas_remove",
+              "ask_user"
+            ],
+            "clarification": false,
+            "reason": "incomplete"
+          },
+          {
+            "queryId": "v2h2",
+            "complete": false,
+            "recommended": [],
+            "orderedCatalog": [
+              "canvas_find",
+              "artifact_find",
+              "rule_read",
+              "job_status",
+              "plan_build",
+              "image_render",
+              "canvas_remove",
+              "ask_user"
+            ],
+            "clarification": false,
+            "reason": "incomplete"
+          },
+          {
+            "queryId": "v2h3",
+            "complete": false,
+            "recommended": [],
+            "orderedCatalog": [
+              "canvas_find",
+              "artifact_find",
+              "rule_read",
+              "job_status",
+              "plan_build",
+              "image_render",
+              "canvas_remove",
+              "ask_user"
+            ],
+            "clarification": false,
+            "reason": "incomplete"
+          },
+          {
+            "queryId": "v2h4",
+            "complete": false,
+            "recommended": [],
+            "orderedCatalog": [
+              "canvas_find",
+              "artifact_find",
+              "rule_read",
+              "job_status",
+              "plan_build",
+              "image_render",
+              "canvas_remove",
+              "ask_user"
+            ],
+            "clarification": false,
+            "reason": "incomplete"
+          },
+          {
+            "queryId": "v2h5",
+            "complete": false,
+            "recommended": [],
+            "orderedCatalog": [
+              "canvas_find",
+              "artifact_find",
+              "rule_read",
+              "job_status",
+              "plan_build",
+              "image_render",
+              "canvas_remove",
+              "ask_user"
+            ],
+            "clarification": false,
+            "reason": "incomplete"
+          },
+          {
+            "queryId": "v2h6",
+            "complete": false,
+            "recommended": [],
+            "orderedCatalog": [
+              "canvas_find",
+              "artifact_find",
+              "rule_read",
+              "job_status",
+              "plan_build",
+              "image_render",
+              "canvas_remove",
+              "ask_user"
+            ],
+            "clarification": false,
+            "reason": "incomplete"
+          },
+          {
+            "queryId": "v2h7",
+            "complete": false,
+            "recommended": [],
+            "orderedCatalog": [
+              "canvas_find",
+              "artifact_find",
+              "rule_read",
+              "job_status",
+              "plan_build",
+              "image_render",
+              "canvas_remove",
+              "ask_user"
+            ],
+            "clarification": false,
+            "reason": "incomplete"
+          },
+          {
+            "queryId": "v2h8",
+            "complete": false,
+            "recommended": [],
+            "orderedCatalog": [
+              "canvas_find",
+              "artifact_find",
+              "rule_read",
+              "job_status",
+              "plan_build",
+              "image_render",
+              "canvas_remove",
+              "ask_user"
+            ],
+            "clarification": false,
+            "reason": "incomplete"
+          },
+          {
+            "queryId": "v2h9",
+            "complete": false,
+            "recommended": [],
+            "orderedCatalog": [
+              "canvas_find",
+              "artifact_find",
+              "rule_read",
+              "job_status",
+              "plan_build",
+              "image_render",
+              "canvas_remove",
+              "ask_user"
+            ],
+            "clarification": false,
+            "reason": "incomplete"
+          },
+          {
+            "queryId": "v2h10",
+            "complete": false,
+            "recommended": [],
+            "orderedCatalog": [
+              "canvas_find",
+              "artifact_find",
+              "rule_read",
+              "job_status",
+              "plan_build",
+              "image_render",
+              "canvas_remove",
+              "ask_user"
+            ],
+            "clarification": false,
+            "reason": "incomplete"
+          },
+          {
+            "queryId": "v2h11",
+            "complete": false,
+            "recommended": [],
+            "orderedCatalog": [
+              "canvas_find",
+              "artifact_find",
+              "rule_read",
+              "job_status",
+              "plan_build",
+              "image_render",
+              "canvas_remove",
+              "ask_user"
+            ],
+            "clarification": false,
+            "reason": "incomplete"
+          },
+          {
+            "queryId": "v2h12",
+            "complete": false,
+            "recommended": [],
+            "orderedCatalog": [
+              "canvas_find",
+              "artifact_find",
+              "rule_read",
+              "job_status",
+              "plan_build",
+              "image_render",
+              "canvas_remove",
+              "ask_user"
+            ],
+            "clarification": false,
+            "reason": "incomplete"
+          },
+          {
+            "queryId": "v2h13",
+            "complete": false,
+            "recommended": [],
+            "orderedCatalog": [
+              "canvas_find",
+              "artifact_find",
+              "rule_read",
+              "job_status",
+              "plan_build",
+              "image_render",
+              "canvas_remove",
+              "ask_user"
+            ],
+            "clarification": false,
+            "reason": "incomplete"
+          },
+          {
+            "queryId": "v2h14",
+            "complete": false,
+            "recommended": [],
+            "orderedCatalog": [
+              "canvas_find",
+              "artifact_find",
+              "rule_read",
+              "job_status",
+              "plan_build",
+              "image_render",
+              "canvas_remove",
+              "ask_user"
+            ],
+            "clarification": false,
+            "reason": "incomplete"
+          },
+          {
+            "queryId": "v2h15",
+            "complete": false,
+            "recommended": [],
+            "orderedCatalog": [
+              "canvas_find",
+              "artifact_find",
+              "rule_read",
+              "job_status",
+              "plan_build",
+              "image_render",
+              "canvas_remove",
+              "ask_user"
+            ],
+            "clarification": false,
+            "reason": "incomplete"
+          },
+          {
+            "queryId": "v2h16",
+            "complete": false,
+            "recommended": [],
+            "orderedCatalog": [
+              "canvas_find",
+              "artifact_find",
+              "rule_read",
+              "job_status",
+              "plan_build",
+              "image_render",
+              "canvas_remove",
+              "ask_user"
+            ],
+            "clarification": false,
+            "reason": "incomplete"
+          }
+        ]
+      }
+    }
+  }
+}

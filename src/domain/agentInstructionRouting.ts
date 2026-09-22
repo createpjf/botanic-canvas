@@ -1,7 +1,7 @@
 import type { BotanicAgentContextSnapshot, BotanicAgentContextSnapshotInput, BotanicAgentIntent, BotanicAgentMessage, BotanicAgentPlan, BotanicAgentRegionSelection } from './agent.ts'
 import { buildBotanicAgentPlan, createBotanicAgentContextSnapshot, inferBotanicAgentIntent } from './agent.ts'
 import {
-  botanicAgentRequestUsesGenerationTurn,
+  botanicAgentRequestHasExplicitGenerationIntent,
   decideBotanicAgentRequest,
   inferBotanicAgentGenerationSettings,
   resolveBotanicAgentGenerationPromptDecision,
@@ -118,7 +118,7 @@ export function resolveBotanicAgentInstructionEntry(input: {
   return {
     kind: 'route',
     useServerTurn,
-    requiresGenerationConfirmation: useServerTurn && !botanicAgentRequestUsesGenerationTurn(pendingDecision),
+    requiresGenerationConfirmation: useServerTurn && !botanicAgentRequestHasExplicitGenerationIntent(pendingDecision),
     decision: restored
       ? { kind: 'generation', mediaKind: restored.mediaKind, promptSource: 'instruction' }
       : options.region

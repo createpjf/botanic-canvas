@@ -1,6 +1,10 @@
 // @ts-check
 
 import { canvasAgentEntityHash } from './canvasAgentEntityHash.mjs'
+import {
+  canvasAgentNodeLabel as nodeLabel, canvasAgentNodeStatus as nodeStatus,
+  canvasAgentNodeMetadata, canvasAgentEdgeRole as edgeRole, canvasAgentEdgeMetadata as publicEdge,
+} from './canvasAgentReadSemantics.mjs'
 
 const NODE_TYPES = new Set(['asset', 'prompt', 'reference', 'result', 'text', 'generate', 'frame'])
 const FRAME_STAGES = new Set(['brief', 'references', 'generation', 'review', 'approved', 'delivery', 'archive', 'custom'])
@@ -40,13 +44,6 @@ function normalizeRole(value) {
   return String(value ?? '').trim().toLocaleLowerCase('zh-CN')
 }
 
-function nodeLabel(node) {
-  return node?.data?.label ?? node?.data?.name ?? ''
-}
-
-function nodeStatus(node) {
-  return node?.data?.taskStatus ?? node?.data?.status ?? (node?.type === 'generate' ? 'idle' : undefined)
-}
 function normalizedKeyword(value) { return String(value ?? '').normalize('NFKC').toLocaleLowerCase('zh-CN').replace(/\s+/gu, ' ').trim() }
 function keywordDocument(node) {
   const label = normalizedKeyword(nodeLabel(node)).slice(0, 160)
@@ -67,10 +64,6 @@ function counts(items, valueOf) {
   const values = new Map()
   for (const item of items) { const value = valueOf(item); if (value) values.set(value, (values.get(value) ?? 0) + 1) }
   return [...values].sort(([left], [right]) => left.localeCompare(right)).map(([value, count]) => ({ value, count }))
-}
-
-function edgeRole(edge, nodeById) {
-  return edge?.data?.role ?? nodeById.get(edge?.source)?.data?.role
 }
 
 function isReferenceEdge(edge, nodeById) {
@@ -105,13 +98,9 @@ function publicNode(node) {
   const data = node?.data ?? {}
   const constraints = publicConstraints(data.constraints)
   return {
-    id: node.id,
-    type: node.type,
+    ...canvasAgentNodeMetadata(node),
     position: { x: Number(node.position?.x) || 0, y: Number(node.position?.y) || 0 },
-    ...(nodeLabel(node) ? { label: String(nodeLabel(node)).slice(0, 160) } : {}),
-    ...(nodeStatus(node) ? { status: nodeStatus(node) } : {}),
-    ...(typeof data.frameId === 'string' ? { frameId: data.frameId } : {}),
-    ...(node.type === 'frame' ? { stage: data.stage, bounds: { x: Number(node.position?.x) || 0, y: Number(node.position?.y) || 0, width: Number(data.width) || 0, height: Number(data.height) || 0 } } : {}),
+    ...(node.type === 'frame' ? { bounds: { x: Number(node.position?.x) || 0, y: Number(node.position?.y) || 0, width: Number(data.width) || 0, height: Number(data.height) || 0 } } : {}),
     ...(node.type === 'text' && typeof data.content === 'string' ? { content: data.content.slice(0, MAX_TEXT_LENGTH) } : {}),
     ...(node.type === 'prompt' && typeof data.prompt === 'string' ? { content: data.prompt.slice(0, MAX_TEXT_LENGTH) } : {}),
     ...(node.type === 'generate' ? {
@@ -132,18 +121,6 @@ function publicNode(node) {
       ...(data.agentRun?.runId ? { runId: data.agentRun.runId } : {}),
       ...(data.agentRun?.branchId ? { branchId: data.agentRun.branchId } : {}),
     },
-  }
-}
-
-function publicEdge(edge, nodeById) {
-  return {
-    id: edge.id,
-    source: edge.source,
-    target: edge.target,
-    ...(edge.sourceHandle ? { sourceHandle: edge.sourceHandle } : {}),
-    ...(edge.targetHandle ? { targetHandle: edge.targetHandle } : {}),
-    ...(edgeRole(edge, nodeById) ? { role: edgeRole(edge, nodeById) } : {}),
-    system: edge?.data?.system === true,
   }
 }
 

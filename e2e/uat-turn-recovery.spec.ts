@@ -76,7 +76,7 @@ test('首次项目保存失败后保留消息，原位重试可恢复', async ({
   await expect(agent.getByRole('log').getByText('UAT:请介绍这个项目', { exact: true })).toBeVisible()
   await expect(agent.getByRole('form', { name: 'Agent 输入' }).getByRole('button', { name: '重试', exact: true })).toBeEnabled()
   blocked = false
-  await agent.getByRole('log').getByRole('button', { name: '重试', exact: true }).click()
+  await agent.getByRole('log').getByRole('alert').filter({ hasText: '同步失败' }).getByRole('button', { name: '重试', exact: true }).click()
   await expect(agent.getByText(/UAT 回复/).first()).toBeVisible({ timeout: 15_000 })
   await expect(agent.getByRole('log').getByText('UAT:请介绍这个项目', { exact: true })).toHaveCount(1)
   expect(writes).not.toContain(404)
@@ -103,9 +103,9 @@ test('Agent 回合 accepted 后刷新,回答从 durable Turn 恢复且模型只�
   await composer.fill('UAT:请介绍这个项目')
   await page.getByRole('button', { name: '发送给 Agent' }).click()
 
-  // 等待回答开始(fake provider 3s 延迟 + 流式)。
-  await expect(page.getByText(/UAT 回复/).first()).toBeVisible({ timeout: 30_000 })
-
+  // Provider 已开始、回答尚未完成时刷新，验证恢复的是进行中的同一 Turn。
+  await expect.poll(async () => (await (await fetch(FAKE + '/__requests')).json()).count).toBe(1)
+  await expect(page.getByText(/UAT 回复/)).toHaveCount(0)
   const before = await (await fetch(FAKE + '/__requests')).json()
   expect(before.count, '本轮只应调用一次 Provider').toBe(1)
   // 刷新:恢复必须来自 durable Turn/observer,不重跑模型。刷新后面板默认关闭,重新打开。
@@ -119,6 +119,64 @@ test('Agent 回合 accepted 后刷新,回答从 durable Turn 恢复且模型只�
   const after = await (await fetch(FAKE + '/__requests')).json()
   expect(after.count, '刷新后 Provider 调用数不得增长').toBe(before.count)
   await page.screenshot({ path: testInfo.outputPath('turn-restored.png') })
+})
+
+test('回合执行中切新对话，只断开观察且旧结果不串写', async ({ page }, info) => {
+  await (await fetch(FAKE + '/__reset', { method: 'POST' })).text()
+  await signIn(page, process.env.UAT_ACCESS_TOKEN)
+  await page.getByRole('button', { name: '新建项目' }).click()
+  await page.getByRole('button', { name: '描述目标', exact: true }).click()
+  const agent = page.getByRole('complementary', { name: 'Botanic Agent' })
+  const cancelled: string[] = []
+  page.on('request', request => { if (/\/api\/agent-turns\/[^/]+\/cancel$/.test(request.url())) cancelled.push(request.url()) })
+  await agent.getByRole('combobox', { name: '提示词' }).fill('UAT:旧对话继续执行')
+  const posted = page.waitForRequest(request => request.method() === 'POST' && request.url().endsWith('/api/agent-turns/stream'))
+  await agent.getByRole('button', { name: '发送给 Agent' }).click()
+  const input = (await posted).postDataJSON()
+  await expect.poll(async () => (await (await fetch(FAKE + '/__requests')).json()).count).toBe(1)
+  await agent.getByTitle(/^对话历史/).click()
+  await agent.getByRole('button', { name: '新对话', exact: true }).click()
+  await expect(agent.getByRole('log').getByText('UAT:旧对话继续执行', { exact: true })).toHaveCount(0)
+  const headers = { Authorization: `Bearer ${process.env.UAT_ACCESS_TOKEN}` }
+  let turnId: string | undefined
+  await expect.poll(async () => {
+    const response = await page.request.get(`${API}/api/projects/${input.projectId}/agent-sessions/${input.sessionId}/messages?limit=100`, { headers })
+    turnId = (await response.json()).messages.find(message => message.id === input.inputMessage.id)?.turnId
+    return turnId
+  }).toBeTruthy()
+  await expect.poll(async () => (await (await page.request.get(`${API}/api/agent-turns/${turnId}`, { headers })).json()).turn.status).toBe('completed')
+  await expect(agent.getByText(/UAT 回复/)).toHaveCount(0)
+  expect(cancelled).toEqual([])
+  await agent.getByRole('combobox', { name: '提示词' }).fill('UAT:新对话可以发送')
+  await expect(agent.getByRole('button', { name: '发送给 Agent' })).toBeEnabled()
+  const nextPosted = page.waitForRequest(request => request.method() === 'POST' && request.url().endsWith('/api/agent-turns/stream'))
+  await agent.getByRole('button', { name: '发送给 Agent' }).click()
+  expect((await nextPosted).postDataJSON().sessionId).not.toBe(input.sessionId)
+  await expect(agent.getByText(/UAT 回复/).first()).toBeVisible({ timeout: 15_000 })
+  expect((await (await fetch(FAKE + '/__requests')).json()).count).toBe(2)
+  await page.screenshot({ path: info.outputPath('session-switch.png') })
+})
+
+test('服务端已接受但 accepted 回包丢失，按原身份恢复且不重调模型', async ({ page }, info) => {
+  await (await fetch(FAKE + '/__reset', { method: 'POST' })).text()
+  await signIn(page, process.env.UAT_ACCESS_TOKEN)
+  let lostResponse = false
+  await page.route('**/api/agent-turns/stream', async route => {
+    const response = await route.fetch()
+    expect(response.ok()).toBe(true)
+    lostResponse = true
+    await route.abort('failed') // 服务端真实接受并完成，浏览器收不到任何 accepted/result。
+  })
+  await page.getByRole('button', { name: '新建项目' }).click()
+  await page.getByRole('button', { name: '描述目标', exact: true }).click()
+  const agent = page.getByRole('complementary', { name: 'Botanic Agent' })
+  await agent.getByRole('combobox', { name: '提示词' }).fill('UAT:回包丢失恢复')
+  await agent.getByRole('button', { name: '发送给 Agent' }).click()
+  await expect(agent.getByText(/UAT 回复/).first()).toBeVisible({ timeout: 20_000 })
+  expect(lostResponse).toBe(true)
+  expect((await (await fetch(FAKE + '/__requests')).json()).count).toBe(1)
+  await expect(agent.getByRole('log').getByText('UAT:回包丢失恢复', { exact: true })).toHaveCount(1)
+  await page.screenshot({ path: info.outputPath('lost-accepted-recovered.png') })
 })
 
 test('执行中 Stop:回合收口取消,不产出最终回答', async ({ page }, testInfo) => {
@@ -220,8 +278,9 @@ test('Run已接受但回包未到时停止，取消回执丢失后刷新仍接�
     }, { timeout: 20_000 }).toBe(true)
     const plan = agent.locator(`[data-agent-message-id="${planId}"] .agent-message__plan:not(.is-submitted)`)
     await expect(plan.locator('.agent-plan__confirm')).toBeVisible({ timeout: 20_000 })
+    await plan.locator('summary').filter({ hasText: '调整参数' }).click()
     await plan.getByRole('button', { name: '选择出图张数', exact: true }).click()
-    await page.getByRole('option', { name: '1 张', exact: true }).click()
+    await page.getByRole('option', { name: /^1 张(?: ✓)?$/ }).click()
     await expect(plan.getByRole('button', { name: '选择出图张数', exact: true })).toContainText('1 张')
     expect(planId).toBeTruthy()
     const countBefore = await imageCount()
@@ -327,8 +386,9 @@ test('计划确认回包丢失后刷新：恢复原Run结果，不重建任务�
     return Boolean(planId)
   }, { timeout: 20_000 }).toBe(true)
   const plan = agent.locator(`[data-agent-message-id="${planId}"] .agent-message__plan:not(.is-submitted)`)
+  await plan.locator('summary').filter({ hasText: '调整参数' }).click()
   await plan.getByRole('button', { name: '选择出图张数', exact: true }).click()
-  await page.getByRole('option', { name: '1 张', exact: true }).click()
+  await page.getByRole('option', { name: /^1 张(?: ✓)?$/ }).click()
   await expect(plan.getByRole('button', { name: '选择出图张数', exact: true })).toContainText('1 张')
   const countBefore = await imageCount()
   await plan.locator('.agent-plan__confirm').click()

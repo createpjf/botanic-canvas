@@ -7,6 +7,7 @@
 - [模块接口与依赖方向](ARCHITECTURE.md)
 - [版本与 PR 流程](DEVELOPMENT_WORKFLOW.md)
 - [安全运营与恢复](SECURITY_OPERATIONS.md)
+- [在途 Agent Turn 发布与回退](AGENT_TURN_RELEASE_RUNBOOK.md)
 
 ## 架构决策
 
@@ -34,6 +35,7 @@
 
 以下规格正在本轮实现，完成后以代码与测试为准：
 
+- [O5 工具选择上线准备](research/O5_TOOL_CHOICE_RELEASE_READINESS_2026-09-22.md)——旁路记录已实现，发布验收记录见文档；建议模式质量门槛仍未通过。
 - [画布同步协议 V2：研究与重设计](CANVAS_SYNC_PROTOCOL_RESEARCH_AND_REDESIGN_2026-08-31.md)——**发布状态见 [审查记录](agents/issue-tracker.md)**：代码已纳入 Release Candidate，但部分 Supabase migration（SYNC-02/19/20 对应项）尚未应用、`sync_protocol_epoch` 尚未切换；接手同步协议改动前必读。
 
 ## 历史归档

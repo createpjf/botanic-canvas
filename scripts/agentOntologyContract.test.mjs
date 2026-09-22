@@ -66,7 +66,7 @@ test('本体对检索能力的描述与运维只读工具目录一致，且保�
   const readers = {
     readRun: async () => undefined,
     readJob: async () => undefined,
-    searchArtifacts: async () => [],
+    searchArtifacts: async () => ({ artifacts: [], page: { hasMore: false, searchTruncated: false, scannedCount: 0 } }),
     readReviews: async () => [],
     readWorkflowRun: async () => undefined,
     readDeliveries: async () => [],

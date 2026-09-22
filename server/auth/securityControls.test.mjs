@@ -31,6 +31,20 @@ test('生成输出配额按候选数量计费，且不同用户相互隔离', as
   assert.equal((await security.consume({ scope: 'generation-output', subject: 'user-2', limit: 4, windowMs: 86_400_000, cost: 4 })).allowed, true)
 })
 
+test('要求共享配额时不接受本机内存或 Redis 故障的静默回退', async (context) => {
+  const input = { scope: 'shadow', subject: 'workspace', limit: 24, windowMs: 60000, requireShared: true }
+  assert.equal((await createSecurityControls().consume(input)).allowed, false)
+  context.mock.method(Redis.prototype, 'connect', async function () { this.status = 'ready' })
+  context.mock.method(Redis.prototype, 'eval', async () => 1)
+  context.mock.method(Redis.prototype, 'pttl', async () => 1000)
+  context.mock.method(Redis.prototype, 'quit', async function () { this.status = 'end' })
+  const controls = createSecurityControls({ redisUrl: 'redis://test' })
+  assert.equal((await controls.consume(input)).allowed, true)
+  context.mock.method(Redis.prototype, 'eval', async () => { throw new Error('unavailable') })
+  assert.equal((await controls.consume(input)).allowed, false)
+  await controls.close()
+})
+
 test('Redis 首次并发限流请求共享同一次连接', async (context) => {
   let connectCalls = 0
   let fallbackCalls = 0

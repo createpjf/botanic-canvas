@@ -1,0 +1,4355 @@
+{
+  "date": "2026-09-22T01:29:27.626Z",
+  "taxonomyVersion": "coarse-intent-v1",
+  "datasetSha256": "c5fd984e4bc2efb84582b5fef7e6b938a08f5feb2a462189c7713b16c659015c",
+  "model": "this-that-model-1.0",
+  "modelRevision": null,
+  "responseModels": [
+    "this-that-model-1.0"
+  ],
+  "scope": "synthetic-offline-only",
+  "fullDataset": true,
+  "source": "agent-authored synthetic gold; no human adjudication or production distribution validation",
+  "local": {
+    "dev": {
+      "n": 120,
+      "accuracy": 0.425,
+      "macroF1": 0.38748597081930414,
+      "fiveIntentMacroF1": 0.4286195286195286,
+      "perClass": {
+        "conversation": {
+          "support": 20,
+          "predicted": 79,
+          "precision": 0.24050632911392406,
+          "recall": 0.95,
+          "f1": 0.38383838383838387
+        },
+        "prompt": {
+          "support": 20,
+          "predicted": 16,
+          "precision": 0.875,
+          "recall": 0.7,
+          "f1": 0.7777777777777777
+        },
+        "research": {
+          "support": 20,
+          "predicted": 7,
+          "precision": 0.7142857142857143,
+          "recall": 0.25,
+          "f1": 0.37037037037037035
+        },
+        "generation": {
+          "support": 20,
+          "predicted": 16,
+          "precision": 0.6875,
+          "recall": 0.55,
+          "f1": 0.6111111111111112
+        },
+        "action_proposal": {
+          "support": 20,
+          "predicted": 0,
+          "precision": 0,
+          "recall": 0,
+          "f1": 0
+        },
+        "unknown": {
+          "support": 20,
+          "predicted": 2,
+          "precision": 1,
+          "recall": 0.1,
+          "f1": 0.18181818181818182
+        }
+      },
+      "coverage": 0.9833333333333333,
+      "abstentionRate": 0.01666666666666672,
+      "selectiveAccuracy": 0.4152542372881356,
+      "negationCapability": {
+        "n": 16,
+        "unsafeSuggestions": 2
+      },
+      "p50Ms": 0.002333000000007246,
+      "p95Ms": 0.09945899999999597,
+      "byLanguage": {
+        "zh": {
+          "n": 60,
+          "accuracy": 0.5166666666666667,
+          "macroF1": 0.4860021786492375,
+          "fiveIntentMacroF1": 0.5165359477124183,
+          "perClass": {
+            "conversation": {
+              "support": 10,
+              "predicted": 35,
+              "precision": 0.2857142857142857,
+              "recall": 1,
+              "f1": 0.4444444444444445
+            },
+            "prompt": {
+              "support": 10,
+              "predicted": 6,
+              "precision": 1,
+              "recall": 0.6,
+              "f1": 0.7499999999999999
+            },
+            "research": {
+              "support": 10,
+              "predicted": 7,
+              "precision": 0.7142857142857143,
+              "recall": 0.5,
+              "f1": 0.588235294117647
+            },
+            "generation": {
+              "support": 10,
+              "predicted": 10,
+              "precision": 0.8,
+              "recall": 0.8,
+              "f1": 0.8000000000000002
+            },
+            "action_proposal": {
+              "support": 10,
+              "predicted": 0,
+              "precision": 0,
+              "recall": 0,
+              "f1": 0
+            },
+            "unknown": {
+              "support": 10,
+              "predicted": 2,
+              "precision": 1,
+              "recall": 0.2,
+              "f1": 0.33333333333333337
+            }
+          },
+          "coverage": 0.9666666666666667,
+          "abstentionRate": 0.033333333333333326,
+          "selectiveAccuracy": 0.5,
+          "negationCapability": {
+            "n": 8,
+            "unsafeSuggestions": 0
+          },
+          "p50Ms": 0.0025419999999911624,
+          "p95Ms": 0.15987499999999955
+        },
+        "en": {
+          "n": 60,
+          "accuracy": 0.3333333333333333,
+          "macroF1": 0.25138888888888894,
+          "fiveIntentMacroF1": 0.3016666666666667,
+          "perClass": {
+            "conversation": {
+              "support": 10,
+              "predicted": 44,
+              "precision": 0.20454545454545456,
+              "recall": 0.9,
+              "f1": 0.33333333333333337
+            },
+            "prompt": {
+              "support": 10,
+              "predicted": 10,
+              "precision": 0.8,
+              "recall": 0.8,
+              "f1": 0.8000000000000002
+            },
+            "research": {
+              "support": 10,
+              "predicted": 0,
+              "precision": 0,
+              "recall": 0,
+              "f1": 0
+            },
+            "generation": {
+              "support": 10,
+              "predicted": 6,
+              "precision": 0.5,
+              "recall": 0.3,
+              "f1": 0.37499999999999994
+            },
+            "action_proposal": {
+              "support": 10,
+              "predicted": 0,
+              "precision": 0,
+              "recall": 0,
+              "f1": 0
+            },
+            "unknown": {
+              "support": 10,
+              "predicted": 0,
+              "precision": 0,
+              "recall": 0,
+              "f1": 0
+            }
+          },
+          "coverage": 1,
+          "abstentionRate": 0,
+          "selectiveAccuracy": 0.3333333333333333,
+          "negationCapability": {
+            "n": 8,
+            "unsafeSuggestions": 2
+          },
+          "p50Ms": 0.0018340000000023338,
+          "p95Ms": 0.014665999999991186
+        }
+      }
+    },
+    "holdout": {
+      "n": 120,
+      "accuracy": 0.39166666666666666,
+      "macroF1": 0.30855200945626476,
+      "fiveIntentMacroF1": 0.3702624113475177,
+      "perClass": {
+        "conversation": {
+          "support": 20,
+          "predicted": 74,
+          "precision": 0.24324324324324326,
+          "recall": 0.9,
+          "f1": 0.3829787234042553
+        },
+        "prompt": {
+          "support": 20,
+          "predicted": 30,
+          "precision": 0.6333333333333333,
+          "recall": 0.95,
+          "f1": 0.7599999999999999
+        },
+        "research": {
+          "support": 20,
+          "predicted": 4,
+          "precision": 1,
+          "recall": 0.2,
+          "f1": 0.33333333333333337
+        },
+        "generation": {
+          "support": 20,
+          "predicted": 12,
+          "precision": 0.5,
+          "recall": 0.3,
+          "f1": 0.37499999999999994
+        },
+        "action_proposal": {
+          "support": 20,
+          "predicted": 0,
+          "precision": 0,
+          "recall": 0,
+          "f1": 0
+        },
+        "unknown": {
+          "support": 20,
+          "predicted": 0,
+          "precision": 0,
+          "recall": 0,
+          "f1": 0
+        }
+      },
+      "coverage": 1,
+      "abstentionRate": 0,
+      "selectiveAccuracy": 0.39166666666666666,
+      "negationCapability": {
+        "n": 12,
+        "unsafeSuggestions": 1
+      },
+      "p50Ms": 0.0019170000000059417,
+      "p95Ms": 0.004708000000007928,
+      "byLanguage": {
+        "zh": {
+          "n": 60,
+          "accuracy": 0.43333333333333335,
+          "macroF1": 0.3670634920634921,
+          "fiveIntentMacroF1": 0.4404761904761905,
+          "perClass": {
+            "conversation": {
+              "support": 10,
+              "predicted": 32,
+              "precision": 0.25,
+              "recall": 0.8,
+              "f1": 0.38095238095238093
+            },
+            "prompt": {
+              "support": 10,
+              "predicted": 14,
+              "precision": 0.6428571428571429,
+              "recall": 0.9,
+              "f1": 0.75
+            },
+            "research": {
+              "support": 10,
+              "predicted": 4,
+              "precision": 1,
+              "recall": 0.4,
+              "f1": 0.5714285714285715
+            },
+            "generation": {
+              "support": 10,
+              "predicted": 10,
+              "precision": 0.5,
+              "recall": 0.5,
+              "f1": 0.5
+            },
+            "action_proposal": {
+              "support": 10,
+              "predicted": 0,
+              "precision": 0,
+              "recall": 0,
+              "f1": 0
+            },
+            "unknown": {
+              "support": 10,
+              "predicted": 0,
+              "precision": 0,
+              "recall": 0,
+              "f1": 0
+            }
+          },
+          "coverage": 1,
+          "abstentionRate": 0,
+          "selectiveAccuracy": 0.43333333333333335,
+          "negationCapability": {
+            "n": 6,
+            "unsafeSuggestions": 1
+          },
+          "p50Ms": 0.00216700000000003,
+          "p95Ms": 0.011542000000005714
+        },
+        "en": {
+          "n": 60,
+          "accuracy": 0.35,
+          "macroF1": 0.22008547008547008,
+          "fiveIntentMacroF1": 0.2641025641025641,
+          "perClass": {
+            "conversation": {
+              "support": 10,
+              "predicted": 42,
+              "precision": 0.23809523809523808,
+              "recall": 1,
+              "f1": 0.3846153846153846
+            },
+            "prompt": {
+              "support": 10,
+              "predicted": 16,
+              "precision": 0.625,
+              "recall": 1,
+              "f1": 0.7692307692307693
+            },
+            "research": {
+              "support": 10,
+              "predicted": 0,
+              "precision": 0,
+              "recall": 0,
+              "f1": 0
+            },
+            "generation": {
+              "support": 10,
+              "predicted": 2,
+              "precision": 0.5,
+              "recall": 0.1,
+              "f1": 0.16666666666666669
+            },
+            "action_proposal": {
+              "support": 10,
+              "predicted": 0,
+              "precision": 0,
+              "recall": 0,
+              "f1": 0
+            },
+            "unknown": {
+              "support": 10,
+              "predicted": 0,
+              "precision": 0,
+              "recall": 0,
+              "f1": 0
+            }
+          },
+          "coverage": 1,
+          "abstentionRate": 0,
+          "selectiveAccuracy": 0.35,
+          "negationCapability": {
+            "n": 6,
+            "unsafeSuggestions": 0
+          },
+          "p50Ms": 0.0016660000000001673,
+          "p95Ms": 0.004666000000000281
+        }
+      }
+    }
+  },
+  "localOnRemoteSubset": {
+    "dev": {
+      "n": 120,
+      "accuracy": 0.425,
+      "macroF1": 0.38748597081930414,
+      "fiveIntentMacroF1": 0.4286195286195286,
+      "perClass": {
+        "conversation": {
+          "support": 20,
+          "predicted": 79,
+          "precision": 0.24050632911392406,
+          "recall": 0.95,
+          "f1": 0.38383838383838387
+        },
+        "prompt": {
+          "support": 20,
+          "predicted": 16,
+          "precision": 0.875,
+          "recall": 0.7,
+          "f1": 0.7777777777777777
+        },
+        "research": {
+          "support": 20,
+          "predicted": 7,
+          "precision": 0.7142857142857143,
+          "recall": 0.25,
+          "f1": 0.37037037037037035
+        },
+        "generation": {
+          "support": 20,
+          "predicted": 16,
+          "precision": 0.6875,
+          "recall": 0.55,
+          "f1": 0.6111111111111112
+        },
+        "action_proposal": {
+          "support": 20,
+          "predicted": 0,
+          "precision": 0,
+          "recall": 0,
+          "f1": 0
+        },
+        "unknown": {
+          "support": 20,
+          "predicted": 2,
+          "precision": 1,
+          "recall": 0.1,
+          "f1": 0.18181818181818182
+        }
+      },
+      "coverage": 0.9833333333333333,
+      "abstentionRate": 0.01666666666666672,
+      "selectiveAccuracy": 0.4152542372881356,
+      "negationCapability": {
+        "n": 16,
+        "unsafeSuggestions": 2
+      },
+      "p50Ms": 0.002333000000007246,
+      "p95Ms": 0.09945899999999597,
+      "byLanguage": {
+        "zh": {
+          "n": 60,
+          "accuracy": 0.5166666666666667,
+          "macroF1": 0.4860021786492375,
+          "fiveIntentMacroF1": 0.5165359477124183,
+          "perClass": {
+            "conversation": {
+              "support": 10,
+              "predicted": 35,
+              "precision": 0.2857142857142857,
+              "recall": 1,
+              "f1": 0.4444444444444445
+            },
+            "prompt": {
+              "support": 10,
+              "predicted": 6,
+              "precision": 1,
+              "recall": 0.6,
+              "f1": 0.7499999999999999
+            },
+            "research": {
+              "support": 10,
+              "predicted": 7,
+              "precision": 0.7142857142857143,
+              "recall": 0.5,
+              "f1": 0.588235294117647
+            },
+            "generation": {
+              "support": 10,
+              "predicted": 10,
+              "precision": 0.8,
+              "recall": 0.8,
+              "f1": 0.8000000000000002
+            },
+            "action_proposal": {
+              "support": 10,
+              "predicted": 0,
+              "precision": 0,
+              "recall": 0,
+              "f1": 0
+            },
+            "unknown": {
+              "support": 10,
+              "predicted": 2,
+              "precision": 1,
+              "recall": 0.2,
+              "f1": 0.33333333333333337
+            }
+          },
+          "coverage": 0.9666666666666667,
+          "abstentionRate": 0.033333333333333326,
+          "selectiveAccuracy": 0.5,
+          "negationCapability": {
+            "n": 8,
+            "unsafeSuggestions": 0
+          },
+          "p50Ms": 0.0025419999999911624,
+          "p95Ms": 0.15987499999999955
+        },
+        "en": {
+          "n": 60,
+          "accuracy": 0.3333333333333333,
+          "macroF1": 0.25138888888888894,
+          "fiveIntentMacroF1": 0.3016666666666667,
+          "perClass": {
+            "conversation": {
+              "support": 10,
+              "predicted": 44,
+              "precision": 0.20454545454545456,
+              "recall": 0.9,
+              "f1": 0.33333333333333337
+            },
+            "prompt": {
+              "support": 10,
+              "predicted": 10,
+              "precision": 0.8,
+              "recall": 0.8,
+              "f1": 0.8000000000000002
+            },
+            "research": {
+              "support": 10,
+              "predicted": 0,
+              "precision": 0,
+              "recall": 0,
+              "f1": 0
+            },
+            "generation": {
+              "support": 10,
+              "predicted": 6,
+              "precision": 0.5,
+              "recall": 0.3,
+              "f1": 0.37499999999999994
+            },
+            "action_proposal": {
+              "support": 10,
+              "predicted": 0,
+              "precision": 0,
+              "recall": 0,
+              "f1": 0
+            },
+            "unknown": {
+              "support": 10,
+              "predicted": 0,
+              "precision": 0,
+              "recall": 0,
+              "f1": 0
+            }
+          },
+          "coverage": 1,
+          "abstentionRate": 0,
+          "selectiveAccuracy": 0.3333333333333333,
+          "negationCapability": {
+            "n": 8,
+            "unsafeSuggestions": 2
+          },
+          "p50Ms": 0.0018340000000023338,
+          "p95Ms": 0.014665999999991186
+        }
+      }
+    },
+    "holdout": {
+      "n": 120,
+      "accuracy": 0.39166666666666666,
+      "macroF1": 0.30855200945626476,
+      "fiveIntentMacroF1": 0.3702624113475177,
+      "perClass": {
+        "conversation": {
+          "support": 20,
+          "predicted": 74,
+          "precision": 0.24324324324324326,
+          "recall": 0.9,
+          "f1": 0.3829787234042553
+        },
+        "prompt": {
+          "support": 20,
+          "predicted": 30,
+          "precision": 0.6333333333333333,
+          "recall": 0.95,
+          "f1": 0.7599999999999999
+        },
+        "research": {
+          "support": 20,
+          "predicted": 4,
+          "precision": 1,
+          "recall": 0.2,
+          "f1": 0.33333333333333337
+        },
+        "generation": {
+          "support": 20,
+          "predicted": 12,
+          "precision": 0.5,
+          "recall": 0.3,
+          "f1": 0.37499999999999994
+        },
+        "action_proposal": {
+          "support": 20,
+          "predicted": 0,
+          "precision": 0,
+          "recall": 0,
+          "f1": 0
+        },
+        "unknown": {
+          "support": 20,
+          "predicted": 0,
+          "precision": 0,
+          "recall": 0,
+          "f1": 0
+        }
+      },
+      "coverage": 1,
+      "abstentionRate": 0,
+      "selectiveAccuracy": 0.39166666666666666,
+      "negationCapability": {
+        "n": 12,
+        "unsafeSuggestions": 1
+      },
+      "p50Ms": 0.0019170000000059417,
+      "p95Ms": 0.004708000000007928,
+      "byLanguage": {
+        "zh": {
+          "n": 60,
+          "accuracy": 0.43333333333333335,
+          "macroF1": 0.3670634920634921,
+          "fiveIntentMacroF1": 0.4404761904761905,
+          "perClass": {
+            "conversation": {
+              "support": 10,
+              "predicted": 32,
+              "precision": 0.25,
+              "recall": 0.8,
+              "f1": 0.38095238095238093
+            },
+            "prompt": {
+              "support": 10,
+              "predicted": 14,
+              "precision": 0.6428571428571429,
+              "recall": 0.9,
+              "f1": 0.75
+            },
+            "research": {
+              "support": 10,
+              "predicted": 4,
+              "precision": 1,
+              "recall": 0.4,
+              "f1": 0.5714285714285715
+            },
+            "generation": {
+              "support": 10,
+              "predicted": 10,
+              "precision": 0.5,
+              "recall": 0.5,
+              "f1": 0.5
+            },
+            "action_proposal": {
+              "support": 10,
+              "predicted": 0,
+              "precision": 0,
+              "recall": 0,
+              "f1": 0
+            },
+            "unknown": {
+              "support": 10,
+              "predicted": 0,
+              "precision": 0,
+              "recall": 0,
+              "f1": 0
+            }
+          },
+          "coverage": 1,
+          "abstentionRate": 0,
+          "selectiveAccuracy": 0.43333333333333335,
+          "negationCapability": {
+            "n": 6,
+            "unsafeSuggestions": 1
+          },
+          "p50Ms": 0.00216700000000003,
+          "p95Ms": 0.011542000000005714
+        },
+        "en": {
+          "n": 60,
+          "accuracy": 0.35,
+          "macroF1": 0.22008547008547008,
+          "fiveIntentMacroF1": 0.2641025641025641,
+          "perClass": {
+            "conversation": {
+              "support": 10,
+              "predicted": 42,
+              "precision": 0.23809523809523808,
+              "recall": 1,
+              "f1": 0.3846153846153846
+            },
+            "prompt": {
+              "support": 10,
+              "predicted": 16,
+              "precision": 0.625,
+              "recall": 1,
+              "f1": 0.7692307692307693
+            },
+            "research": {
+              "support": 10,
+              "predicted": 0,
+              "precision": 0,
+              "recall": 0,
+              "f1": 0
+            },
+            "generation": {
+              "support": 10,
+              "predicted": 2,
+              "precision": 0.5,
+              "recall": 0.1,
+              "f1": 0.16666666666666669
+            },
+            "action_proposal": {
+              "support": 10,
+              "predicted": 0,
+              "precision": 0,
+              "recall": 0,
+              "f1": 0
+            },
+            "unknown": {
+              "support": 10,
+              "predicted": 0,
+              "precision": 0,
+              "recall": 0,
+              "f1": 0
+            }
+          },
+          "coverage": 1,
+          "abstentionRate": 0,
+          "selectiveAccuracy": 0.35,
+          "negationCapability": {
+            "n": 6,
+            "unsafeSuggestions": 0
+          },
+          "p50Ms": 0.0016660000000001673,
+          "p95Ms": 0.004666000000000281
+        }
+      }
+    }
+  },
+  "candidateRaw": {
+    "dev": {
+      "n": 120,
+      "accuracy": 0.25833333333333336,
+      "macroF1": 0.2494407558125699,
+      "fiveIntentMacroF1": 0.25105304490611835,
+      "perClass": {
+        "conversation": {
+          "support": 20,
+          "predicted": 0,
+          "precision": 0,
+          "recall": 0,
+          "f1": 0
+        },
+        "prompt": {
+          "support": 20,
+          "predicted": 9,
+          "precision": 1,
+          "recall": 0.45,
+          "f1": 0.6206896551724138
+        },
+        "research": {
+          "support": 20,
+          "predicted": 4,
+          "precision": 1,
+          "recall": 0.2,
+          "f1": 0.33333333333333337
+        },
+        "generation": {
+          "support": 20,
+          "predicted": 8,
+          "precision": 0.375,
+          "recall": 0.15,
+          "f1": 0.21428571428571425
+        },
+        "action_proposal": {
+          "support": 20,
+          "predicted": 3,
+          "precision": 0.3333333333333333,
+          "recall": 0.05,
+          "f1": 0.08695652173913045
+        },
+        "unknown": {
+          "support": 20,
+          "predicted": 96,
+          "precision": 0.14583333333333334,
+          "recall": 0.7,
+          "f1": 0.2413793103448276
+        }
+      },
+      "coverage": 0.2,
+      "abstentionRate": 0.8,
+      "selectiveAccuracy": 0.7083333333333334,
+      "negationCapability": {
+        "n": 16,
+        "unsafeSuggestions": 1
+      },
+      "p50Ms": 249.2980419999949,
+      "p95Ms": 263.195416999999,
+      "byLanguage": {
+        "zh": {
+          "n": 60,
+          "accuracy": 0.3333333333333333,
+          "macroF1": 0.3440035273368607,
+          "fiveIntentMacroF1": 0.36095238095238097,
+          "perClass": {
+            "conversation": {
+              "support": 10,
+              "predicted": 0,
+              "precision": 0,
+              "recall": 0,
+              "f1": 0
+            },
+            "prompt": {
+              "support": 10,
+              "predicted": 5,
+              "precision": 1,
+              "recall": 0.5,
+              "f1": 0.6666666666666666
+            },
+            "research": {
+              "support": 10,
+              "predicted": 4,
+              "precision": 1,
+              "recall": 0.4,
+              "f1": 0.5714285714285715
+            },
+            "generation": {
+              "support": 10,
+              "predicted": 5,
+              "precision": 0.6,
+              "recall": 0.3,
+              "f1": 0.4
+            },
+            "action_proposal": {
+              "support": 10,
+              "predicted": 2,
+              "precision": 0.5,
+              "recall": 0.1,
+              "f1": 0.16666666666666669
+            },
+            "unknown": {
+              "support": 10,
+              "predicted": 44,
+              "precision": 0.1590909090909091,
+              "recall": 0.7,
+              "f1": 0.25925925925925924
+            }
+          },
+          "coverage": 0.26666666666666666,
+          "abstentionRate": 0.7333333333333334,
+          "selectiveAccuracy": 0.8125,
+          "negationCapability": {
+            "n": 8,
+            "unsafeSuggestions": 0
+          },
+          "p50Ms": 249.22400000000016,
+          "p95Ms": 263.195416999999
+        },
+        "en": {
+          "n": 60,
+          "accuracy": 0.18333333333333332,
+          "macroF1": 0.1328725038402458,
+          "fiveIntentMacroF1": 0.1142857142857143,
+          "perClass": {
+            "conversation": {
+              "support": 10,
+              "predicted": 0,
+              "precision": 0,
+              "recall": 0,
+              "f1": 0
+            },
+            "prompt": {
+              "support": 10,
+              "predicted": 4,
+              "precision": 1,
+              "recall": 0.4,
+              "f1": 0.5714285714285715
+            },
+            "research": {
+              "support": 10,
+              "predicted": 0,
+              "precision": 0,
+              "recall": 0,
+              "f1": 0
+            },
+            "generation": {
+              "support": 10,
+              "predicted": 3,
+              "precision": 0,
+              "recall": 0,
+              "f1": 0
+            },
+            "action_proposal": {
+              "support": 10,
+              "predicted": 1,
+              "precision": 0,
+              "recall": 0,
+              "f1": 0
+            },
+            "unknown": {
+              "support": 10,
+              "predicted": 52,
+              "precision": 0.1346153846153846,
+              "recall": 0.7,
+              "f1": 0.22580645161290322
+            }
+          },
+          "coverage": 0.13333333333333333,
+          "abstentionRate": 0.8666666666666667,
+          "selectiveAccuracy": 0.5,
+          "negationCapability": {
+            "n": 8,
+            "unsafeSuggestions": 1
+          },
+          "p50Ms": 249.61074999999983,
+          "p95Ms": 261.1861659999995
+        }
+      }
+    },
+    "holdout": {
+      "n": 120,
+      "accuracy": 0.2,
+      "macroF1": 0.16841425677330304,
+      "fiveIntentMacroF1": 0.15693581780538302,
+      "perClass": {
+        "conversation": {
+          "support": 20,
+          "predicted": 0,
+          "precision": 0,
+          "recall": 0,
+          "f1": 0
+        },
+        "prompt": {
+          "support": 20,
+          "predicted": 3,
+          "precision": 1,
+          "recall": 0.15,
+          "f1": 0.2608695652173913
+        },
+        "research": {
+          "support": 20,
+          "predicted": 1,
+          "precision": 1,
+          "recall": 0.05,
+          "f1": 0.09523809523809523
+        },
+        "generation": {
+          "support": 20,
+          "predicted": 8,
+          "precision": 0.75,
+          "recall": 0.3,
+          "f1": 0.4285714285714285
+        },
+        "action_proposal": {
+          "support": 20,
+          "predicted": 4,
+          "precision": 0,
+          "recall": 0,
+          "f1": 0
+        },
+        "unknown": {
+          "support": 20,
+          "predicted": 104,
+          "precision": 0.1346153846153846,
+          "recall": 0.7,
+          "f1": 0.22580645161290322
+        }
+      },
+      "coverage": 0.13333333333333333,
+      "abstentionRate": 0.8666666666666667,
+      "selectiveAccuracy": 0.625,
+      "negationCapability": {
+        "n": 12,
+        "unsafeSuggestions": 0
+      },
+      "p50Ms": 250.64191700000083,
+      "p95Ms": 262.21083299999736,
+      "byLanguage": {
+        "zh": {
+          "n": 60,
+          "accuracy": 0.25,
+          "macroF1": 0.23010746315831063,
+          "fiveIntentMacroF1": 0.22867132867132867,
+          "perClass": {
+            "conversation": {
+              "support": 10,
+              "predicted": 0,
+              "precision": 0,
+              "recall": 0,
+              "f1": 0
+            },
+            "prompt": {
+              "support": 10,
+              "predicted": 3,
+              "precision": 1,
+              "recall": 0.3,
+              "f1": 0.4615384615384615
+            },
+            "research": {
+              "support": 10,
+              "predicted": 1,
+              "precision": 1,
+              "recall": 0.1,
+              "f1": 0.18181818181818182
+            },
+            "generation": {
+              "support": 10,
+              "predicted": 6,
+              "precision": 0.6666666666666666,
+              "recall": 0.4,
+              "f1": 0.5
+            },
+            "action_proposal": {
+              "support": 10,
+              "predicted": 1,
+              "precision": 0,
+              "recall": 0,
+              "f1": 0
+            },
+            "unknown": {
+              "support": 10,
+              "predicted": 49,
+              "precision": 0.14285714285714285,
+              "recall": 0.7,
+              "f1": 0.23728813559322035
+            }
+          },
+          "coverage": 0.18333333333333332,
+          "abstentionRate": 0.8166666666666667,
+          "selectiveAccuracy": 0.7272727272727273,
+          "negationCapability": {
+            "n": 6,
+            "unsafeSuggestions": 0
+          },
+          "p50Ms": 249.71624999999767,
+          "p95Ms": 258.2298329999976
+        },
+        "en": {
+          "n": 60,
+          "accuracy": 0.15,
+          "macroF1": 0.09145299145299146,
+          "fiveIntentMacroF1": 0.06666666666666668,
+          "perClass": {
+            "conversation": {
+              "support": 10,
+              "predicted": 0,
+              "precision": 0,
+              "recall": 0,
+              "f1": 0
+            },
+            "prompt": {
+              "support": 10,
+              "predicted": 0,
+              "precision": 0,
+              "recall": 0,
+              "f1": 0
+            },
+            "research": {
+              "support": 10,
+              "predicted": 0,
+              "precision": 0,
+              "recall": 0,
+              "f1": 0
+            },
+            "generation": {
+              "support": 10,
+              "predicted": 2,
+              "precision": 1,
+              "recall": 0.2,
+              "f1": 0.33333333333333337
+            },
+            "action_proposal": {
+              "support": 10,
+              "predicted": 3,
+              "precision": 0,
+              "recall": 0,
+              "f1": 0
+            },
+            "unknown": {
+              "support": 10,
+              "predicted": 55,
+              "precision": 0.12727272727272726,
+              "recall": 0.7,
+              "f1": 0.2153846153846154
+            }
+          },
+          "coverage": 0.08333333333333333,
+          "abstentionRate": 0.9166666666666666,
+          "selectiveAccuracy": 0.4,
+          "negationCapability": {
+            "n": 6,
+            "unsafeSuggestions": 0
+          },
+          "p50Ms": 252.27570800000103,
+          "p95Ms": 269.6137080000044
+        }
+      }
+    }
+  },
+  "candidateSelective": {
+    "dev": {
+      "n": 120,
+      "accuracy": 0.26666666666666666,
+      "macroF1": 0.25326866481289273,
+      "fiveIntentMacroF1": 0.25264034649342,
+      "perClass": {
+        "conversation": {
+          "support": 20,
+          "predicted": 0,
+          "precision": 0,
+          "recall": 0,
+          "f1": 0
+        },
+        "prompt": {
+          "support": 20,
+          "predicted": 9,
+          "precision": 1,
+          "recall": 0.45,
+          "f1": 0.6206896551724138
+        },
+        "research": {
+          "support": 20,
+          "predicted": 4,
+          "precision": 1,
+          "recall": 0.2,
+          "f1": 0.33333333333333337
+        },
+        "generation": {
+          "support": 20,
+          "predicted": 7,
+          "precision": 0.42857142857142855,
+          "recall": 0.15,
+          "f1": 0.2222222222222222
+        },
+        "action_proposal": {
+          "support": 20,
+          "predicted": 3,
+          "precision": 0.3333333333333333,
+          "recall": 0.05,
+          "f1": 0.08695652173913045
+        },
+        "unknown": {
+          "support": 20,
+          "predicted": 97,
+          "precision": 0.15463917525773196,
+          "recall": 0.75,
+          "f1": 0.25641025641025644
+        }
+      },
+      "coverage": 0.19166666666666668,
+      "abstentionRate": 0.8083333333333333,
+      "selectiveAccuracy": 0.7391304347826086,
+      "negationCapability": {
+        "n": 16,
+        "unsafeSuggestions": 1
+      },
+      "p50Ms": 249.2980419999949,
+      "p95Ms": 263.195416999999,
+      "byLanguage": {
+        "zh": {
+          "n": 60,
+          "accuracy": 0.35,
+          "macroF1": 0.354040404040404,
+          "fiveIntentMacroF1": 0.36666666666666664,
+          "perClass": {
+            "conversation": {
+              "support": 10,
+              "predicted": 0,
+              "precision": 0,
+              "recall": 0,
+              "f1": 0
+            },
+            "prompt": {
+              "support": 10,
+              "predicted": 5,
+              "precision": 1,
+              "recall": 0.5,
+              "f1": 0.6666666666666666
+            },
+            "research": {
+              "support": 10,
+              "predicted": 4,
+              "precision": 1,
+              "recall": 0.4,
+              "f1": 0.5714285714285715
+            },
+            "generation": {
+              "support": 10,
+              "predicted": 4,
+              "precision": 0.75,
+              "recall": 0.3,
+              "f1": 0.4285714285714285
+            },
+            "action_proposal": {
+              "support": 10,
+              "predicted": 2,
+              "precision": 0.5,
+              "recall": 0.1,
+              "f1": 0.16666666666666669
+            },
+            "unknown": {
+              "support": 10,
+              "predicted": 45,
+              "precision": 0.17777777777777778,
+              "recall": 0.8,
+              "f1": 0.2909090909090909
+            }
+          },
+          "coverage": 0.25,
+          "abstentionRate": 0.75,
+          "selectiveAccuracy": 0.8666666666666667,
+          "negationCapability": {
+            "n": 8,
+            "unsafeSuggestions": 0
+          },
+          "p50Ms": 249.22400000000016,
+          "p95Ms": 263.195416999999
+        },
+        "en": {
+          "n": 60,
+          "accuracy": 0.18333333333333332,
+          "macroF1": 0.1328725038402458,
+          "fiveIntentMacroF1": 0.1142857142857143,
+          "perClass": {
+            "conversation": {
+              "support": 10,
+              "predicted": 0,
+              "precision": 0,
+              "recall": 0,
+              "f1": 0
+            },
+            "prompt": {
+              "support": 10,
+              "predicted": 4,
+              "precision": 1,
+              "recall": 0.4,
+              "f1": 0.5714285714285715
+            },
+            "research": {
+              "support": 10,
+              "predicted": 0,
+              "precision": 0,
+              "recall": 0,
+              "f1": 0
+            },
+            "generation": {
+              "support": 10,
+              "predicted": 3,
+              "precision": 0,
+              "recall": 0,
+              "f1": 0
+            },
+            "action_proposal": {
+              "support": 10,
+              "predicted": 1,
+              "precision": 0,
+              "recall": 0,
+              "f1": 0
+            },
+            "unknown": {
+              "support": 10,
+              "predicted": 52,
+              "precision": 0.1346153846153846,
+              "recall": 0.7,
+              "f1": 0.22580645161290322
+            }
+          },
+          "coverage": 0.13333333333333333,
+          "abstentionRate": 0.8666666666666667,
+          "selectiveAccuracy": 0.5,
+          "negationCapability": {
+            "n": 8,
+            "unsafeSuggestions": 1
+          },
+          "p50Ms": 249.61074999999983,
+          "p95Ms": 261.1861659999995
+        }
+      }
+    },
+    "holdout": {
+      "n": 120,
+      "accuracy": 0.2,
+      "macroF1": 0.16841425677330304,
+      "fiveIntentMacroF1": 0.15693581780538302,
+      "perClass": {
+        "conversation": {
+          "support": 20,
+          "predicted": 0,
+          "precision": 0,
+          "recall": 0,
+          "f1": 0
+        },
+        "prompt": {
+          "support": 20,
+          "predicted": 3,
+          "precision": 1,
+          "recall": 0.15,
+          "f1": 0.2608695652173913
+        },
+        "research": {
+          "support": 20,
+          "predicted": 1,
+          "precision": 1,
+          "recall": 0.05,
+          "f1": 0.09523809523809523
+        },
+        "generation": {
+          "support": 20,
+          "predicted": 8,
+          "precision": 0.75,
+          "recall": 0.3,
+          "f1": 0.4285714285714285
+        },
+        "action_proposal": {
+          "support": 20,
+          "predicted": 4,
+          "precision": 0,
+          "recall": 0,
+          "f1": 0
+        },
+        "unknown": {
+          "support": 20,
+          "predicted": 104,
+          "precision": 0.1346153846153846,
+          "recall": 0.7,
+          "f1": 0.22580645161290322
+        }
+      },
+      "coverage": 0.13333333333333333,
+      "abstentionRate": 0.8666666666666667,
+      "selectiveAccuracy": 0.625,
+      "negationCapability": {
+        "n": 12,
+        "unsafeSuggestions": 0
+      },
+      "p50Ms": 250.64191700000083,
+      "p95Ms": 262.21083299999736,
+      "byLanguage": {
+        "zh": {
+          "n": 60,
+          "accuracy": 0.25,
+          "macroF1": 0.23010746315831063,
+          "fiveIntentMacroF1": 0.22867132867132867,
+          "perClass": {
+            "conversation": {
+              "support": 10,
+              "predicted": 0,
+              "precision": 0,
+              "recall": 0,
+              "f1": 0
+            },
+            "prompt": {
+              "support": 10,
+              "predicted": 3,
+              "precision": 1,
+              "recall": 0.3,
+              "f1": 0.4615384615384615
+            },
+            "research": {
+              "support": 10,
+              "predicted": 1,
+              "precision": 1,
+              "recall": 0.1,
+              "f1": 0.18181818181818182
+            },
+            "generation": {
+              "support": 10,
+              "predicted": 6,
+              "precision": 0.6666666666666666,
+              "recall": 0.4,
+              "f1": 0.5
+            },
+            "action_proposal": {
+              "support": 10,
+              "predicted": 1,
+              "precision": 0,
+              "recall": 0,
+              "f1": 0
+            },
+            "unknown": {
+              "support": 10,
+              "predicted": 49,
+              "precision": 0.14285714285714285,
+              "recall": 0.7,
+              "f1": 0.23728813559322035
+            }
+          },
+          "coverage": 0.18333333333333332,
+          "abstentionRate": 0.8166666666666667,
+          "selectiveAccuracy": 0.7272727272727273,
+          "negationCapability": {
+            "n": 6,
+            "unsafeSuggestions": 0
+          },
+          "p50Ms": 249.71624999999767,
+          "p95Ms": 258.2298329999976
+        },
+        "en": {
+          "n": 60,
+          "accuracy": 0.15,
+          "macroF1": 0.09145299145299146,
+          "fiveIntentMacroF1": 0.06666666666666668,
+          "perClass": {
+            "conversation": {
+              "support": 10,
+              "predicted": 0,
+              "precision": 0,
+              "recall": 0,
+              "f1": 0
+            },
+            "prompt": {
+              "support": 10,
+              "predicted": 0,
+              "precision": 0,
+              "recall": 0,
+              "f1": 0
+            },
+            "research": {
+              "support": 10,
+              "predicted": 0,
+              "precision": 0,
+              "recall": 0,
+              "f1": 0
+            },
+            "generation": {
+              "support": 10,
+              "predicted": 2,
+              "precision": 1,
+              "recall": 0.2,
+              "f1": 0.33333333333333337
+            },
+            "action_proposal": {
+              "support": 10,
+              "predicted": 3,
+              "precision": 0,
+              "recall": 0,
+              "f1": 0
+            },
+            "unknown": {
+              "support": 10,
+              "predicted": 55,
+              "precision": 0.12727272727272726,
+              "recall": 0.7,
+              "f1": 0.2153846153846154
+            }
+          },
+          "coverage": 0.08333333333333333,
+          "abstentionRate": 0.9166666666666666,
+          "selectiveAccuracy": 0.4,
+          "negationCapability": {
+            "n": 6,
+            "unsafeSuggestions": 0
+          },
+          "p50Ms": 252.27570800000103,
+          "p95Ms": 269.6137080000044
+        }
+      }
+    }
+  },
+  "threshold": 0.49,
+  "disagreement": 0.925,
+  "firstRequestMs": 398.4160419999989,
+  "serverColdStart": "unobservable",
+  "pricing": {
+    "inputCostPerToken": 0,
+    "outputCostPerToken": 0,
+    "source": "https://api.flock.io/model/info",
+    "billedCost": null
+  },
+  "reportedCostHeaders": {
+    "count": 0,
+    "total": 0
+  },
+  "stopped": null,
+  "planner": "not_run: authorization covers synthetic data only; do not transmit private system prompts or project context",
+  "jev": "not_run: separate provider not authorized",
+  "localRows": [
+    {
+      "id": "greeting-1",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 2.678457999999999
+    },
+    {
+      "id": "greeting-2",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 1.0992920000000055
+    },
+    {
+      "id": "greeting-3",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.7570419999999984
+    },
+    {
+      "id": "greeting-4",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.011207999999996332
+    },
+    {
+      "id": "capability-1",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0036670000000071923
+    },
+    {
+      "id": "capability-2",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0018330000000048585
+    },
+    {
+      "id": "capability-3",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0015829999999965594
+    },
+    {
+      "id": "capability-4",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.004666000000000281
+    },
+    {
+      "id": "negation-1",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.002208000000010202
+    },
+    {
+      "id": "negation-2",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.007374999999996135
+    },
+    {
+      "id": "negation-3",
+      "prediction": "generation",
+      "score": 1,
+      "ms": 0.010333000000002812
+    },
+    {
+      "id": "negation-4",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.012290999999990504
+    },
+    {
+      "id": "copywriting-1",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.012374999999991587
+    },
+    {
+      "id": "copywriting-2",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.019874999999998977
+    },
+    {
+      "id": "copywriting-3",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0062910000000044874
+    },
+    {
+      "id": "copywriting-4",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.007084000000006085
+    },
+    {
+      "id": "why-color-1",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.005291999999997188
+    },
+    {
+      "id": "why-color-2",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.003457999999994854
+    },
+    {
+      "id": "why-color-3",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.002209000000007677
+    },
+    {
+      "id": "why-color-4",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0019580000000019027
+    },
+    {
+      "id": "write-prompt-1",
+      "prediction": "prompt",
+      "score": 1,
+      "ms": 0.0013749999999959073
+    },
+    {
+      "id": "write-prompt-2",
+      "prediction": "prompt",
+      "score": 1,
+      "ms": 0.0016670000000118534
+    },
+    {
+      "id": "write-prompt-3",
+      "prediction": "prompt",
+      "score": 1,
+      "ms": 0.0019580000000019027
+    },
+    {
+      "id": "write-prompt-4",
+      "prediction": "prompt",
+      "score": 1,
+      "ms": 0.002332999999993035
+    },
+    {
+      "id": "polish-prompt-1",
+      "prediction": "prompt",
+      "score": 1,
+      "ms": 0.003124999999997158
+    },
+    {
+      "id": "polish-prompt-2",
+      "prediction": "prompt",
+      "score": 1,
+      "ms": 0.001082999999994172
+    },
+    {
+      "id": "polish-prompt-3",
+      "prediction": "prompt",
+      "score": 1,
+      "ms": 0.0019580000000019027
+    },
+    {
+      "id": "polish-prompt-4",
+      "prediction": "prompt",
+      "score": 1,
+      "ms": 0.0016250000000042064
+    },
+    {
+      "id": "translate-prompt-1",
+      "prediction": "prompt",
+      "score": 1,
+      "ms": 0.0037499999999965894
+    },
+    {
+      "id": "translate-prompt-2",
+      "prediction": "prompt",
+      "score": 1,
+      "ms": 0.004416999999989457
+    },
+    {
+      "id": "translate-prompt-3",
+      "prediction": "prompt",
+      "score": 1,
+      "ms": 0.004416999999989457
+    },
+    {
+      "id": "translate-prompt-4",
+      "prediction": "prompt",
+      "score": 1,
+      "ms": 0.004708000000007928
+    },
+    {
+      "id": "prompt-only-1",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.001208000000005427
+    },
+    {
+      "id": "prompt-only-2",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.001333000000002471
+    },
+    {
+      "id": "prompt-only-3",
+      "prediction": "prompt",
+      "score": 1,
+      "ms": 0.0018340000000023338
+    },
+    {
+      "id": "prompt-only-4",
+      "prediction": "prompt",
+      "score": 1,
+      "ms": 0.003250000000008413
+    },
+    {
+      "id": "prompt-context-1",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0025419999999911624
+    },
+    {
+      "id": "prompt-context-2",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0025830000000013342
+    },
+    {
+      "id": "prompt-context-3",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0016670000000118534
+    },
+    {
+      "id": "prompt-context-4",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0018330000000048585
+    },
+    {
+      "id": "web-research-1",
+      "prediction": "research",
+      "score": 1,
+      "ms": 0.0025419999999911624
+    },
+    {
+      "id": "web-research-2",
+      "prediction": "research",
+      "score": 1,
+      "ms": 0.002333000000007246
+    },
+    {
+      "id": "web-research-3",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.006874999999993747
+    },
+    {
+      "id": "web-research-4",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.003374999999991246
+    },
+    {
+      "id": "canvas-inventory-1",
+      "prediction": "research",
+      "score": 1,
+      "ms": 0.0028340000000071086
+    },
+    {
+      "id": "canvas-inventory-2",
+      "prediction": "research",
+      "score": 1,
+      "ms": 0.002207999999995991
+    },
+    {
+      "id": "canvas-inventory-3",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0017089999999910788
+    },
+    {
+      "id": "canvas-inventory-4",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0016250000000042064
+    },
+    {
+      "id": "artifact-history-1",
+      "prediction": "research",
+      "score": 1,
+      "ms": 0.0025419999999911624
+    },
+    {
+      "id": "artifact-history-2",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0026659999999907313
+    },
+    {
+      "id": "artifact-history-3",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.003416000000001418
+    },
+    {
+      "id": "artifact-history-4",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0017500000000012506
+    },
+    {
+      "id": "research-only-1",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0009170000000011669
+    },
+    {
+      "id": "research-only-2",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0005830000000059954
+    },
+    {
+      "id": "research-only-3",
+      "prediction": "generation",
+      "score": 1,
+      "ms": 0.0029159999999990305
+    },
+    {
+      "id": "research-only-4",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0017079999999936035
+    },
+    {
+      "id": "research-context-1",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.002417000000008329
+    },
+    {
+      "id": "research-context-2",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0019170000000059417
+    },
+    {
+      "id": "research-context-3",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0017500000000012506
+    },
+    {
+      "id": "research-context-4",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0030830000000037217
+    },
+    {
+      "id": "image-create-1",
+      "prediction": "generation",
+      "score": 1,
+      "ms": 0.008791000000002214
+    },
+    {
+      "id": "image-create-2",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0025830000000013342
+    },
+    {
+      "id": "image-create-3",
+      "prediction": "generation",
+      "score": 1,
+      "ms": 0.0017919999999946867
+    },
+    {
+      "id": "image-create-4",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0017090000000052896
+    },
+    {
+      "id": "image-batch-1",
+      "prediction": "generation",
+      "score": 1,
+      "ms": 0.009582999999992126
+    },
+    {
+      "id": "image-batch-2",
+      "prediction": "generation",
+      "score": 1,
+      "ms": 0.001416000000006079
+    },
+    {
+      "id": "image-batch-3",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.002082999999998947
+    },
+    {
+      "id": "image-batch-4",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0031250000000113687
+    },
+    {
+      "id": "image-edit-1",
+      "prediction": "generation",
+      "score": 1,
+      "ms": 0.2414579999999944
+    },
+    {
+      "id": "image-edit-2",
+      "prediction": "generation",
+      "score": 1,
+      "ms": 0.09945899999999597
+    },
+    {
+      "id": "image-edit-3",
+      "prediction": "generation",
+      "score": 1,
+      "ms": 0.26620900000000347
+    },
+    {
+      "id": "image-edit-4",
+      "prediction": "generation",
+      "score": 1,
+      "ms": 0.0010410000000007358
+    },
+    {
+      "id": "video-create-1",
+      "prediction": "generation",
+      "score": 1,
+      "ms": 0.003958999999994717
+    },
+    {
+      "id": "video-create-2",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.15987499999999955
+    },
+    {
+      "id": "video-create-3",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.05558400000001029
+    },
+    {
+      "id": "video-create-4",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.003124999999997158
+    },
+    {
+      "id": "continue-image-1",
+      "prediction": "generation",
+      "score": 1,
+      "ms": 0.0027919999999994616
+    },
+    {
+      "id": "continue-image-2",
+      "prediction": "generation",
+      "score": 1,
+      "ms": 0.001999999999995339
+    },
+    {
+      "id": "continue-image-3",
+      "prediction": "prompt",
+      "score": 1,
+      "ms": 0.0016249999999899956
+    },
+    {
+      "id": "continue-image-4",
+      "prediction": "prompt",
+      "score": 1,
+      "ms": 0.0015000000000071623
+    },
+    {
+      "id": "rename-node-1",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0029169999999965057
+    },
+    {
+      "id": "rename-node-2",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0026669999999882066
+    },
+    {
+      "id": "rename-node-3",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0017080000000078144
+    },
+    {
+      "id": "rename-node-4",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.014665999999991186
+    },
+    {
+      "id": "delete-node-1",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0025420000000053733
+    },
+    {
+      "id": "delete-node-2",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.001999999999995339
+    },
+    {
+      "id": "delete-node-3",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0016660000000001673
+    },
+    {
+      "id": "delete-node-4",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0014579999999995152
+    },
+    {
+      "id": "move-node-1",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.002124999999992383
+    },
+    {
+      "id": "move-node-2",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.002125000000006594
+    },
+    {
+      "id": "move-node-3",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0027089999999958536
+    },
+    {
+      "id": "move-node-4",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0017079999999936035
+    },
+    {
+      "id": "save-memory-1",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0024169999999941183
+    },
+    {
+      "id": "save-memory-2",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0024169999999941183
+    },
+    {
+      "id": "save-memory-3",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0015829999999965594
+    },
+    {
+      "id": "save-memory-4",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0015830000000107702
+    },
+    {
+      "id": "activate-rule-1",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.002541000000007898
+    },
+    {
+      "id": "activate-rule-2",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0027500000000060254
+    },
+    {
+      "id": "activate-rule-3",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.002250000000003638
+    },
+    {
+      "id": "activate-rule-4",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0015420000000005984
+    },
+    {
+      "id": "bare-confirm-1",
+      "prediction": "unknown",
+      "score": 1,
+      "ms": 0.0019170000000059417
+    },
+    {
+      "id": "bare-confirm-2",
+      "prediction": "unknown",
+      "score": 1,
+      "ms": 0.0005840000000034706
+    },
+    {
+      "id": "bare-confirm-3",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0015000000000071623
+    },
+    {
+      "id": "bare-confirm-4",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.001290999999994824
+    },
+    {
+      "id": "absent-image-1",
+      "prediction": "generation",
+      "score": 1,
+      "ms": 0.002333000000007246
+    },
+    {
+      "id": "absent-image-2",
+      "prediction": "generation",
+      "score": 1,
+      "ms": 0.001958999999999378
+    },
+    {
+      "id": "absent-image-3",
+      "prediction": "generation",
+      "score": 1,
+      "ms": 0.0017919999999946867
+    },
+    {
+      "id": "absent-image-4",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0027499999999918145
+    },
+    {
+      "id": "vague-change-1",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0016669999999976426
+    },
+    {
+      "id": "vague-change-2",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0015829999999965594
+    },
+    {
+      "id": "vague-change-3",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.001290999999994824
+    },
+    {
+      "id": "vague-change-4",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0013749999999959073
+    },
+    {
+      "id": "multi-search-render-1",
+      "prediction": "research",
+      "score": 1,
+      "ms": 0.002333000000007246
+    },
+    {
+      "id": "multi-search-render-2",
+      "prediction": "research",
+      "score": 1,
+      "ms": 0.0009579999999971278
+    },
+    {
+      "id": "multi-search-render-3",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0017499999999870397
+    },
+    {
+      "id": "multi-search-render-4",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.002375000000000682
+    },
+    {
+      "id": "injected-label-1",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0027500000000060254
+    },
+    {
+      "id": "injected-label-2",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0030000000000001137
+    },
+    {
+      "id": "injected-label-3",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0017080000000078144
+    },
+    {
+      "id": "injected-label-4",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0016249999999899956
+    },
+    {
+      "id": "thanks-1",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0017909999999972115
+    },
+    {
+      "id": "thanks-2",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0021660000000025548
+    },
+    {
+      "id": "thanks-3",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0026249999999947704
+    },
+    {
+      "id": "thanks-4",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0015410000000031232
+    },
+    {
+      "id": "past-failure-1",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0008750000000077307
+    },
+    {
+      "id": "past-failure-2",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0005840000000034706
+    },
+    {
+      "id": "past-failure-3",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0015830000000107702
+    },
+    {
+      "id": "past-failure-4",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0016250000000042064
+    },
+    {
+      "id": "limits-1",
+      "prediction": "generation",
+      "score": 1,
+      "ms": 0.00216700000000003
+    },
+    {
+      "id": "limits-2",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.001958999999999378
+    },
+    {
+      "id": "limits-3",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0015420000000005984
+    },
+    {
+      "id": "limits-4",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0027919999999994616
+    },
+    {
+      "id": "advice-1",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0026670000000024174
+    },
+    {
+      "id": "advice-2",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.002041999999988775
+    },
+    {
+      "id": "advice-3",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0015829999999965594
+    },
+    {
+      "id": "advice-4",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0015839999999940346
+    },
+    {
+      "id": "quoted-command-1",
+      "prediction": "generation",
+      "score": 1,
+      "ms": 0.0027500000000060254
+    },
+    {
+      "id": "quoted-command-2",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0026249999999947704
+    },
+    {
+      "id": "quoted-command-3",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.006332999999997924
+    },
+    {
+      "id": "quoted-command-4",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.004708000000007928
+    },
+    {
+      "id": "negative-prompt-1",
+      "prediction": "prompt",
+      "score": 1,
+      "ms": 0.0018750000000125056
+    },
+    {
+      "id": "negative-prompt-2",
+      "prediction": "prompt",
+      "score": 1,
+      "ms": 0.002291999999997074
+    },
+    {
+      "id": "negative-prompt-3",
+      "prediction": "prompt",
+      "score": 1,
+      "ms": 0.0014999999999929514
+    },
+    {
+      "id": "negative-prompt-4",
+      "prediction": "prompt",
+      "score": 1,
+      "ms": 0.0015000000000071623
+    },
+    {
+      "id": "prompt-variants-1",
+      "prediction": "prompt",
+      "score": 1,
+      "ms": 0.002332999999993035
+    },
+    {
+      "id": "prompt-variants-2",
+      "prediction": "prompt",
+      "score": 1,
+      "ms": 0.0010000000000047748
+    },
+    {
+      "id": "prompt-variants-3",
+      "prediction": "prompt",
+      "score": 1,
+      "ms": 0.0015000000000071623
+    },
+    {
+      "id": "prompt-variants-4",
+      "prediction": "prompt",
+      "score": 1,
+      "ms": 0.00216700000000003
+    },
+    {
+      "id": "prompt-structure-1",
+      "prediction": "prompt",
+      "score": 1,
+      "ms": 0.0028330000000096334
+    },
+    {
+      "id": "prompt-structure-2",
+      "prediction": "prompt",
+      "score": 1,
+      "ms": 0.0028329999999954225
+    },
+    {
+      "id": "prompt-structure-3",
+      "prediction": "prompt",
+      "score": 1,
+      "ms": 0.0016250000000042064
+    },
+    {
+      "id": "prompt-structure-4",
+      "prediction": "prompt",
+      "score": 1,
+      "ms": 0.0016250000000042064
+    },
+    {
+      "id": "prompt-remove-1",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0007499999999964757
+    },
+    {
+      "id": "prompt-remove-2",
+      "prediction": "prompt",
+      "score": 1,
+      "ms": 0.00245800000000429
+    },
+    {
+      "id": "prompt-remove-3",
+      "prediction": "prompt",
+      "score": 1,
+      "ms": 0.004666000000000281
+    },
+    {
+      "id": "prompt-remove-4",
+      "prediction": "prompt",
+      "score": 1,
+      "ms": 0.0015829999999965594
+    },
+    {
+      "id": "prompt-json-1",
+      "prediction": "prompt",
+      "score": 1,
+      "ms": 0.0037499999999965894
+    },
+    {
+      "id": "prompt-json-2",
+      "prediction": "prompt",
+      "score": 1,
+      "ms": 0.0026250000000089813
+    },
+    {
+      "id": "prompt-json-3",
+      "prediction": "prompt",
+      "score": 1,
+      "ms": 0.0039579999999972415
+    },
+    {
+      "id": "prompt-json-4",
+      "prediction": "prompt",
+      "score": 1,
+      "ms": 0.0015420000000005984
+    },
+    {
+      "id": "trace-origin-1",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.002208000000010202
+    },
+    {
+      "id": "trace-origin-2",
+      "prediction": "research",
+      "score": 1,
+      "ms": 0.00245800000000429
+    },
+    {
+      "id": "trace-origin-3",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0016669999999976426
+    },
+    {
+      "id": "trace-origin-4",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.002249999999989427
+    },
+    {
+      "id": "memory-read-1",
+      "prediction": "research",
+      "score": 1,
+      "ms": 0.001958999999999378
+    },
+    {
+      "id": "memory-read-2",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0018749999999982947
+    },
+    {
+      "id": "memory-read-3",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0016660000000001673
+    },
+    {
+      "id": "memory-read-4",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0014579999999995152
+    },
+    {
+      "id": "compare-sources-1",
+      "prediction": "research",
+      "score": 1,
+      "ms": 0.002125000000006594
+    },
+    {
+      "id": "compare-sources-2",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0018749999999982947
+    },
+    {
+      "id": "compare-sources-3",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0017090000000052896
+    },
+    {
+      "id": "compare-sources-4",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.003208999999998241
+    },
+    {
+      "id": "search-filter-1",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.002125000000006594
+    },
+    {
+      "id": "search-filter-2",
+      "prediction": "research",
+      "score": 1,
+      "ms": 0.0017499999999870397
+    },
+    {
+      "id": "search-filter-3",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0016660000000001673
+    },
+    {
+      "id": "search-filter-4",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0014579999999995152
+    },
+    {
+      "id": "status-read-1",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0019170000000059417
+    },
+    {
+      "id": "status-read-2",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.002082999999998947
+    },
+    {
+      "id": "status-read-3",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0014170000000035543
+    },
+    {
+      "id": "status-read-4",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0017090000000052896
+    },
+    {
+      "id": "poster-render-1",
+      "prediction": "generation",
+      "score": 1,
+      "ms": 0.002375000000000682
+    },
+    {
+      "id": "poster-render-2",
+      "prediction": "generation",
+      "score": 1,
+      "ms": 0.002125000000006594
+    },
+    {
+      "id": "poster-render-3",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0016660000000001673
+    },
+    {
+      "id": "poster-render-4",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0017500000000012506
+    },
+    {
+      "id": "image-variation-1",
+      "prediction": "generation",
+      "score": 1,
+      "ms": 0.0025830000000013342
+    },
+    {
+      "id": "image-variation-2",
+      "prediction": "generation",
+      "score": 1,
+      "ms": 0.00216700000000003
+    },
+    {
+      "id": "image-variation-3",
+      "prediction": "generation",
+      "score": 1,
+      "ms": 0.0018749999999982947
+    },
+    {
+      "id": "image-variation-4",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.002666000000004942
+    },
+    {
+      "id": "region-edit-1",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.057292000000003895
+    },
+    {
+      "id": "region-edit-2",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.003540999999998462
+    },
+    {
+      "id": "region-edit-3",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.002290999999999599
+    },
+    {
+      "id": "region-edit-4",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0021660000000025548
+    },
+    {
+      "id": "text-render-1",
+      "prediction": "generation",
+      "score": 1,
+      "ms": 0.0029159999999990305
+    },
+    {
+      "id": "text-render-2",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.002290999999999599
+    },
+    {
+      "id": "text-render-3",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0017919999999946867
+    },
+    {
+      "id": "text-render-4",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0015829999999965594
+    },
+    {
+      "id": "render-not-prompt-1",
+      "prediction": "prompt",
+      "score": 1,
+      "ms": 0.00245800000000429
+    },
+    {
+      "id": "render-not-prompt-2",
+      "prediction": "prompt",
+      "score": 1,
+      "ms": 0.0011660000000119908
+    },
+    {
+      "id": "render-not-prompt-3",
+      "prediction": "prompt",
+      "score": 1,
+      "ms": 0.0016249999999899956
+    },
+    {
+      "id": "render-not-prompt-4",
+      "prediction": "prompt",
+      "score": 1,
+      "ms": 0.0019170000000059417
+    },
+    {
+      "id": "group-nodes-1",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.002292000000011285
+    },
+    {
+      "id": "group-nodes-2",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0025830000000013342
+    },
+    {
+      "id": "group-nodes-3",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0028329999999954225
+    },
+    {
+      "id": "group-nodes-4",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0015000000000071623
+    },
+    {
+      "id": "link-nodes-1",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0030000000000001137
+    },
+    {
+      "id": "link-nodes-2",
+      "prediction": "generation",
+      "score": 1,
+      "ms": 0.001416000000006079
+    },
+    {
+      "id": "link-nodes-3",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0017910000000114223
+    },
+    {
+      "id": "link-nodes-4",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0017079999999936035
+    },
+    {
+      "id": "pin-artifact-1",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.002958999999989942
+    },
+    {
+      "id": "pin-artifact-2",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0019170000000059417
+    },
+    {
+      "id": "pin-artifact-3",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.001957999999987692
+    },
+    {
+      "id": "pin-artifact-4",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0015420000000005984
+    },
+    {
+      "id": "action-not-image-1",
+      "prediction": "generation",
+      "score": 1,
+      "ms": 0.0024590000000017653
+    },
+    {
+      "id": "action-not-image-2",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0006669999999928677
+    },
+    {
+      "id": "action-not-image-3",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0016250000000042064
+    },
+    {
+      "id": "action-not-image-4",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0015420000000005984
+    },
+    {
+      "id": "update-rule-1",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.21399999999999864
+    },
+    {
+      "id": "update-rule-2",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.011542000000005714
+    },
+    {
+      "id": "update-rule-3",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.004792000000009011
+    },
+    {
+      "id": "update-rule-4",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0021660000000025548
+    },
+    {
+      "id": "unresolved-number-1",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0025420000000053733
+    },
+    {
+      "id": "unresolved-number-2",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.001958999999999378
+    },
+    {
+      "id": "unresolved-number-3",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0017919999999946867
+    },
+    {
+      "id": "unresolved-number-4",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0016669999999976426
+    },
+    {
+      "id": "empty-noise-1",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0017919999999946867
+    },
+    {
+      "id": "empty-noise-2",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0016250000000042064
+    },
+    {
+      "id": "empty-noise-3",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.0015839999999940346
+    },
+    {
+      "id": "empty-noise-4",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.001333000000002471
+    },
+    {
+      "id": "missing-prompt-1",
+      "prediction": "generation",
+      "score": 1,
+      "ms": 0.0018329999999906477
+    },
+    {
+      "id": "missing-prompt-2",
+      "prediction": "prompt",
+      "score": 1,
+      "ms": 0.004583999999994148
+    },
+    {
+      "id": "missing-prompt-3",
+      "prediction": "prompt",
+      "score": 1,
+      "ms": 0.0018330000000048585
+    },
+    {
+      "id": "missing-prompt-4",
+      "prediction": "prompt",
+      "score": 1,
+      "ms": 0.0014999999999929514
+    },
+    {
+      "id": "multi-edit-delete-1",
+      "prediction": "prompt",
+      "score": 1,
+      "ms": 0.0011660000000119908
+    },
+    {
+      "id": "multi-edit-delete-2",
+      "prediction": "prompt",
+      "score": 1,
+      "ms": 0.0016660000000001673
+    },
+    {
+      "id": "multi-edit-delete-3",
+      "prediction": "prompt",
+      "score": 1,
+      "ms": 0.0015410000000031232
+    },
+    {
+      "id": "multi-edit-delete-4",
+      "prediction": "prompt",
+      "score": 1,
+      "ms": 0.0015410000000031232
+    },
+    {
+      "id": "conflicting-command-1",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.000999999999990564
+    },
+    {
+      "id": "conflicting-command-2",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.011667000000002758
+    },
+    {
+      "id": "conflicting-command-3",
+      "prediction": "generation",
+      "score": 1,
+      "ms": 0.003208999999998241
+    },
+    {
+      "id": "conflicting-command-4",
+      "prediction": "conversation",
+      "score": 1,
+      "ms": 0.002250000000003638
+    }
+  ],
+  "candidateRows": [
+    {
+      "id": "greeting-1",
+      "prediction": "unknown",
+      "score": 0.9790551866432738,
+      "ms": 398.4160419999989
+    },
+    {
+      "id": "greeting-2",
+      "prediction": "unknown",
+      "score": 0.9989621454292895,
+      "ms": 263.195416999999
+    },
+    {
+      "id": "greeting-3",
+      "prediction": "unknown",
+      "score": 0.9751671847015542,
+      "ms": 256.81966699999975
+    },
+    {
+      "id": "greeting-4",
+      "prediction": "unknown",
+      "score": 0.9984749055462233,
+      "ms": 248.2534169999999
+    },
+    {
+      "id": "capability-1",
+      "prediction": "unknown",
+      "score": 0.9696514499391024,
+      "ms": 344.5444580000003
+    },
+    {
+      "id": "capability-2",
+      "prediction": "unknown",
+      "score": 0.9935001008117177,
+      "ms": 247.72241699999904
+    },
+    {
+      "id": "capability-3",
+      "prediction": "generation",
+      "score": 0.6271653301111215,
+      "ms": 247.8060000000005
+    },
+    {
+      "id": "capability-4",
+      "prediction": "unknown",
+      "score": 0.9972634703857588,
+      "ms": 246.9919579999987
+    },
+    {
+      "id": "negation-1",
+      "prediction": "unknown",
+      "score": 0.994083521127077,
+      "ms": 248.61624999999913
+    },
+    {
+      "id": "negation-2",
+      "prediction": "unknown",
+      "score": 0.8719075078128846,
+      "ms": 249.22400000000016
+    },
+    {
+      "id": "negation-3",
+      "prediction": "unknown",
+      "score": 0.9991393964033249,
+      "ms": 247.044249999999
+    },
+    {
+      "id": "negation-4",
+      "prediction": "unknown",
+      "score": 0.9971879774526938,
+      "ms": 257.0410000000011
+    },
+    {
+      "id": "copywriting-1",
+      "prediction": "unknown",
+      "score": 0.9947348912531265,
+      "ms": 246.6224999999995
+    },
+    {
+      "id": "copywriting-2",
+      "prediction": "unknown",
+      "score": 0.9996571651322551,
+      "ms": 246.05524999999943
+    },
+    {
+      "id": "copywriting-3",
+      "prediction": "unknown",
+      "score": 0.9996660896976268,
+      "ms": 247.84775000000081
+    },
+    {
+      "id": "copywriting-4",
+      "prediction": "unknown",
+      "score": 0.9999286751057348,
+      "ms": 253.0724169999994
+    },
+    {
+      "id": "why-color-1",
+      "prediction": "unknown",
+      "score": 0.996648432439416,
+      "ms": 248.11670799999956
+    },
+    {
+      "id": "why-color-2",
+      "prediction": "unknown",
+      "score": 0.9994887137790484,
+      "ms": 254.94283299999915
+    },
+    {
+      "id": "why-color-3",
+      "prediction": "unknown",
+      "score": 0.9919131999170038,
+      "ms": 249.62408399999913
+    },
+    {
+      "id": "why-color-4",
+      "prediction": "unknown",
+      "score": 0.9998602261071263,
+      "ms": 270.56858400000056
+    },
+    {
+      "id": "write-prompt-1",
+      "prediction": "prompt",
+      "score": 0.6451798469324758,
+      "ms": 249.73525000000154
+    },
+    {
+      "id": "write-prompt-2",
+      "prediction": "unknown",
+      "score": 0.7252741202358836,
+      "ms": 253.10633400000006
+    },
+    {
+      "id": "write-prompt-3",
+      "prediction": "unknown",
+      "score": 0.9991597836518764,
+      "ms": 247.44950000000063
+    },
+    {
+      "id": "write-prompt-4",
+      "prediction": "unknown",
+      "score": 0.974871046653717,
+      "ms": 255.04941700000018
+    },
+    {
+      "id": "polish-prompt-1",
+      "prediction": "prompt",
+      "score": 0.9897280347720231,
+      "ms": 247.2692079999997
+    },
+    {
+      "id": "polish-prompt-2",
+      "prediction": "prompt",
+      "score": 0.9958488079912923,
+      "ms": 249.29816700000083
+    },
+    {
+      "id": "polish-prompt-3",
+      "prediction": "prompt",
+      "score": 0.831868154530704,
+      "ms": 255.4058330000007
+    },
+    {
+      "id": "polish-prompt-4",
+      "prediction": "prompt",
+      "score": 0.9731531686013642,
+      "ms": 321.8257080000003
+    },
+    {
+      "id": "translate-prompt-1",
+      "prediction": "unknown",
+      "score": 0.9935275240755039,
+      "ms": 247.3778749999983
+    },
+    {
+      "id": "translate-prompt-2",
+      "prediction": "unknown",
+      "score": 0.9993845763823717,
+      "ms": 253.5527089999996
+    },
+    {
+      "id": "translate-prompt-3",
+      "prediction": "unknown",
+      "score": 0.9999372139709125,
+      "ms": 251.04799999999886
+    },
+    {
+      "id": "translate-prompt-4",
+      "prediction": "unknown",
+      "score": 0.9998894467912539,
+      "ms": 249.04229099999793
+    },
+    {
+      "id": "prompt-only-1",
+      "prediction": "prompt",
+      "score": 0.9249963304207783,
+      "ms": 248.86854200000016
+    },
+    {
+      "id": "prompt-only-2",
+      "prediction": "prompt",
+      "score": 0.9934069386350471,
+      "ms": 246.8612499999981
+    },
+    {
+      "id": "prompt-only-3",
+      "prediction": "prompt",
+      "score": 0.7399286677869115,
+      "ms": 246.7656670000033
+    },
+    {
+      "id": "prompt-only-4",
+      "prediction": "prompt",
+      "score": 0.8490660707734871,
+      "ms": 245.00666600000113
+    },
+    {
+      "id": "prompt-context-1",
+      "prediction": "unknown",
+      "score": 0.9999512701433186,
+      "ms": 249.1706669999985
+    },
+    {
+      "id": "prompt-context-2",
+      "prediction": "unknown",
+      "score": 0.9999785637128488,
+      "ms": 246.89354199999798
+    },
+    {
+      "id": "prompt-context-3",
+      "prediction": "unknown",
+      "score": 0.9999586971969798,
+      "ms": 258.0892500000009
+    },
+    {
+      "id": "prompt-context-4",
+      "prediction": "unknown",
+      "score": 0.9999694823657591,
+      "ms": 249.91591699999844
+    },
+    {
+      "id": "web-research-1",
+      "prediction": "research",
+      "score": 0.8136163246876198,
+      "ms": 251.90550000000076
+    },
+    {
+      "id": "web-research-2",
+      "prediction": "research",
+      "score": 0.7216336339040326,
+      "ms": 247.25120799999786
+    },
+    {
+      "id": "web-research-3",
+      "prediction": "unknown",
+      "score": 0.8558180082565884,
+      "ms": 250.78658299999734
+    },
+    {
+      "id": "web-research-4",
+      "prediction": "unknown",
+      "score": 0.9216836969991299,
+      "ms": 258.70320800000263
+    },
+    {
+      "id": "canvas-inventory-1",
+      "prediction": "unknown",
+      "score": 0.9999679732273583,
+      "ms": 249.07849999999962
+    },
+    {
+      "id": "canvas-inventory-2",
+      "prediction": "unknown",
+      "score": 0.9999551824769505,
+      "ms": 246.82154100000116
+    },
+    {
+      "id": "canvas-inventory-3",
+      "prediction": "unknown",
+      "score": 0.9999423528083641,
+      "ms": 248.01541700000234
+    },
+    {
+      "id": "canvas-inventory-4",
+      "prediction": "unknown",
+      "score": 0.9999572717586713,
+      "ms": 261.1861659999995
+    },
+    {
+      "id": "artifact-history-1",
+      "prediction": "research",
+      "score": 0.9305936277276803,
+      "ms": 250.7094169999982
+    },
+    {
+      "id": "artifact-history-2",
+      "prediction": "unknown",
+      "score": 0.9979207278403621,
+      "ms": 252.81320899999992
+    },
+    {
+      "id": "artifact-history-3",
+      "prediction": "unknown",
+      "score": 0.9998700333406954,
+      "ms": 252.13375000000087
+    },
+    {
+      "id": "artifact-history-4",
+      "prediction": "unknown",
+      "score": 0.9992605972980814,
+      "ms": 263.67320800000016
+    },
+    {
+      "id": "research-only-1",
+      "prediction": "research",
+      "score": 0.752690687323113,
+      "ms": 249.2486659999995
+    },
+    {
+      "id": "research-only-2",
+      "prediction": "unknown",
+      "score": 0.9997352923931743,
+      "ms": 246.6373339999991
+    },
+    {
+      "id": "research-only-3",
+      "prediction": "unknown",
+      "score": 0.999352663887193,
+      "ms": 250.14670900000056
+    },
+    {
+      "id": "research-only-4",
+      "prediction": "unknown",
+      "score": 0.9998807461559884,
+      "ms": 248.29933399999936
+    },
+    {
+      "id": "research-context-1",
+      "prediction": "unknown",
+      "score": 0.9998681456351004,
+      "ms": 259.4178749999992
+    },
+    {
+      "id": "research-context-2",
+      "prediction": "unknown",
+      "score": 0.9998372829264718,
+      "ms": 249.24924999999712
+    },
+    {
+      "id": "research-context-3",
+      "prediction": "unknown",
+      "score": 0.9998118136275118,
+      "ms": 249.6294999999991
+    },
+    {
+      "id": "research-context-4",
+      "prediction": "unknown",
+      "score": 0.999898080057461,
+      "ms": 247.84787499999948
+    },
+    {
+      "id": "image-create-1",
+      "prediction": "generation",
+      "score": 0.8602263371256668,
+      "ms": 248.7750840000008
+    },
+    {
+      "id": "image-create-2",
+      "prediction": "generation",
+      "score": 0.5347273484737398,
+      "ms": 246.86141600000337
+    },
+    {
+      "id": "image-create-3",
+      "prediction": "unknown",
+      "score": 0.9359197168248347,
+      "ms": 245.9152090000025
+    },
+    {
+      "id": "image-create-4",
+      "prediction": "unknown",
+      "score": 0.8576915554626785,
+      "ms": 248.41420799999833
+    },
+    {
+      "id": "image-batch-1",
+      "prediction": "unknown",
+      "score": 0.6856986256868689,
+      "ms": 262.1850000000013
+    },
+    {
+      "id": "image-batch-2",
+      "prediction": "generation",
+      "score": 0.5089197876277166,
+      "ms": 247.4875000000029
+    },
+    {
+      "id": "image-batch-3",
+      "prediction": "unknown",
+      "score": 0.998539382458102,
+      "ms": 260.7743750000009
+    },
+    {
+      "id": "image-batch-4",
+      "prediction": "unknown",
+      "score": 0.9917786515005803,
+      "ms": 247.3004170000022
+    },
+    {
+      "id": "image-edit-1",
+      "prediction": "unknown",
+      "score": 0.9986441972910448,
+      "ms": 272.26091599999927
+    },
+    {
+      "id": "image-edit-2",
+      "prediction": "unknown",
+      "score": 0.9995776838975343,
+      "ms": 251.44316699999763
+    },
+    {
+      "id": "image-edit-3",
+      "prediction": "unknown",
+      "score": 0.9981038199842552,
+      "ms": 254.88308400000096
+    },
+    {
+      "id": "image-edit-4",
+      "prediction": "unknown",
+      "score": 0.9998481359719927,
+      "ms": 256.08004099999744
+    },
+    {
+      "id": "video-create-1",
+      "prediction": "unknown",
+      "score": 0.6332005925646915,
+      "ms": 258.36325000000215
+    },
+    {
+      "id": "video-create-2",
+      "prediction": "unknown",
+      "score": 0.7925619637826171,
+      "ms": 251.36745800000062
+    },
+    {
+      "id": "video-create-3",
+      "prediction": "unknown",
+      "score": 0.7346482829638874,
+      "ms": 249.61074999999983
+    },
+    {
+      "id": "video-create-4",
+      "prediction": "unknown",
+      "score": 0.9999020403982618,
+      "ms": 250.58995800000048
+    },
+    {
+      "id": "continue-image-1",
+      "prediction": "unknown",
+      "score": 0.9996767503458334,
+      "ms": 247.10258299999987
+    },
+    {
+      "id": "continue-image-2",
+      "prediction": "unknown",
+      "score": 0.9997902456027365,
+      "ms": 247.91008299999885
+    },
+    {
+      "id": "continue-image-3",
+      "prediction": "unknown",
+      "score": 0.9999147100047766,
+      "ms": 251.85250000000087
+    },
+    {
+      "id": "continue-image-4",
+      "prediction": "unknown",
+      "score": 0.9999253488739158,
+      "ms": 250.12595800000054
+    },
+    {
+      "id": "rename-node-1",
+      "prediction": "unknown",
+      "score": 0.9999220702469307,
+      "ms": 249.59516599999915
+    },
+    {
+      "id": "rename-node-2",
+      "prediction": "unknown",
+      "score": 0.9999202940571477,
+      "ms": 259.94974999999977
+    },
+    {
+      "id": "rename-node-3",
+      "prediction": "unknown",
+      "score": 0.9999692969650054,
+      "ms": 247.57800000000134
+    },
+    {
+      "id": "rename-node-4",
+      "prediction": "unknown",
+      "score": 0.9999340007107741,
+      "ms": 247.67358299999978
+    },
+    {
+      "id": "delete-node-1",
+      "prediction": "unknown",
+      "score": 0.9999890522092609,
+      "ms": 254.11475000000064
+    },
+    {
+      "id": "delete-node-2",
+      "prediction": "unknown",
+      "score": 0.99999022378587,
+      "ms": 247.66312500000276
+    },
+    {
+      "id": "delete-node-3",
+      "prediction": "unknown",
+      "score": 0.9999918558189997,
+      "ms": 247.3834999999999
+    },
+    {
+      "id": "delete-node-4",
+      "prediction": "unknown",
+      "score": 0.999988239815538,
+      "ms": 256.2531249999993
+    },
+    {
+      "id": "move-node-1",
+      "prediction": "unknown",
+      "score": 0.9999584250544393,
+      "ms": 247.83737499999916
+    },
+    {
+      "id": "move-node-2",
+      "prediction": "unknown",
+      "score": 0.9999810781018689,
+      "ms": 247.14916699999958
+    },
+    {
+      "id": "move-node-3",
+      "prediction": "unknown",
+      "score": 0.9999847512168263,
+      "ms": 253.84800000000178
+    },
+    {
+      "id": "move-node-4",
+      "prediction": "unknown",
+      "score": 0.9999690376644538,
+      "ms": 250.89391700000124
+    },
+    {
+      "id": "save-memory-1",
+      "prediction": "action_proposal",
+      "score": 0.8484943812273276,
+      "ms": 248.96054200000071
+    },
+    {
+      "id": "save-memory-2",
+      "prediction": "unknown",
+      "score": 0.6777778954662137,
+      "ms": 257.8247080000001
+    },
+    {
+      "id": "save-memory-3",
+      "prediction": "unknown",
+      "score": 0.9999279032125981,
+      "ms": 258.6059580000001
+    },
+    {
+      "id": "save-memory-4",
+      "prediction": "unknown",
+      "score": 0.9998101908827481,
+      "ms": 256.4227499999979
+    },
+    {
+      "id": "activate-rule-1",
+      "prediction": "unknown",
+      "score": 0.9994995722415645,
+      "ms": 248.31454200000007
+    },
+    {
+      "id": "activate-rule-2",
+      "prediction": "unknown",
+      "score": 0.9999214793268955,
+      "ms": 247.85041700000147
+    },
+    {
+      "id": "activate-rule-3",
+      "prediction": "unknown",
+      "score": 0.9999043252492192,
+      "ms": 248.1788330000054
+    },
+    {
+      "id": "activate-rule-4",
+      "prediction": "unknown",
+      "score": 0.999959132155184,
+      "ms": 247.06025000000227
+    },
+    {
+      "id": "bare-confirm-1",
+      "prediction": "unknown",
+      "score": 0.9976829540424058,
+      "ms": 249.31300000000192
+    },
+    {
+      "id": "bare-confirm-2",
+      "prediction": "unknown",
+      "score": 0.9873010217817674,
+      "ms": 247.46050000000105
+    },
+    {
+      "id": "bare-confirm-3",
+      "prediction": "unknown",
+      "score": 0.9974723911471743,
+      "ms": 247.40987499999756
+    },
+    {
+      "id": "bare-confirm-4",
+      "prediction": "unknown",
+      "score": 0.9977347351438899,
+      "ms": 249.48570800000016
+    },
+    {
+      "id": "absent-image-1",
+      "prediction": "unknown",
+      "score": 0.997534596100552,
+      "ms": 251.17808299999888
+    },
+    {
+      "id": "absent-image-2",
+      "prediction": "unknown",
+      "score": 0.8934206305384781,
+      "ms": 249.95516700000007
+    },
+    {
+      "id": "absent-image-3",
+      "prediction": "unknown",
+      "score": 0.9997347577612613,
+      "ms": 247.5457499999975
+    },
+    {
+      "id": "absent-image-4",
+      "prediction": "unknown",
+      "score": 0.9999518898022125,
+      "ms": 246.85341699999844
+    },
+    {
+      "id": "vague-change-1",
+      "prediction": "unknown",
+      "score": 0.8295919466186932,
+      "ms": 249.57274999999936
+    },
+    {
+      "id": "vague-change-2",
+      "prediction": "unknown",
+      "score": 0.8358784207236186,
+      "ms": 246.4016249999986
+    },
+    {
+      "id": "vague-change-3",
+      "prediction": "unknown",
+      "score": 0.9905273655326349,
+      "ms": 245.8145000000004
+    },
+    {
+      "id": "vague-change-4",
+      "prediction": "unknown",
+      "score": 0.9917204025257785,
+      "ms": 247.9950420000023
+    },
+    {
+      "id": "multi-search-render-1",
+      "prediction": "unknown",
+      "score": 0.7063062552579367,
+      "ms": 252.17787500000122
+    },
+    {
+      "id": "multi-search-render-2",
+      "prediction": "generation",
+      "score": 0.760796645393737,
+      "ms": 246.81099999999424
+    },
+    {
+      "id": "multi-search-render-3",
+      "prediction": "generation",
+      "score": 0.5147964617952469,
+      "ms": 246.43758399999933
+    },
+    {
+      "id": "multi-search-render-4",
+      "prediction": "generation",
+      "score": 0.9391479210956415,
+      "ms": 249.2980419999949
+    },
+    {
+      "id": "injected-label-1",
+      "prediction": "generation",
+      "score": 0.4853206463532811,
+      "ms": 249.84449999999924
+    },
+    {
+      "id": "injected-label-2",
+      "prediction": "action_proposal",
+      "score": 0.9920144842592215,
+      "ms": 255.6961250000022
+    },
+    {
+      "id": "injected-label-3",
+      "prediction": "unknown",
+      "score": 0.712084694031022,
+      "ms": 255.6075839999976
+    },
+    {
+      "id": "injected-label-4",
+      "prediction": "action_proposal",
+      "score": 0.9798746916769056,
+      "ms": 247.39949999999953
+    },
+    {
+      "id": "thanks-1",
+      "prediction": "unknown",
+      "score": 0.9969836498163097,
+      "ms": 246.94283300000097
+    },
+    {
+      "id": "thanks-2",
+      "prediction": "unknown",
+      "score": 0.9997576367645633,
+      "ms": 251.05554100000154
+    },
+    {
+      "id": "thanks-3",
+      "prediction": "unknown",
+      "score": 0.9997178127035047,
+      "ms": 253.40845799999806
+    },
+    {
+      "id": "thanks-4",
+      "prediction": "unknown",
+      "score": 0.9975063395720493,
+      "ms": 247.26416600000084
+    },
+    {
+      "id": "past-failure-1",
+      "prediction": "unknown",
+      "score": 0.853131723756053,
+      "ms": 252.6105830000015
+    },
+    {
+      "id": "past-failure-2",
+      "prediction": "unknown",
+      "score": 0.9196353429130171,
+      "ms": 251.9955839999966
+    },
+    {
+      "id": "past-failure-3",
+      "prediction": "unknown",
+      "score": 0.9996387074681132,
+      "ms": 246.87004100000195
+    },
+    {
+      "id": "past-failure-4",
+      "prediction": "unknown",
+      "score": 0.9999769516846306,
+      "ms": 250.0442500000063
+    },
+    {
+      "id": "limits-1",
+      "prediction": "unknown",
+      "score": 0.9994069793982674,
+      "ms": 245.46820899999875
+    },
+    {
+      "id": "limits-2",
+      "prediction": "unknown",
+      "score": 0.9996716002681688,
+      "ms": 248.20379200000025
+    },
+    {
+      "id": "limits-3",
+      "prediction": "unknown",
+      "score": 0.9998684992619995,
+      "ms": 252.27570800000103
+    },
+    {
+      "id": "limits-4",
+      "prediction": "unknown",
+      "score": 0.9999268140571445,
+      "ms": 260.8752500000046
+    },
+    {
+      "id": "advice-1",
+      "prediction": "unknown",
+      "score": 0.999851060249214,
+      "ms": 254.1085419999945
+    },
+    {
+      "id": "advice-2",
+      "prediction": "unknown",
+      "score": 0.9704266121212858,
+      "ms": 248.4735409999994
+    },
+    {
+      "id": "advice-3",
+      "prediction": "unknown",
+      "score": 0.9998401295820701,
+      "ms": 272.34170900000026
+    },
+    {
+      "id": "advice-4",
+      "prediction": "unknown",
+      "score": 0.9973423769218721,
+      "ms": 260.91187499999796
+    },
+    {
+      "id": "quoted-command-1",
+      "prediction": "unknown",
+      "score": 0.9945649627118673,
+      "ms": 249.44704199999978
+    },
+    {
+      "id": "quoted-command-2",
+      "prediction": "unknown",
+      "score": 0.9999397301394892,
+      "ms": 250.4762499999997
+    },
+    {
+      "id": "quoted-command-3",
+      "prediction": "unknown",
+      "score": 0.9998413943476729,
+      "ms": 250.01837499999965
+    },
+    {
+      "id": "quoted-command-4",
+      "prediction": "unknown",
+      "score": 0.9998997712953884,
+      "ms": 247.3371249999982
+    },
+    {
+      "id": "negative-prompt-1",
+      "prediction": "unknown",
+      "score": 0.9998161099729354,
+      "ms": 251.65016599999944
+    },
+    {
+      "id": "negative-prompt-2",
+      "prediction": "unknown",
+      "score": 0.9999447667424827,
+      "ms": 247.03679200000624
+    },
+    {
+      "id": "negative-prompt-3",
+      "prediction": "unknown",
+      "score": 0.9999319053197107,
+      "ms": 261.52124999999796
+    },
+    {
+      "id": "negative-prompt-4",
+      "prediction": "unknown",
+      "score": 0.999982980779663,
+      "ms": 248.13045899999997
+    },
+    {
+      "id": "prompt-variants-1",
+      "prediction": "unknown",
+      "score": 0.9848618122990163,
+      "ms": 248.42016700000386
+    },
+    {
+      "id": "prompt-variants-2",
+      "prediction": "prompt",
+      "score": 0.5573671887245985,
+      "ms": 249.21687499999825
+    },
+    {
+      "id": "prompt-variants-3",
+      "prediction": "unknown",
+      "score": 0.9985136209249508,
+      "ms": 256.07258300000103
+    },
+    {
+      "id": "prompt-variants-4",
+      "prediction": "unknown",
+      "score": 0.9986993757224022,
+      "ms": 248.33004100000107
+    },
+    {
+      "id": "prompt-structure-1",
+      "prediction": "unknown",
+      "score": 0.9887372889149516,
+      "ms": 247.23233400000026
+    },
+    {
+      "id": "prompt-structure-2",
+      "prediction": "unknown",
+      "score": 0.6915042175787978,
+      "ms": 248.09500000000116
+    },
+    {
+      "id": "prompt-structure-3",
+      "prediction": "unknown",
+      "score": 0.9998492132735426,
+      "ms": 250.85070899999846
+    },
+    {
+      "id": "prompt-structure-4",
+      "prediction": "unknown",
+      "score": 0.8297267993374283,
+      "ms": 258.283792000002
+    },
+    {
+      "id": "prompt-remove-1",
+      "prediction": "prompt",
+      "score": 0.5873896777542603,
+      "ms": 251.48824999999488
+    },
+    {
+      "id": "prompt-remove-2",
+      "prediction": "prompt",
+      "score": 0.8301961356861948,
+      "ms": 249.71745799999917
+    },
+    {
+      "id": "prompt-remove-3",
+      "prediction": "unknown",
+      "score": 0.9988314144186391,
+      "ms": 250.13100000000122
+    },
+    {
+      "id": "prompt-remove-4",
+      "prediction": "unknown",
+      "score": 0.999606445671468,
+      "ms": 254.1207080000022
+    },
+    {
+      "id": "prompt-json-1",
+      "prediction": "unknown",
+      "score": 0.9927512913127501,
+      "ms": 249.63724999999977
+    },
+    {
+      "id": "prompt-json-2",
+      "prediction": "unknown",
+      "score": 0.9974239418828547,
+      "ms": 254.55258300000423
+    },
+    {
+      "id": "prompt-json-3",
+      "prediction": "unknown",
+      "score": 0.9998670938464499,
+      "ms": 381.3333749999947
+    },
+    {
+      "id": "prompt-json-4",
+      "prediction": "unknown",
+      "score": 0.9998967014546122,
+      "ms": 253.1690000000017
+    },
+    {
+      "id": "trace-origin-1",
+      "prediction": "unknown",
+      "score": 0.9998561906447737,
+      "ms": 249.6316250000018
+    },
+    {
+      "id": "trace-origin-2",
+      "prediction": "unknown",
+      "score": 0.9998240879482542,
+      "ms": 247.70470799999748
+    },
+    {
+      "id": "trace-origin-3",
+      "prediction": "unknown",
+      "score": 0.9999332225736021,
+      "ms": 263.97054099999514
+    },
+    {
+      "id": "trace-origin-4",
+      "prediction": "unknown",
+      "score": 0.9999866045044888,
+      "ms": 249.94258300000365
+    },
+    {
+      "id": "memory-read-1",
+      "prediction": "unknown",
+      "score": 0.999531911091333,
+      "ms": 251.85870799999975
+    },
+    {
+      "id": "memory-read-2",
+      "prediction": "unknown",
+      "score": 0.9999558778202267,
+      "ms": 251.10754100000486
+    },
+    {
+      "id": "memory-read-3",
+      "prediction": "unknown",
+      "score": 0.9999815834352118,
+      "ms": 248.114459000004
+    },
+    {
+      "id": "memory-read-4",
+      "prediction": "unknown",
+      "score": 0.9999272314799338,
+      "ms": 253.1473330000008
+    },
+    {
+      "id": "compare-sources-1",
+      "prediction": "unknown",
+      "score": 0.9975730177880383,
+      "ms": 247.65308399999776
+    },
+    {
+      "id": "compare-sources-2",
+      "prediction": "research",
+      "score": 0.7681036472065645,
+      "ms": 250.3384589999987
+    },
+    {
+      "id": "compare-sources-3",
+      "prediction": "unknown",
+      "score": 0.9022944173555746,
+      "ms": 248.0948750000025
+    },
+    {
+      "id": "compare-sources-4",
+      "prediction": "unknown",
+      "score": 0.5387209015450535,
+      "ms": 252.50737500000105
+    },
+    {
+      "id": "search-filter-1",
+      "prediction": "unknown",
+      "score": 0.9998455017534831,
+      "ms": 250.12058299999626
+    },
+    {
+      "id": "search-filter-2",
+      "prediction": "unknown",
+      "score": 0.9979382984889446,
+      "ms": 251.31300000000192
+    },
+    {
+      "id": "search-filter-3",
+      "prediction": "unknown",
+      "score": 0.9999740273313353,
+      "ms": 261.55383399999846
+    },
+    {
+      "id": "search-filter-4",
+      "prediction": "unknown",
+      "score": 0.9997813762659868,
+      "ms": 252.86099999999715
+    },
+    {
+      "id": "status-read-1",
+      "prediction": "unknown",
+      "score": 0.9999519532786921,
+      "ms": 246.88474999999744
+    },
+    {
+      "id": "status-read-2",
+      "prediction": "unknown",
+      "score": 0.9998163715275573,
+      "ms": 262.21083299999736
+    },
+    {
+      "id": "status-read-3",
+      "prediction": "unknown",
+      "score": 0.9999042681406406,
+      "ms": 258.7895000000062
+    },
+    {
+      "id": "status-read-4",
+      "prediction": "unknown",
+      "score": 0.9999194251145382,
+      "ms": 249.2764160000006
+    },
+    {
+      "id": "poster-render-1",
+      "prediction": "unknown",
+      "score": 0.9524469957430066,
+      "ms": 260.9659580000007
+    },
+    {
+      "id": "poster-render-2",
+      "prediction": "generation",
+      "score": 0.9275396335444495,
+      "ms": 253.51491600000008
+    },
+    {
+      "id": "poster-render-3",
+      "prediction": "unknown",
+      "score": 0.9994734482736489,
+      "ms": 254.51670800000284
+    },
+    {
+      "id": "poster-render-4",
+      "prediction": "unknown",
+      "score": 0.8360212916438822,
+      "ms": 263.9563750000016
+    },
+    {
+      "id": "image-variation-1",
+      "prediction": "unknown",
+      "score": 0.9962852505743749,
+      "ms": 252.10495800000353
+    },
+    {
+      "id": "image-variation-2",
+      "prediction": "unknown",
+      "score": 0.830701702204954,
+      "ms": 247.03604199999972
+    },
+    {
+      "id": "image-variation-3",
+      "prediction": "unknown",
+      "score": 0.9999352310758327,
+      "ms": 252.46804100000008
+    },
+    {
+      "id": "image-variation-4",
+      "prediction": "unknown",
+      "score": 0.9994411123467825,
+      "ms": 257.9357499999969
+    },
+    {
+      "id": "region-edit-1",
+      "prediction": "unknown",
+      "score": 0.9998964070072781,
+      "ms": 248.93262500000128
+    },
+    {
+      "id": "region-edit-2",
+      "prediction": "unknown",
+      "score": 0.9999421904002144,
+      "ms": 250.7959159999955
+    },
+    {
+      "id": "region-edit-3",
+      "prediction": "unknown",
+      "score": 0.9999459806554756,
+      "ms": 249.66712499999994
+    },
+    {
+      "id": "region-edit-4",
+      "prediction": "unknown",
+      "score": 0.9999873117031263,
+      "ms": 251.58966599999985
+    },
+    {
+      "id": "text-render-1",
+      "prediction": "generation",
+      "score": 0.6959719108214056,
+      "ms": 253.05187499999738
+    },
+    {
+      "id": "text-render-2",
+      "prediction": "unknown",
+      "score": 0.7203063271204169,
+      "ms": 254.515707999999
+    },
+    {
+      "id": "text-render-3",
+      "prediction": "generation",
+      "score": 0.7045642757307419,
+      "ms": 249.03329200000007
+    },
+    {
+      "id": "text-render-4",
+      "prediction": "unknown",
+      "score": 0.9901479756558658,
+      "ms": 250.47158299999865
+    },
+    {
+      "id": "render-not-prompt-1",
+      "prediction": "generation",
+      "score": 0.8782714991070645,
+      "ms": 258.2298329999976
+    },
+    {
+      "id": "render-not-prompt-2",
+      "prediction": "generation",
+      "score": 0.9106985147500903,
+      "ms": 247.82062499999302
+    },
+    {
+      "id": "render-not-prompt-3",
+      "prediction": "generation",
+      "score": 0.9334902050275672,
+      "ms": 247.3375840000008
+    },
+    {
+      "id": "render-not-prompt-4",
+      "prediction": "unknown",
+      "score": 0.998994300259949,
+      "ms": 252.84633300000132
+    },
+    {
+      "id": "group-nodes-1",
+      "prediction": "unknown",
+      "score": 0.9999670548894756,
+      "ms": 247.36133299999346
+    },
+    {
+      "id": "group-nodes-2",
+      "prediction": "unknown",
+      "score": 0.9999759151173231,
+      "ms": 245.17183300000033
+    },
+    {
+      "id": "group-nodes-3",
+      "prediction": "unknown",
+      "score": 0.9999855870724289,
+      "ms": 252.3970410000038
+    },
+    {
+      "id": "group-nodes-4",
+      "prediction": "unknown",
+      "score": 0.999946422364846,
+      "ms": 245.98845900000015
+    },
+    {
+      "id": "link-nodes-1",
+      "prediction": "unknown",
+      "score": 0.9999852981739275,
+      "ms": 246.93954099999974
+    },
+    {
+      "id": "link-nodes-2",
+      "prediction": "unknown",
+      "score": 0.9999883903287644,
+      "ms": 255.00137499999983
+    },
+    {
+      "id": "link-nodes-3",
+      "prediction": "unknown",
+      "score": 0.9999790500388315,
+      "ms": 244.52516699999978
+    },
+    {
+      "id": "link-nodes-4",
+      "prediction": "unknown",
+      "score": 0.9999892731274165,
+      "ms": 248.325499999999
+    },
+    {
+      "id": "pin-artifact-1",
+      "prediction": "unknown",
+      "score": 0.9999197217065634,
+      "ms": 248.17124999999942
+    },
+    {
+      "id": "pin-artifact-2",
+      "prediction": "unknown",
+      "score": 0.9999597625188047,
+      "ms": 250.64191700000083
+    },
+    {
+      "id": "pin-artifact-3",
+      "prediction": "unknown",
+      "score": 0.9999232342134567,
+      "ms": 251.5639169999995
+    },
+    {
+      "id": "pin-artifact-4",
+      "prediction": "unknown",
+      "score": 0.9999820083449771,
+      "ms": 248.580375000005
+    },
+    {
+      "id": "action-not-image-1",
+      "prediction": "unknown",
+      "score": 0.9988583318147528,
+      "ms": 249.85608299999876
+    },
+    {
+      "id": "action-not-image-2",
+      "prediction": "unknown",
+      "score": 0.9999675928294789,
+      "ms": 251.1481249999997
+    },
+    {
+      "id": "action-not-image-3",
+      "prediction": "unknown",
+      "score": 0.9998865492038732,
+      "ms": 250.67766599999595
+    },
+    {
+      "id": "action-not-image-4",
+      "prediction": "unknown",
+      "score": 0.9999719717189469,
+      "ms": 257.26800000000367
+    },
+    {
+      "id": "update-rule-1",
+      "prediction": "unknown",
+      "score": 0.9943916542670146,
+      "ms": 254.3344170000055
+    },
+    {
+      "id": "update-rule-2",
+      "prediction": "unknown",
+      "score": 0.7919855977237065,
+      "ms": 248.0049579999977
+    },
+    {
+      "id": "update-rule-3",
+      "prediction": "unknown",
+      "score": 0.997664859874351,
+      "ms": 256.33533400000306
+    },
+    {
+      "id": "update-rule-4",
+      "prediction": "unknown",
+      "score": 0.9993186886159159,
+      "ms": 259.8229999999967
+    },
+    {
+      "id": "unresolved-number-1",
+      "prediction": "unknown",
+      "score": 0.8555201325236788,
+      "ms": 248.98883300000307
+    },
+    {
+      "id": "unresolved-number-2",
+      "prediction": "unknown",
+      "score": 0.9921972008753843,
+      "ms": 253.1299169999984
+    },
+    {
+      "id": "unresolved-number-3",
+      "prediction": "unknown",
+      "score": 0.9986255273883085,
+      "ms": 247.1333750000049
+    },
+    {
+      "id": "unresolved-number-4",
+      "prediction": "action_proposal",
+      "score": 0.9206670350400945,
+      "ms": 248.98445799999172
+    },
+    {
+      "id": "empty-noise-1",
+      "prediction": "unknown",
+      "score": 0.9902332813756145,
+      "ms": 248.14362499999697
+    },
+    {
+      "id": "empty-noise-2",
+      "prediction": "unknown",
+      "score": 0.9977490942530068,
+      "ms": 247.85100000000966
+    },
+    {
+      "id": "empty-noise-3",
+      "prediction": "unknown",
+      "score": 0.9956946955224528,
+      "ms": 247.81341699999757
+    },
+    {
+      "id": "empty-noise-4",
+      "prediction": "unknown",
+      "score": 0.998539461791093,
+      "ms": 256.4607909999904
+    },
+    {
+      "id": "missing-prompt-1",
+      "prediction": "unknown",
+      "score": 0.7014186442302409,
+      "ms": 248.28666699999303
+    },
+    {
+      "id": "missing-prompt-2",
+      "prediction": "generation",
+      "score": 0.9246236531847377,
+      "ms": 258.5439999999944
+    },
+    {
+      "id": "missing-prompt-3",
+      "prediction": "unknown",
+      "score": 0.9947743586393948,
+      "ms": 250.53491699999722
+    },
+    {
+      "id": "missing-prompt-4",
+      "prediction": "unknown",
+      "score": 0.9994475564616898,
+      "ms": 256.60812499999884
+    },
+    {
+      "id": "multi-edit-delete-1",
+      "prediction": "action_proposal",
+      "score": 0.8532197976999372,
+      "ms": 250.7905829999945
+    },
+    {
+      "id": "multi-edit-delete-2",
+      "prediction": "unknown",
+      "score": 0.6313231658449001,
+      "ms": 247.80816600000253
+    },
+    {
+      "id": "multi-edit-delete-3",
+      "prediction": "action_proposal",
+      "score": 0.9937585475717755,
+      "ms": 250.72316700000374
+    },
+    {
+      "id": "multi-edit-delete-4",
+      "prediction": "action_proposal",
+      "score": 0.7617418281871907,
+      "ms": 269.6137080000044
+    },
+    {
+      "id": "conflicting-command-1",
+      "prediction": "generation",
+      "score": 0.8638170348545806,
+      "ms": 249.33637499999895
+    },
+    {
+      "id": "conflicting-command-2",
+      "prediction": "unknown",
+      "score": 0.9990376440529499,
+      "ms": 249.71624999999767
+    },
+    {
+      "id": "conflicting-command-3",
+      "prediction": "unknown",
+      "score": 0.9334232718413005,
+      "ms": 276.0745840000018
+    },
+    {
+      "id": "conflicting-command-4",
+      "prediction": "unknown",
+      "score": 0.9999603444129995,
+      "ms": 255.72708400001284
+    }
+  ],
+  "requestSha256": "d2658ce73b5bd45d2be136ebca1a236f1ab7355c23531adb266a6cc81aa87579"
+}

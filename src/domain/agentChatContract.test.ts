@@ -3,7 +3,7 @@ import test from 'node:test'
 import type { GenerationModelOption } from './canvas.ts'
 import {
   botanicAgentComposerIntentHint,
-  botanicAgentRequestUsesGenerationTurn,
+  botanicAgentRequestHasExplicitGenerationIntent,
   buildBotanicAgentChatRequest,
   completeBotanicAgentGenerationSettings,
   decideBotanicAgentRequest,
@@ -70,7 +70,7 @@ test('图片咨询、运行状态和能力询问不会误触发生成', () => {
   consultations.forEach((instruction) => {
     const decision = decideBotanicAgentRequest(instruction, true)
     assert.notEqual(decision.kind, 'generation', instruction)
-    assert.equal(botanicAgentRequestUsesGenerationTurn(decision), false, instruction)
+    assert.equal(botanicAgentRequestHasExplicitGenerationIntent(decision), false, instruction)
   })
   assert.equal(decideBotanicAgentRequest('分析一下然后生成3张海边人像', true).kind, 'generation')
   assert.equal(

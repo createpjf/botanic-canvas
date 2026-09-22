@@ -15,6 +15,7 @@ import { projectPermissionDecision } from '../../auth/authorization.mjs'
 import { createAgentOperationalReaders } from '../../observability/agentOperationalReaders.mjs'
 import { assertAgentTargetBinding, createAgentTargetBinding } from '../../agentTargetBinding.mjs'
 import { freezeBotanicAgentSkillCatalog } from '../tools/botanicAgentTools.mjs'
+import { createAgentToolChoiceShadow } from '../tools/agentToolChoiceShadow.mjs'
 
 export function configuredAgentGenerationModels(config) {
   return (config?.modelOptions ?? []).map((model) => ({
@@ -174,10 +175,12 @@ export function createAgentTurnSubmission({
   enrichAgentContextCheckpoint,
   persistUsageAnchor,
   consumeWebResearchQuota,
+  securityControls,
 }) {
   if (!productStore || typeof runtime?.execute !== 'function') {
     throw new TypeError('Agent Turn 提交模块缺少 Store 或 Runtime。')
   }
+  const observeToolChoice = createAgentToolChoiceShadow({ productStore, config, securityControls })
   const submit = (command) => {
       const turnId = agentTurnIdForIdempotency(
         command.userId,
@@ -338,6 +341,7 @@ export function createAgentTurnSubmission({
         request: canonicalInput,
         resolve: (options) => resolveBotanicAgentRuntimeRequest(input, config, options),
         resolveOptions: {
+          observeToolChoice,
           subagentRunner: durableSubagentRunner,
           observeAgentContext,
           ...(typeof enrichAgentContextCheckpoint === 'function'
